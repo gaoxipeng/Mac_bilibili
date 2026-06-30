@@ -34,12 +34,14 @@ struct BiliIconView: View {
 struct BiliStatLabel: View {
     let icon: BiliIcon
     let value: String
+    var iconSize: CGFloat = 16
+    var font: Font = .callout
 
     var body: some View {
-        HStack(spacing: 4) {
-            BiliIconView(icon: icon, color: BiliTheme.actionInactive, size: 16)
+        HStack(spacing: 5) {
+            BiliIconView(icon: icon, color: BiliTheme.actionInactive, size: iconSize)
             Text(value)
-                .font(.callout)
+                .font(font)
                 .foregroundStyle(.secondary)
         }
     }

@@ -2,7 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var model = AppModel()
-    @State private var sidebarSelection: AppSection? = .search
+    @State private var sidebarSelection: AppSection? = .home
     @State private var navigationPath = NavigationPath()
 
     var body: some View {

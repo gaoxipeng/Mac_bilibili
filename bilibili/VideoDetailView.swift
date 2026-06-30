@@ -281,8 +281,10 @@ struct VideoDetailView: View {
     var body: some View {
         GeometryReader { geometry in
             HStack(alignment: .top, spacing: 28) {
-                playerSection
-                    .frame(width: playerWidth(in: geometry.size.width))
+                playerSection(
+                    maxWidth: playerWidth(in: geometry.size.width),
+                    maxHeight: geometry.size.height * 0.72
+                )
 
                 rightColumn
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -366,16 +368,13 @@ struct VideoDetailView: View {
         .padding(.bottom, 10)
     }
 
-    private var playerSection: some View {
-        VideoPlayerSection(model: model)
-            .aspectRatio(16.0 / 9.0, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(Color.white.opacity(0.14), lineWidth: 0.6)
-            }
-            .shadow(color: .black.opacity(0.18), radius: 18, x: 0, y: 10)
-            .frame(maxHeight: .infinity, alignment: .top)
+    private func playerSection(maxWidth: CGFloat, maxHeight: CGFloat) -> some View {
+        VideoPlayerSection(
+            model: model,
+            maxWidth: maxWidth,
+            maxHeight: maxHeight
+        )
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 
     private var authorRow: some View {
@@ -470,27 +469,56 @@ struct VideoDetailView: View {
     }
 }
 
+private enum VideoPlayerChrome {
+    static let cornerRadius: CGFloat = 14
+
+    static func fittedSize(maxWidth: CGFloat, maxHeight: CGFloat, aspectRatio: CGFloat) -> CGSize {
+        let ratio = max(aspectRatio, 0.01)
+        var width = max(1, maxWidth)
+        var height = width / ratio
+        if height > maxHeight {
+            height = max(1, maxHeight)
+            width = height * ratio
+        }
+        return CGSize(width: width, height: height)
+    }
+}
+
 private struct VideoPlayerSection: View {
     @ObservedObject var model: VideoDetailModel
     @ObservedObject private var player: VideoPlaybackEngine
+    let maxWidth: CGFloat
+    let maxHeight: CGFloat
 
-    init(model: VideoDetailModel) {
+    init(model: VideoDetailModel, maxWidth: CGFloat, maxHeight: CGFloat) {
         self.model = model
+        self.maxWidth = maxWidth
+        self.maxHeight = maxHeight
         _player = ObservedObject(wrappedValue: model.player)
+    }
+
+    private var fittedSize: CGSize {
+        VideoPlayerChrome.fittedSize(
+            maxWidth: maxWidth,
+            maxHeight: maxHeight,
+            aspectRatio: player.displayAspectRatio
+        )
     }
 
     var body: some View {
         ZStack {
-            Color.black
             if let playError = model.playError {
+                Color.black
                 ContentUnavailableView("无法播放", systemImage: "play.slash", description: Text(playError))
                     .foregroundStyle(.white.opacity(0.86))
+            } else if !player.isReady {
+                Color.black
             } else {
                 VideoPlayerSurface(player: player)
                 if model.danmakuVisible, !model.danmakuItems.isEmpty {
                     DanmakuOverlayView(
                         items: model.danmakuItems,
-                        positionMs: Int64((player.currentTime * 1000).rounded()),
+                        positionMs: Int64(playbackTimeMs(player).rounded()),
                         isPlaying: player.isPlaying && !player.isScrubbing,
                         enabled: model.danmakuVisible,
                         settings: model.danmakuSettings,
@@ -512,36 +540,166 @@ private struct VideoPlayerSection: View {
                         player: player,
                         danmakuVisible: model.danmakuVisible,
                         onDanmakuToggle: model.toggleDanmakuVisible,
-                        onDanmakuLongPress: { model.showDanmakuSettings = true }
+                        onDanmakuRightClick: { model.showDanmakuSettings = true }
                     )
                     .padding(.horizontal, 16)
                     .padding(.bottom, 12)
                 }
             }
         }
+        .overlay {
+            VideoScrollWheelMonitor(player: player)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: fittedSize.width, height: fittedSize.height)
+        .compositingGroup()
+        .clipShape(RoundedRectangle(cornerRadius: VideoPlayerChrome.cornerRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: VideoPlayerChrome.cornerRadius, style: .continuous)
+                .stroke(Color.white.opacity(0.14), lineWidth: 0.6)
+        }
+        .shadow(color: .black.opacity(0.18), radius: 18, x: 0, y: 10)
+        .animation(.easeOut(duration: 0.2), value: player.displayAspectRatio)
+    }
+
+    private func playbackTimeMs(_ player: VideoPlaybackEngine) -> Double {
+        let seconds = player.isScrubbing ? (player.scrubPreviewTime ?? player.currentTime) : player.currentTime
+        return seconds * 1000
+    }
+}
+
+private struct VideoScrollWheelMonitor: NSViewRepresentable {
+    @ObservedObject var player: VideoPlaybackEngine
+
+    func makeNSView(context: Context) -> VideoScrollWheelMonitorView {
+        let view = VideoScrollWheelMonitorView()
+        view.player = player
+        view.autoresizingMask = [.width, .height]
+        return view
+    }
+
+    func updateNSView(_ nsView: VideoScrollWheelMonitorView, context: Context) {
+        nsView.player = player
+    }
+
+    static func dismantleNSView(_ nsView: VideoScrollWheelMonitorView, coordinator: ()) {
+        nsView.tearDownMonitor()
+    }
+}
+
+private final class VideoScrollWheelMonitorView: NSView {
+    weak var player: VideoPlaybackEngine?
+    private var scrollMonitor: Any?
+
+    override var isOpaque: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            installMonitorIfNeeded()
+        } else {
+            tearDownMonitor()
+        }
+    }
+
+    func installMonitorIfNeeded() {
+        guard scrollMonitor == nil else { return }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            guard let self, let window, window == event.window else { return event }
+            let point = convert(event.locationInWindow, from: nil)
+            guard bounds.contains(point) else { return event }
+            guard let player else { return event }
+            Self.handleScroll(event, player: player)
+            return nil
+        }
+    }
+
+    func tearDownMonitor() {
+        if let scrollMonitor {
+            NSEvent.removeMonitor(scrollMonitor)
+            self.scrollMonitor = nil
+        }
+    }
+
+    static func handleScroll(_ event: NSEvent, player: VideoPlaybackEngine) {
+        let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.deltaY
+        guard abs(delta) > 0.01 else { return }
+
+        let phase = event.phase
+        let momentumPhase = event.momentumPhase
+        if phase == .began || momentumPhase == .began {
+            player.cancelScheduledWheelScrubEnd()
+        }
+
+        let sensitivity = event.hasPreciseScrollingDeltas ? 0.1 : 1.8
+        player.applyWheelScrub(delta: -Double(delta) * sensitivity)
+
+        if phase == .ended || phase == .cancelled || momentumPhase == .ended {
+            player.finishWheelScrub()
+            return
+        }
+
+        let endDelay: Duration = event.hasPreciseScrollingDeltas ? .milliseconds(180) : .milliseconds(120)
+        player.scheduleWheelScrubEnd(after: endDelay)
+    }
+
+    deinit {
+        tearDownMonitor()
     }
 }
 
 private struct VideoPlayerSurface: NSViewRepresentable {
     @ObservedObject var player: VideoPlaybackEngine
 
-    func makeNSView(context: Context) -> NonSeekingPlayerView {
-        let view = NonSeekingPlayerView()
-        view.controlsStyle = .none
-        view.videoGravity = .resizeAspect
-        view.player = player.avPlayer
-        return view
+    func makeNSView(context: Context) -> PlayerClipContainerView {
+        let container = PlayerClipContainerView()
+        container.playerView.controlsStyle = .none
+        container.playerView.videoGravity = .resizeAspectFill
+        container.playerView.player = player.avPlayer
+        return container
     }
 
-    func updateNSView(_ nsView: NonSeekingPlayerView, context: Context) {
+    func updateNSView(_ nsView: PlayerClipContainerView, context: Context) {
         _ = player.isReady
-        nsView.player = player.avPlayer
+        nsView.playerView.player = player.avPlayer
+    }
+}
+
+private final class PlayerClipContainerView: NSView {
+    let playerView = NonSeekingPlayerView()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        applyRoundedMask()
+        addSubview(playerView)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        playerView.frame = bounds
+        playerView.autoresizingMask = [.width, .height]
+        applyRoundedMask()
+    }
+
+    private func applyRoundedMask() {
+        wantsLayer = true
+        layer?.cornerRadius = VideoPlayerChrome.cornerRadius
+        layer?.cornerCurve = .continuous
+        layer?.masksToBounds = true
     }
 }
 
 private final class NonSeekingPlayerView: AVPlayerView {
     override func scrollWheel(with event: NSEvent) {
-        enclosingScrollView?.scrollWheel(with: event)
+        // Wheel seeking is handled by VideoScrollWheelMonitor.
     }
 }
 
@@ -549,7 +707,7 @@ private struct VideoControlCapsule: View {
     @ObservedObject var player: VideoPlaybackEngine
     let danmakuVisible: Bool
     let onDanmakuToggle: () -> Void
-    let onDanmakuLongPress: () -> Void
+    let onDanmakuRightClick: () -> Void
 
     @State private var dragProgress: Double?
     @State private var displayedProgress: Double = 0
@@ -566,63 +724,54 @@ private struct VideoControlCapsule: View {
     }
 
     var body: some View {
-        GlassEffectContainer {
-            ZStack {
-                VideoControlCapsuleProgress(progress: displayedProgress)
-                HStack(spacing: 6) {
-                    Text(formatTime(positionTime))
-                        .font(.system(size: 12))
-                        .foregroundStyle(.white)
-                        .frame(minWidth: 36, alignment: .leading)
-
-                    Button(action: player.togglePlayback) {
-                        Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 25, height: 25)
-                    }
-                    .buttonStyle(.plain)
-
-                    DanmakuToggleButton(
-                        visible: danmakuVisible,
-                        onTap: onDanmakuToggle,
-                        onLongPress: onDanmakuLongPress
-                    )
-
-                    GeometryReader { proxy in
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .gesture(
-                                DragGesture(minimumDistance: 0)
-                                    .onChanged { value in
-                                        let fraction = min(1, max(0, value.location.x / max(proxy.size.width, 1)))
-                                        let target = fraction * max(player.duration, 0)
-                                        if dragProgress == nil {
-                                            player.beginScrub(at: target)
-                                        } else {
-                                            player.updateScrubPreview(target)
-                                        }
-                                        dragProgress = fraction
-                                    }
-                                    .onEnded { value in
-                                        let fraction = min(1, max(0, value.location.x / max(proxy.size.width, 1)))
-                                        let target = fraction * max(player.duration, 0)
-                                        player.endScrub(at: target)
-                                        dragProgress = nil
-                                    }
-                            )
-                    }
-
-                    Text(formatTime(max(0, player.duration - positionTime)))
-                        .font(.system(size: 12))
-                        .foregroundStyle(.white.opacity(0.82))
-                        .frame(minWidth: 36, alignment: .trailing)
-                }
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
+        ZStack {
+            GeometryReader { proxy in
+                Color.clear
+                    .contentShape(Capsule())
+                    .gesture(scrubGesture(totalWidth: proxy.size.width))
             }
-            .frame(height: 34)
-            .glassEffect(.regular.interactive(), in: .capsule)
+
+            VideoControlCapsuleProgress(progress: displayedProgress)
+                .allowsHitTesting(false)
+
+            HStack(spacing: 6) {
+                Text(formatTime(positionTime))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white)
+                    .frame(minWidth: 36, alignment: .leading)
+                    .allowsHitTesting(false)
+
+                Button(action: player.togglePlayback) {
+                    Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 25, height: 25)
+                }
+                .buttonStyle(.plain)
+
+                DanmakuToggleButton(
+                    visible: danmakuVisible,
+                    onTap: onDanmakuToggle,
+                    onRightClick: onDanmakuRightClick
+                )
+
+                Spacer(minLength: 0)
+                    .allowsHitTesting(false)
+
+                Text(formatTime(max(0, player.duration - positionTime)))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .frame(minWidth: 36, alignment: .trailing)
+                    .allowsHitTesting(false)
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+        }
+        .frame(height: 34)
+        .clipShape(Capsule())
+        .overlay {
+            Capsule()
+                .stroke(BiliTheme.videoControlBorder, lineWidth: 0.5)
         }
         .onChange(of: progress) { _, newValue in
             if player.isScrubbing || !player.isPlaying {
@@ -636,6 +785,29 @@ private struct VideoControlCapsule: View {
         .onAppear {
             displayedProgress = progress
         }
+    }
+
+    private func scrubGesture(totalWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                let fraction = scrubFraction(at: value.location.x, totalWidth: totalWidth)
+                let target = fraction * max(player.duration, 0)
+                if dragProgress == nil {
+                    player.beginScrub(at: target)
+                } else {
+                    player.updateScrubPreview(target)
+                }
+                dragProgress = fraction
+            }
+            .onEnded { value in
+                let fraction = scrubFraction(at: value.location.x, totalWidth: totalWidth)
+                player.endScrub(at: fraction * max(player.duration, 0))
+                dragProgress = nil
+            }
+    }
+
+    private func scrubFraction(at x: CGFloat, totalWidth: CGFloat) -> Double {
+        min(1, max(0, Double(x / max(totalWidth, 1))))
     }
 
     private func formatTime(_ seconds: Double) -> String {
@@ -675,9 +847,7 @@ private struct VideoControlCapsuleProgress: View {
 private struct DanmakuToggleButton: View {
     let visible: Bool
     let onTap: () -> Void
-    let onLongPress: () -> Void
-
-    @State private var suppressNextTap = false
+    let onRightClick: () -> Void
 
     var body: some View {
         Text("弹")
@@ -685,17 +855,39 @@ private struct DanmakuToggleButton: View {
             .foregroundStyle(.white.opacity(visible ? 1 : 0.42))
             .frame(minWidth: 28, minHeight: 28)
             .contentShape(Rectangle())
-            .onLongPressGesture(minimumDuration: 0.45) {
-                suppressNextTap = true
-                onLongPress()
+            .overlay {
+                DanmakuToggleClickView(onTap: onTap, onRightClick: onRightClick)
             }
-            .onTapGesture {
-                guard !suppressNextTap else {
-                    suppressNextTap = false
-                    return
-                }
-                onTap()
-            }
+    }
+}
+
+private struct DanmakuToggleClickView: NSViewRepresentable {
+    let onTap: () -> Void
+    let onRightClick: () -> Void
+
+    func makeNSView(context: Context) -> DanmakuToggleClickNSView {
+        let view = DanmakuToggleClickNSView()
+        view.onTap = onTap
+        view.onRightClick = onRightClick
+        return view
+    }
+
+    func updateNSView(_ nsView: DanmakuToggleClickNSView, context: Context) {
+        nsView.onTap = onTap
+        nsView.onRightClick = onRightClick
+    }
+}
+
+private final class DanmakuToggleClickNSView: NSView {
+    var onTap: (() -> Void)?
+    var onRightClick: (() -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        onTap?()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        onRightClick?()
     }
 }
 

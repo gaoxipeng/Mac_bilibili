@@ -3,7 +3,7 @@ import Foundation
 
 @MainActor
 final class AppModel: ObservableObject {
-    @Published var selectedSection: AppSection = .search
+    @Published var selectedSection: AppSection = .home
     @Published var homeVideos: [BiliVideo] = []
     @Published var followingVideos: [BiliVideo] = []
     @Published var followingHasMore = false

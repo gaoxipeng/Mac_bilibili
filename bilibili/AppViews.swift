@@ -5,6 +5,7 @@ private enum VideoCardLayout {
     static let gridSpacing: CGFloat = 22
     static let coverAspect: CGFloat = 16.0 / 9.0
     static let cornerRadius: CGFloat = 10
+    static let coverHoverScale: CGFloat = 1.05
 
     static let gridColumns = [
         GridItem(.adaptive(minimum: minWidth), spacing: gridSpacing, alignment: .top)
@@ -325,39 +326,39 @@ struct VideoCard: View {
 
     var body: some View {
         NavigationLink(value: video) {
-            VStack(alignment: .leading, spacing: 14) {
-                ZStack {
-                    RemoteCover(
-                        url: video.coverURL,
-                        aspectRatio: VideoCardLayout.coverAspect
-                    )
-                }
+            VStack(alignment: .leading, spacing: 0) {
+                RemoteCover(
+                    url: video.coverURL,
+                    aspectRatio: VideoCardLayout.coverAspect,
+                    appliesCornerClip: false
+                )
                 .frame(maxWidth: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: VideoCardLayout.cornerRadius, style: .continuous))
                 .overlay(alignment: .bottomTrailing) {
                     if video.duration > 0 {
                         Text(video.durationText)
-                            .font(.caption2.monospacedDigit().weight(.semibold))
-                            .padding(.horizontal, 7)
+                            .font(.caption.monospacedDigit().weight(.semibold))
+                            .padding(.horizontal, 8)
                             .padding(.vertical, 4)
                             .background(.black.opacity(0.64), in: Capsule())
                             .foregroundStyle(.white)
                             .padding(8)
                     }
                 }
-                .scaleEffect(isCoverHovered ? 1.05 : 1)
+                .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
                 .animation(.easeOut(duration: 0.22), value: isCoverHovered)
                 .onHover { hovering in
                     isCoverHovered = hovering
                 }
+                .zIndex(1)
 
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 12) {
                     Text(video.title)
-                        .font(largeTypography ? .title3.weight(.semibold) : .title3.weight(.medium))
+                        .font(largeTypography ? .title2.weight(.semibold) : .title2.weight(.medium))
                         .lineLimit(2)
                         .multilineTextAlignment(.leading)
 
-                    HStack(spacing: 8) {
+                    HStack(spacing: 10) {
                         AsyncImage(url: video.authorFaceURL) { phase in
                             switch phase {
                             case .success(let image):
@@ -367,32 +368,47 @@ struct VideoCard: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        .frame(width: largeTypography ? 26 : 24, height: largeTypography ? 26 : 24)
+                        .frame(width: largeTypography ? 30 : 28, height: largeTypography ? 30 : 28)
                         .clipShape(Circle())
 
                         Text(video.authorName.ifEmpty("未知 UP 主"))
-                            .font(largeTypography ? .subheadline : .callout)
+                            .font(.body)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
 
-                    HStack(spacing: 12) {
-                        BiliStatLabel(icon: .play, value: video.viewCount.compactCount)
-                        BiliStatLabel(icon: .danmaku, value: video.danmakuCount.compactCount)
+                    HStack(spacing: 14) {
+                        BiliStatLabel(
+                            icon: .play,
+                            value: video.viewCount.compactCount,
+                            iconSize: largeTypography ? 20 : 18,
+                            font: largeTypography ? .body : .subheadline
+                        )
+                        BiliStatLabel(
+                            icon: .danmaku,
+                            value: video.danmakuCount.compactCount,
+                            iconSize: largeTypography ? 20 : 18,
+                            font: largeTypography ? .body : .subheadline
+                        )
                         if video.likeCount > 0 {
-                            BiliStatLabel(icon: .like, value: video.likeCount.compactCount)
+                            BiliStatLabel(
+                                icon: .like,
+                                value: video.likeCount.compactCount,
+                                iconSize: largeTypography ? 20 : 18,
+                                font: largeTypography ? .body : .subheadline
+                            )
                         }
                     }
-                    .font(largeTypography ? .subheadline : .callout)
                     .foregroundStyle(.secondary)
                 }
+                .padding(.top, 14)
                 .padding([.horizontal, .bottom], 16)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(RoundedRectangle(cornerRadius: VideoCardLayout.cornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
-        .materialPanel()
+        .videoCardChrome()
     }
 }
 
@@ -679,6 +695,7 @@ struct RemoteCover: View {
     let aspectRatio: CGFloat
     var width: CGFloat?
     var height: CGFloat?
+    var appliesCornerClip = true
 
     var body: some View {
         Group {
@@ -697,7 +714,7 @@ struct RemoteCover: View {
             }
         }
         .background(Color.secondary.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .modifier(RemoteCoverCornerClip(enabled: appliesCornerClip))
     }
 
     @ViewBuilder
@@ -722,6 +739,32 @@ struct RemoteCover: View {
             Image(systemName: systemImage)
                 .font(.title2)
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct RemoteCoverCornerClip: ViewModifier {
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func videoCardChrome(cornerRadius: CGFloat = VideoCardLayout.cornerRadius) -> some View {
+        background {
+            ZStack {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(.ultraThinMaterial)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(.white.opacity(0.22), lineWidth: 0.6)
+            }
+            .shadow(color: .black.opacity(0.08), radius: 14, x: 0, y: 8)
         }
     }
 }

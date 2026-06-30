@@ -94,7 +94,6 @@ private struct DanmakuSettingRow<Slider: View>: View {
             slider()
                 .frame(maxWidth: .infinity)
         }
-        .frame(height: 38)
     }
 }
 
@@ -103,42 +102,21 @@ private struct DanmakuSteppedSlider: View {
     let selectedIndex: Int
     let onSelectedIndexChange: (Int) -> Void
 
-    @State private var dragFraction: CGFloat?
+    private var maxIndex: Int { max(0, stepCount - 1) }
 
     var body: some View {
-        GeometryReader { proxy in
-            let maxIndex = max(0, stepCount - 1)
-            let fraction = dragFraction ?? (maxIndex == 0 ? 0 : CGFloat(selectedIndex) / CGFloat(maxIndex))
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.black.opacity(0.15))
-                    .frame(height: 2.5)
-                Capsule()
-                    .fill(BiliTheme.pink)
-                    .frame(width: max(0, proxy.size.width * fraction), height: 2.5)
-                Circle()
-                    .fill(.white)
-                    .overlay(Circle().stroke(Color.black.opacity(0.2), lineWidth: 0.6))
-                    .frame(width: 12, height: 12)
-                    .offset(x: max(0, proxy.size.width * fraction - 6))
-            }
-            .frame(height: 28, alignment: .center)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        let fraction = min(1, max(0, value.location.x / max(proxy.size.width, 1)))
-                        dragFraction = fraction
-                        onSelectedIndexChange(Int((fraction * CGFloat(maxIndex)).rounded()))
-                    }
-                    .onEnded { value in
-                        let fraction = min(1, max(0, value.location.x / max(proxy.size.width, 1)))
-                        dragFraction = nil
-                        onSelectedIndexChange(Int((fraction * CGFloat(maxIndex)).rounded()))
-                    }
-            )
-        }
-        .frame(height: 28)
+        Slider(
+            value: Binding(
+                get: { Double(selectedIndex) },
+                set: { onSelectedIndexChange(Int($0.rounded())) }
+            ),
+            in: 0...Double(maxIndex),
+            step: 1,
+            label: { EmptyView() },
+            tick: { value in SliderTick(value) }
+        )
+        .labelsHidden()
+        .tint(BiliTheme.pink)
     }
 }
 
@@ -148,46 +126,18 @@ private struct DanmakuContinuousSlider: View {
     let step: Double
     let onValueChange: (Double) -> Void
 
-    @State private var dragFraction: CGFloat?
-
     var body: some View {
-        GeometryReader { proxy in
-            let span = range.upperBound - range.lowerBound
-            let fraction = dragFraction ?? CGFloat((value - range.lowerBound) / span)
-            ZStack(alignment: .leading) {
-                Capsule()
-                    .fill(Color.black.opacity(0.15))
-                    .frame(height: 2.5)
-                Capsule()
-                    .fill(BiliTheme.pink)
-                    .frame(width: max(0, proxy.size.width * fraction), height: 2.5)
-                Circle()
-                    .fill(.white)
-                    .overlay(Circle().stroke(Color.black.opacity(0.2), lineWidth: 0.6))
-                    .frame(width: 12, height: 12)
-                    .offset(x: max(0, proxy.size.width * fraction - 6))
-            }
-            .frame(height: 28, alignment: .center)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        let fraction = min(1, max(0, value.location.x / max(proxy.size.width, 1)))
-                        dragFraction = fraction
-                        let raw = range.lowerBound + Double(fraction) * span
-                        let stepped = (raw / step).rounded() * step
-                        onValueChange(stepped)
-                    }
-                    .onEnded { value in
-                        let fraction = min(1, max(0, value.location.x / max(proxy.size.width, 1)))
-                        dragFraction = nil
-                        let raw = range.lowerBound + Double(fraction) * span
-                        let stepped = (raw / step).rounded() * step
-                        onValueChange(stepped)
-                    }
-            )
-        }
-        .frame(height: 28)
+        Slider(
+            value: Binding(
+                get: { value },
+                set: { onValueChange($0) }
+            ),
+            in: range,
+            step: step,
+            label: { EmptyView() }
+        )
+        .labelsHidden()
+        .tint(BiliTheme.pink)
     }
 }
 

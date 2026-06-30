@@ -14,21 +14,37 @@ final class VideoPlaybackEngine: ObservableObject {
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var statusObservation: NSKeyValueObservation?
+    private var wheelScrubResumePlayback = false
+    private var isWheelScrubbing = false
+    private var wheelEndTask: Task<Void, Never>?
 
     @Published private(set) var isReady = false
+    @Published private(set) var videoAspectRatio: CGFloat = 16.0 / 9.0
+
+    private var presentationSizeObservation: NSKeyValueObservation?
 
     var avPlayer: AVPlayer? { player }
 
+    var displayAspectRatio: CGFloat {
+        guard videoAspectRatio.isFinite, videoAspectRatio > 0 else { return 16.0 / 9.0 }
+        return videoAspectRatio
+    }
+
     func load(stream: BiliPlayStream, cookieHeader: String) async throws {
         stop()
+        videoAspectRatio = 16.0 / 9.0
         let headers = BilibiliEndpoints.playbackHeaders(cookie: cookieHeader)
         let item = try await Self.makePlayerItem(stream: stream, headers: headers)
+        if let ratio = try? await Self.resolveAspectRatio(from: item.asset) {
+            videoAspectRatio = ratio
+        }
         let player = AVPlayer(playerItem: item)
         self.player = player
         isReady = true
         observeTime(player)
         observeEnd(player)
         observeStatus(item)
+        observePresentationSize(item)
         player.play()
         isPlaying = true
     }
@@ -72,7 +88,62 @@ final class VideoPlaybackEngine: ObservableObject {
         seek(to: seconds)
     }
 
+    func nudgePlayback(by seconds: Double) {
+        applyWheelScrub(delta: seconds)
+        scheduleWheelScrubEnd(after: .milliseconds(150))
+    }
+
+    func applyWheelScrub(delta seconds: Double) {
+        guard duration > 0 else { return }
+        wheelEndTask?.cancel()
+        wheelEndTask = nil
+
+        if !isWheelScrubbing {
+            isWheelScrubbing = true
+            wheelScrubResumePlayback = isPlaying
+            if !isScrubbing {
+                isScrubbing = true
+                scrubPreviewTime = currentTime
+                player?.pause()
+                isPlaying = false
+            } else if scrubPreviewTime == nil {
+                scrubPreviewTime = currentTime
+            }
+        }
+
+        let base = scrubPreviewTime ?? currentTime
+        scrubPreviewTime = min(duration, max(0, base + seconds))
+    }
+
+    func finishWheelScrub() {
+        wheelEndTask?.cancel()
+        wheelEndTask = nil
+        guard isWheelScrubbing else { return }
+        isWheelScrubbing = false
+        let target = scrubPreviewTime ?? currentTime
+        isScrubbing = false
+        scrubPreviewTime = nil
+        seek(to: target, resumeAfter: wheelScrubResumePlayback)
+    }
+
+    func scheduleWheelScrubEnd(after delay: Duration) {
+        wheelEndTask?.cancel()
+        wheelEndTask = Task { @MainActor in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            finishWheelScrub()
+        }
+    }
+
+    func cancelScheduledWheelScrubEnd() {
+        wheelEndTask?.cancel()
+        wheelEndTask = nil
+    }
+
     func stop() {
+        wheelEndTask?.cancel()
+        wheelEndTask = nil
+        isWheelScrubbing = false
         if let timeObserver, let player {
             player.removeTimeObserver(timeObserver)
         }
@@ -81,6 +152,8 @@ final class VideoPlaybackEngine: ObservableObject {
         }
         statusObservation?.invalidate()
         statusObservation = nil
+        presentationSizeObservation?.invalidate()
+        presentationSizeObservation = nil
         timeObserver = nil
         endObserver = nil
         player?.pause()
@@ -91,6 +164,7 @@ final class VideoPlaybackEngine: ObservableObject {
         duration = 0
         isScrubbing = false
         scrubPreviewTime = nil
+        videoAspectRatio = 16.0 / 9.0
     }
 
     private func observeTime(_ player: AVPlayer) {
@@ -123,11 +197,54 @@ final class VideoPlaybackEngine: ObservableObject {
     private func observeStatus(_ item: AVPlayerItem) {
         statusObservation = item.observe(\.status, options: [.new]) { item, _ in
             Task { @MainActor in
+                if item.status == .readyToPlay {
+                    self.updateVideoAspectRatio(from: item.presentationSize)
+                }
                 if item.status == .failed {
                     self.isPlaying = false
                 }
             }
         }
+    }
+
+    private func observePresentationSize(_ item: AVPlayerItem) {
+        presentationSizeObservation?.invalidate()
+        presentationSizeObservation = item.observe(\.presentationSize, options: [.new, .initial]) { [weak self] item, _ in
+            Task { @MainActor in
+                self?.updateVideoAspectRatio(from: item.presentationSize)
+            }
+        }
+        Task {
+            await loadAspectRatioFromTracks(item)
+        }
+    }
+
+    private func updateVideoAspectRatio(from size: CGSize) {
+        let width = abs(size.width)
+        let height = abs(size.height)
+        guard width > 0, height > 0 else { return }
+        videoAspectRatio = width / height
+    }
+
+    private func loadAspectRatioFromTracks(_ item: AVPlayerItem) async {
+        if let ratio = try? await Self.resolveAspectRatio(from: item.asset) {
+            videoAspectRatio = ratio
+        }
+    }
+
+    private static func resolveAspectRatio(from asset: AVAsset) async throws -> CGFloat {
+        guard let track = try await asset.loadTracks(withMediaType: .video).first else {
+            throw APIError.message("无视频轨道")
+        }
+        let naturalSize = try await track.load(.naturalSize)
+        let transform = try await track.load(.preferredTransform)
+        let transformed = naturalSize.applying(transform)
+        let width = abs(transformed.width)
+        let height = abs(transformed.height)
+        guard width > 0, height > 0 else {
+            throw APIError.message("无效视频尺寸")
+        }
+        return width / height
     }
 
     private static func makePlayerItem(stream: BiliPlayStream, headers: [String: String]) async throws -> AVPlayerItem {

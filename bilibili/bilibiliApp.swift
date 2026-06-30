@@ -12,6 +12,8 @@ struct bilibiliApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .tint(.pink)
         }
+        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
     }
 }

@@ -1,11 +1,12 @@
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = AppModel()
     @State private var sidebarSelection: AppSection? = .home
     @State private var navigationPath = NavigationPath()
     @State private var detailChrome: VideoDetailChromeInfo?
-    @State private var detailChromeLayout: VideoDetailChromeLayout?
+    @State private var detailChromeHeight: CGFloat = 0
 
     var body: some View {
         HStack(spacing: 0) {
@@ -18,6 +19,7 @@ struct ContentView: View {
         .task {
             await model.loadInitialData()
         }
+        .environmentObject(model)
         .onChange(of: sidebarSelection) { _, newValue in
             guard let newValue else {
                 sidebarSelection = model.selectedSection
@@ -30,6 +32,9 @@ struct ContentView: View {
             guard oldValue != newValue else { return }
             sidebarSelection = newValue
             navigationPath = NavigationPath()
+            if newValue != .search {
+                model.isSearchShowingResults = false
+            }
             Task { await model.reloadSelectedIfNeeded() }
         }
         .frame(minWidth: 1040, minHeight: 680)
@@ -62,22 +67,37 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onPreferenceChange(VideoDetailChromePreferenceKey.self) { detailChrome = $0 }
-            .onPreferenceChange(VideoDetailChromeLayoutKey.self) { detailChromeLayout = $0 }
+            .onPreferenceChange(VideoDetailChromeMeasuredHeightKey.self) { detailChromeHeight = $0 }
+            .environment(\.videoDetailChromeHeight, detailChromeHeight)
 
             DetailFloatingChrome(
                 model: model,
                 navigationPath: $navigationPath,
                 canGoBack: !navigationPath.isEmpty,
+                canExitSearchResults: model.isSearchShowingResults
+                    && navigationPath.isEmpty
+                    && model.selectedSection == .search,
                 detailChrome: detailChrome,
-                detailChromeLayout: detailChromeLayout
+                onExitSearchResults: {
+                    model.requestExitSearchResults()
+                }
             )
         }
         .onChange(of: navigationPath.count) { _, count in
             if count == 0 {
                 detailChrome = nil
-                detailChromeLayout = nil
+                detailChromeHeight = 0
                 VideoFullscreenPresenter.restoreMainWindowAppearance()
+                MediaPlaybackCoordinator.shared.stopAll()
                 Task { await model.refreshSectionAfterReturningFromDetail() }
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            switch phase {
+            case .active:
+                MediaPlaybackCoordinator.shared.handleSceneBecameActive()
+            default:
+                MediaPlaybackCoordinator.shared.suspendAll()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -170,47 +190,41 @@ private struct DetailFloatingChrome: View {
     @ObservedObject var model: AppModel
     @Binding var navigationPath: NavigationPath
     let canGoBack: Bool
+    let canExitSearchResults: Bool
     let detailChrome: VideoDetailChromeInfo?
-    let detailChromeLayout: VideoDetailChromeLayout?
+    let onExitSearchResults: () -> Void
 
-    private var chromeTitleMaxWidth: CGFloat {
-        if let detailChromeLayout {
-            return AppLayout.videoDetailChromeTitleMaxWidth(
-                playerLayoutWidth: detailChromeLayout.playerLayoutWidth,
-                contentWidth: detailChromeLayout.contentWidth,
-                isPortrait: detailChromeLayout.isPortrait
-            )
-        }
-        return 360
+    private var showsBackButton: Bool {
+        canGoBack || canExitSearchResults
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            if canGoBack {
+            if showsBackButton {
                 GlassBackButton {
-                    if !navigationPath.isEmpty {
-                        navigationPath.removeLast()
+                    if canGoBack {
+                        if !navigationPath.isEmpty {
+                            navigationPath.removeLast()
+                        }
+                    } else {
+                        onExitSearchResults()
                     }
                 }
             }
 
             if let detailChrome {
-                VideoDetailChromeHeaderView(
-                    info: detailChrome,
-                    maxTitleWidth: chromeTitleMaxWidth
-                )
-
-                Spacer(minLength: 0)
+                VideoDetailChromeHeaderView(info: detailChrome)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 if let webURL = detailChrome.webURL {
                     GlassMoreButton(webURL: webURL)
                 }
             } else {
-                if !canGoBack {
+                if !showsBackButton {
                     Spacer()
                 }
 
-                if !canGoBack {
+                if !showsBackButton {
                     GlassRefreshButton {
                         Task { await model.reloadSelected() }
                     }
@@ -222,6 +236,15 @@ private struct DetailFloatingChrome: View {
         .padding(.horizontal, AppLayout.floatingChromeInset)
         .padding(.top, AppLayout.floatingChromeInset)
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: VideoDetailChromeMeasuredHeightKey.self,
+                    value: detailChrome == nil ? 0 : geometry.size.height
+                )
+            }
+        }
+        .animation(.easeOut(duration: 0.26), value: showsBackButton)
         .animation(.easeOut(duration: 0.26), value: canGoBack)
         .animation(.easeOut(duration: 0.26), value: detailChrome?.title)
     }

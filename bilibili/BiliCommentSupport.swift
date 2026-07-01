@@ -144,11 +144,7 @@ struct BiliCommentText: View {
         } else {
             FlowLayout(spacing: 0) {
                 ForEach(Array(layoutUnits.enumerated()), id: \.offset) { _, unit in
-                    HStack(spacing: 0) {
-                        ForEach(Array(unit.enumerated()), id: \.offset) { _, segment in
-                            segmentView(segment)
-                        }
-                    }
+                    layoutUnitView(unit)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -156,13 +152,39 @@ struct BiliCommentText: View {
     }
 
     @ViewBuilder
-    private func segmentView(_ segment: BiliCommentSegment) -> some View {
+    private func layoutUnitView(_ unit: [BiliCommentSegment]) -> some View {
+        if unit.count == 1 {
+            segmentView(unit[0], allowsWrapping: true)
+        } else if case .text = unit.last {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    ForEach(Array(unit.dropLast().enumerated()), id: \.offset) { _, segment in
+                        segmentView(segment, allowsWrapping: false)
+                    }
+                }
+                segmentView(unit[unit.count - 1], allowsWrapping: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                ForEach(Array(unit.enumerated()), id: \.offset) { _, segment in
+                    segmentView(segment, allowsWrapping: false)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    @ViewBuilder
+    private func segmentView(_ segment: BiliCommentSegment, allowsWrapping: Bool) -> some View {
         switch segment {
         case .text(let value):
             Text(value)
                 .font(font)
+                .lineSpacing(allowsWrapping ? 3 : 0)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: allowsWrapping ? .infinity : nil, alignment: .leading)
                 .textSelection(.enabled)
         case .emote(let url, _):
             AsyncImage(url: url) { phase in

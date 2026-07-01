@@ -468,7 +468,7 @@ struct VideoCard: View {
     }
 
     private var authorFont: Font {
-        largeTypography ? .body : .subheadline
+        largeTypography ? .title3.weight(.regular) : .body
     }
 
     private var statsFont: Font {
@@ -1119,22 +1119,34 @@ struct FlowLayout: Layout {
     }
 
     private func arrange(proposal: ProposedViewSize, subviews: Subviews) -> (items: [(index: Int, frame: CGRect)], size: CGSize) {
-        let maxWidth = proposal.width ?? 600
+        let maxWidth = max(proposal.width ?? 600, 1)
         var items: [(Int, CGRect)] = []
         var x: CGFloat = 0
         var y: CGFloat = 0
         var rowHeight: CGFloat = 0
 
         for index in subviews.indices {
-            let size = subviews[index].sizeThatFits(.unspecified)
-            if x > 0, x + size.width > maxWidth {
+            var lineWidth = max(maxWidth - x, 1)
+            var size = subviews[index].sizeThatFits(ProposedViewSize(width: lineWidth, height: nil))
+
+            if x > 0, size.width > lineWidth + 0.5 {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+                lineWidth = maxWidth
+                size = subviews[index].sizeThatFits(ProposedViewSize(width: lineWidth, height: nil))
+            }
+
+            let placedWidth = min(size.width, lineWidth)
+            items.append((index, CGRect(x: x, y: y, width: placedWidth, height: size.height)))
+            x += placedWidth + spacing
+            rowHeight = max(rowHeight, size.height)
+
+            if x >= maxWidth {
                 x = 0
                 y += rowHeight + spacing
                 rowHeight = 0
             }
-            items.append((index, CGRect(origin: CGPoint(x: x, y: y), size: size)))
-            x += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
         }
 
         return (items, CGSize(width: maxWidth, height: y + rowHeight))

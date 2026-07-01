@@ -30,9 +30,14 @@ final class VideoDetailModel: ObservableObject {
     private var danmakuCache: [Int64: [BiliDanmakuItem]] = [:]
     private let watchHistoryReporter = WatchHistoryReporter()
     private var watchHistoryTask: Task<Void, Never>?
+    private var watchHistoryContext: (aid: Int64, cid: Int64)?
     private let initialProgressSeconds: Int
     private var hasAppliedInitialProgress = false
     private var playerChangeSink: AnyCancellable?
+    private var lifecycleGeneration = 0
+    private var isTornDown = false
+    private var isPlaybackSuspended = false
+    private var wasPlayingBeforeSuspend = false
 
     @Published var danmakuItems: [BiliDanmakuItem] = []
     @Published var danmakuVisible = DanmakuPlayerPreferences.isDanmakuVisible()
@@ -42,6 +47,7 @@ final class VideoDetailModel: ObservableObject {
     @Published var videoRelation = BiliVideoRelation()
     @Published var authorSign = ""
     @Published var onlineCount: Int64 = 0
+    @Published var videoTags: [String] = []
     @Published var videoActionLoading = false
     @Published var actionMessage: String?
     @Published var needsLoginPrompt = false
@@ -61,26 +67,34 @@ final class VideoDetailModel: ObservableObject {
     }
 
     func load() async {
+        let generation = lifecycleGeneration
         isLoadingDetail = true
         detailError = nil
         authorSign = ""
         onlineCount = 0
+        videoTags = []
         defer { isLoadingDetail = false }
 
         do {
             let loaded = try await api.videoDetail(bvid: seedVideo.bvid, credential: credential)
+            guard isLifecycleActive(generation), !Task.isCancelled else { return }
             detail = loaded
             if activeCID <= 0 {
                 activeCID = loaded.video.cid
             }
             async let authorSignTask = loadAuthorSign()
             async let onlineCountTask = loadOnlineCount()
+            async let videoTagsTask = loadVideoTags()
             await loadVideoRelation()
+            guard isLifecycleActive(generation), !Task.isCancelled else { return }
             await loadPlayback()
+            guard isLifecycleActive(generation), !Task.isCancelled else { return }
             await scheduleInitialCommentsLoad()
             await authorSignTask
             await onlineCountTask
+            await videoTagsTask
         } catch {
+            guard isLifecycleActive(generation) else { return }
             detailError = error.localizedDescription
         }
     }
@@ -107,6 +121,15 @@ final class VideoDetailModel: ObservableObject {
             cid: cid,
             credential: credential
         )
+    }
+
+    private func loadVideoTags() async {
+        let aid = displayVideo.aid
+        guard aid > 0 else {
+            videoTags = []
+            return
+        }
+        videoTags = (try? await api.videoTags(aid: aid, credential: credential)) ?? []
     }
 
     func loadVideoRelation() async {
@@ -358,12 +381,15 @@ final class VideoDetailModel: ObservableObject {
 
     func selectPart(_ part: BiliVideoPage) async {
         guard part.cid != activeCID else { return }
+        let generation = lifecycleGeneration
         activeCID = part.cid
         await loadPlayback()
+        guard isLifecycleActive(generation) else { return }
         await loadOnlineCount()
     }
 
     func loadPlayback() async {
+        let generation = lifecycleGeneration
         stopWatchHistoryReporting()
 
         let bvid = displayVideo.bvid
@@ -379,6 +405,8 @@ final class VideoDetailModel: ObservableObject {
 
         do {
             var stream = try await api.playURL(bvid: bvid, cid: cid, credential: credential)
+            guard isLifecycleActive(generation), !Task.isCancelled else { return }
+
             stream = BiliPlayStream(
                 videoURL: stream.videoURL,
                 audioURL: stream.audioURL,
@@ -386,11 +414,19 @@ final class VideoDetailModel: ObservableObject {
                 cid: cid
             )
             let cookieHeader = await api.httpCookieHeader(credential: credential)
+            guard isLifecycleActive(generation), !Task.isCancelled else { return }
+
             try await player.load(stream: stream, cookieHeader: cookieHeader)
+            guard isLifecycleActive(generation) else {
+                player.stop()
+                return
+            }
+
             applyInitialProgressIfNeeded()
             startWatchHistoryReporting(aid: displayVideo.aid, cid: cid)
             await loadDanmaku(cid: cid)
         } catch {
+            guard isLifecycleActive(generation), !Task.isCancelled else { return }
             playError = error.localizedDescription
         }
     }
@@ -410,6 +446,7 @@ final class VideoDetailModel: ObservableObject {
     private func startWatchHistoryReporting(aid: Int64, cid: Int64) {
         guard let credential, aid > 0, cid > 0 else { return }
 
+        watchHistoryContext = (aid, cid)
         watchHistoryTask = Task { @MainActor [weak self] in
             guard let self else { return }
 
@@ -456,6 +493,67 @@ final class VideoDetailModel: ObservableObject {
     private func stopWatchHistoryReporting() {
         watchHistoryTask?.cancel()
         watchHistoryTask = nil
+    }
+
+    private func restartWatchHistoryReportingIfNeeded() {
+        guard let context = watchHistoryContext else { return }
+        startWatchHistoryReporting(aid: context.aid, cid: context.cid)
+    }
+
+    func suspendPlayback() {
+        guard !isTornDown, !isPlaybackSuspended else { return }
+        isPlaybackSuspended = true
+        wasPlayingBeforeSuspend = player.isPlaying
+        player.pausePlayback()
+        stopWatchHistoryReporting()
+    }
+
+    func resumePlaybackIfNeeded() {
+        guard !isTornDown, isPlaybackSuspended else { return }
+        isPlaybackSuspended = false
+
+        if player.isReady {
+            if wasPlayingBeforeSuspend {
+                player.resumePlayback()
+            }
+            restartWatchHistoryReportingIfNeeded()
+        } else if playError == nil, !isLoadingPlayback {
+            Task { await loadPlayback() }
+        }
+    }
+
+    func teardown() {
+        guard !isTornDown else { return }
+        isTornDown = true
+        isPlaybackSuspended = false
+        lifecycleGeneration += 1
+        cleanup()
+    }
+
+    func reactivateIfNeeded() {
+        guard isTornDown else { return }
+        isTornDown = false
+        isPlaybackSuspended = false
+        wasPlayingBeforeSuspend = false
+        Task { await loadPlayback() }
+    }
+
+    private func isLifecycleActive(_ generation: Int) -> Bool {
+        !isTornDown && generation == lifecycleGeneration
+    }
+
+    func cleanup() {
+        stopWatchHistoryReporting()
+        watchHistoryContext = nil
+        player.stop()
+        danmakuItems = []
+        danmakuCache.removeAll()
+        comments = []
+        loadedCommentsKey = nil
+        commentsLoadInFlight = false
+        authorSign = ""
+        onlineCount = 0
+        videoTags = []
     }
 
     func loadDanmaku(cid: Int64) async {
@@ -612,18 +710,6 @@ final class VideoDetailModel: ObservableObject {
             commentsError = error.localizedDescription
         }
     }
-
-    func cleanup() {
-        stopWatchHistoryReporting()
-        player.stop()
-        danmakuItems = []
-        danmakuCache.removeAll()
-        comments = []
-        loadedCommentsKey = nil
-        commentsLoadInFlight = false
-        authorSign = ""
-        onlineCount = 0
-    }
 }
 
 struct VideoDetailChromeInfo: Equatable {
@@ -645,25 +731,8 @@ struct VideoDetailChromePreferenceKey: PreferenceKey {
     }
 }
 
-struct VideoDetailChromeLayout: Equatable {
-    let playerLayoutWidth: CGFloat
-    let contentWidth: CGFloat
-    let isPortrait: Bool
-}
-
-struct VideoDetailChromeLayoutKey: PreferenceKey {
-    static var defaultValue: VideoDetailChromeLayout?
-
-    static func reduce(value: inout VideoDetailChromeLayout?, nextValue: () -> VideoDetailChromeLayout?) {
-        if let next = nextValue() {
-            value = next
-        }
-    }
-}
-
 struct VideoDetailChromeHeaderView: View {
     let info: VideoDetailChromeInfo
-    var maxTitleWidth: CGFloat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -672,10 +741,7 @@ struct VideoDetailChromeHeaderView: View {
                 .foregroundStyle(.primary)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(
-                    maxWidth: maxTitleWidth,
-                    alignment: .leading
-                )
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 16) {
                 BiliStatLabel(icon: .play, value: info.viewCount.compactCount, iconSize: 20)
@@ -692,15 +758,13 @@ struct VideoDetailChromeHeaderView: View {
                 }
             }
         }
-        .frame(
-            maxWidth: maxTitleWidth,
-            alignment: .leading
-        )
-        .layoutPriority(-1)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
 struct VideoDetailView: View {
+    @Environment(\.videoDetailChromeHeight) private var chromeHeight
+    @EnvironmentObject private var appModel: AppModel
     @StateObject private var model: VideoDetailModel
 
     init(video: BiliVideo, credential: BilibiliCredential?, initialProgressSeconds: Int = 0) {
@@ -717,60 +781,48 @@ struct VideoDetailView: View {
     @State private var playerScreenFrame: NSRect = .zero
     @State private var showLogin = false
     @StateObject private var webSession = BilibiliWebSession()
-    @State private var coinMenuPresented = false
-    @State private var coinIconFrame: CGRect = .zero
-    @State private var coinMenuHeight: CGFloat = 0
+    @State private var introTab: VideoIntroTab = .overview
 
     var body: some View {
         GeometryReader { geometry in
-            let isPortraitVideo = model.player.displayAspectRatio < 1
-            let chromeTopInset = isPortraitVideo
-                ? AppLayout.videoDetailPortraitChromeReservedHeight
-                : AppLayout.videoDetailChromeReservedHeight
+            let columnWidths = AppLayout.videoDetailColumnWidths(in: geometry.size.width)
+            let sidebarWidth = columnWidths.sidebar
+            let playerWidth = columnWidths.player
+            let playerTopInset = AppLayout.videoDetailPlayerTopInset(chromeHeight: chromeHeight)
 
-            HStack(alignment: .top, spacing: 28) {
-                playerSection(
-                    maxWidth: playerWidth(in: geometry.size.width),
-                    maxHeight: playerMaxHeight(in: geometry, chromeTopInset: chromeTopInset)
+            HStack(alignment: .top, spacing: AppLayout.videoDetailSectionSpacing) {
+                leftColumn(
+                    playerWidth: playerWidth,
+                    playerTopInset: playerTopInset,
+                    geometry: geometry
                 )
-                .padding(.top, chromeTopInset)
-                .opacity(fullscreenPresenter.isPresented ? 0 : 1)
-                .allowsHitTesting(!fullscreenPresenter.isPresented)
+                .frame(width: playerWidth, alignment: .leading)
+                .clipped()
 
-                rightColumn
-                    .padding(
-                        .top,
-                        isPortraitVideo
-                            ? chromeTopInset
-                            : AppLayout.videoDetailRightColumnTopInset
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                rightSidebar(
+                    playerTopInset: playerTopInset,
+                    sidebarWidth: sidebarWidth
+                )
             }
-            .padding(.horizontal, AppLayout.pageHorizontalInset)
+            .frame(width: geometry.size.width, alignment: .topLeading)
+            .padding(.leading, AppLayout.videoDetailLeadingInset)
+            .padding(.trailing, AppLayout.videoDetailTrailingInset)
             .padding(.bottom, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .background {
-                Color.clear
-                    .preference(
-                        key: VideoDetailChromeLayoutKey.self,
-                        value: VideoDetailChromeLayout(
-                            playerLayoutWidth: playerLayoutWidth(in: geometry),
-                            contentWidth: geometry.size.width,
-                            isPortrait: isPortraitVideo
-                        )
-                    )
-            }
         }
-        .background(Color.white)
+        .background(AppLayout.videoDetailPageBackground)
         .navigationBarBackButtonHidden(true)
         .background {
             Color.clear
                 .preference(key: VideoDetailChromePreferenceKey.self, value: detailChromeInfo)
         }
         .task { await model.load() }
+        .onAppear {
+            MediaPlaybackCoordinator.shared.notifyDetailVisible(model)
+        }
         .onDisappear {
             fullscreenPresenter.dismissImmediately()
-            model.cleanup()
+            MediaPlaybackCoordinator.shared.notifyDetailHidden(model)
             VideoFullscreenPresenter.restoreMainWindowAppearance()
         }
         .onChange(of: model.needsLoginPrompt) { _, needsLogin in
@@ -802,150 +854,135 @@ struct VideoDetailView: View {
         }
     }
 
-    private func playerMaxHeight(in geometry: GeometryProxy, chromeTopInset: CGFloat) -> CGFloat {
-        let verticalInsets = chromeTopInset + 24
-        return max(240, geometry.size.height - verticalInsets)
+    private func playerMaxHeight(
+        in geometry: GeometryProxy,
+        playerTopInset: CGFloat
+    ) -> CGFloat {
+        let reservedBelowPlayer: CGFloat = 150
+        let verticalInsets = playerTopInset + reservedBelowPlayer + 24
+        return max(280, geometry.size.height - verticalInsets)
     }
 
-    private func playerColumnWidth(in totalWidth: CGFloat) -> CGFloat {
-        let horizontalPadding = AppLayout.pageHorizontalInset * 2
-        let columnSpacing: CGFloat = 28
-        let minRightColumn: CGFloat = 300
-        let available = max(totalWidth - horizontalPadding - columnSpacing, 0)
-        let maxPlayerWidth = max(available - minRightColumn, 280)
-        let preferred = available * 0.66
-        return min(max(preferred, 400), maxPlayerWidth)
-    }
-
-    private func playerLayoutWidth(in geometry: GeometryProxy) -> CGFloat {
-        let columnWidth = playerColumnWidth(in: geometry.size.width)
-        return VideoPlayerChrome.fittedSize(
-            maxWidth: columnWidth,
-            maxHeight: playerMaxHeight(
-                in: geometry,
-                chromeTopInset: model.player.displayAspectRatio < 1
-                    ? AppLayout.videoDetailPortraitChromeReservedHeight
-                    : AppLayout.videoDetailChromeReservedHeight
-            ),
+    @ViewBuilder
+    private func leftColumn(
+        playerWidth: CGFloat,
+        playerTopInset: CGFloat,
+        geometry: GeometryProxy
+    ) -> some View {
+        let maxHeight = playerMaxHeight(in: geometry, playerTopInset: playerTopInset)
+        let fittedPlayerSize = VideoPlayerChrome.fittedSize(
+            maxWidth: playerWidth,
+            maxHeight: maxHeight,
             aspectRatio: model.player.displayAspectRatio
-        ).width
-    }
+        )
 
-    private func playerWidth(in totalWidth: CGFloat) -> CGFloat {
-        playerColumnWidth(in: totalWidth)
-    }
-
-    private var rightColumn: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            introSection
-
-            Divider()
-                .padding(.vertical, 8)
-
-            commentsHeader
-
-            ScrollView {
-                VideoCommentsPanel(model: model)
-            }
-            .padding(.trailing, -AppLayout.pageHorizontalInset)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        }
-        .coordinateSpace(name: "detailPane")
-        .overlay {
-            if coinMenuPresented {
-                Color.clear
-                    .contentShape(Rectangle())
-                    .onTapGesture { coinMenuPresented = false }
-
-                VideoCoinChoiceMenu(
-                    canCoinTwo: model.videoRelation.coinCount == 0,
-                    onCoinOne: {
-                        coinMenuPresented = false
-                        Task { await model.coin(multiply: 1) }
-                    },
-                    onCoinTwo: {
-                        coinMenuPresented = false
-                        Task { await model.coin(multiply: 2) }
-                    }
-                )
-                .background {
-                    GeometryReader { geo in
-                        Color.clear
-                            .onAppear { coinMenuHeight = geo.size.height }
-                            .onChange(of: geo.size.height) { _, height in
-                                coinMenuHeight = height
-                            }
-                    }
-                }
-                .fixedSize()
-                .position(
-                    x: coinIconFrame.midX,
-                    y: coinIconFrame.maxY + max(coinMenuHeight, 48) / 2 + 6
-                )
-            }
-        }
-        .onPreferenceChange(CoinIconFrameKey.self) { frame in
-            coinIconFrame = frame
-        }
-    }
-
-    private var introSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let error = model.detailError {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.orange)
-            }
-
-            authorRow
-            descriptionBlock
-            VideoDetailActionBar(
-                likeCount: model.displayVideo.likeCount,
-                coinCount: model.detail?.coinCount ?? 0,
-                favoriteCount: model.detail?.favoriteCount ?? 0,
-                shareCount: model.detail?.shareCount ?? 0,
-                liked: model.videoRelation.liked,
-                coined: model.videoRelation.coinCount > 0,
-                favorited: model.videoRelation.favorited,
-                canCoinTwo: model.videoRelation.coinCount == 0,
-                canCoinMore: model.videoRelation.coinCount < 2,
-                coinMenuPresented: $coinMenuPresented,
-                onCoinTap: { model.prepareCoin() },
-                onLikeClick: {
-                    Task { await model.toggleLike() }
-                },
-                onTripleClick: {
-                    Task { await model.tripleLike() }
-                },
-                onCoinBlocked: {
-                    model.actionMessage = "已经投过币了"
-                },
-                onFavoriteClick: {
-                    Task { await model.toggleFavorite() }
-                },
-                onShareClick: { context in
-                    Task { await model.share(from: context) }
-                }
+        VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
+            playerSection(
+                maxWidth: playerWidth,
+                maxHeight: maxHeight
             )
+            .frame(maxWidth: playerWidth, alignment: .leading)
+            .opacity(fullscreenPresenter.isPresented ? 0 : 1)
+            .allowsHitTesting(!fullscreenPresenter.isPresented)
 
-            if let pages = model.detail?.pages, !pages.isEmpty {
-                partsSection(pages)
-            }
+            VideoIntroCard(
+                model: model,
+                selectedTab: $introTab,
+                onTagTap: { appModel.openSearch(for: $0) }
+            )
+                .frame(width: min(fittedPlayerSize.width, playerWidth))
+        }
+        .padding(.top, playerTopInset)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func rightSidebar(playerTopInset: CGFloat, sidebarWidth: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
+            authorCard
+            actionCard(sidebarWidth: sidebarWidth)
+            commentsCard
+        }
+        .frame(width: sidebarWidth, alignment: .leading)
+        .clipped()
+        .padding(.top, playerTopInset)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var authorCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            authorRow
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.trailing, AppLayout.videoDetailRightColumnTrailingInset)
+        .videoDetailCard()
+    }
+
+    private func actionCard(sidebarWidth: CGFloat) -> some View {
+        VideoDetailActionBar(
+            likeCount: model.displayVideo.likeCount,
+            coinCount: model.detail?.coinCount ?? 0,
+            favoriteCount: model.detail?.favoriteCount ?? 0,
+            shareCount: model.detail?.shareCount ?? 0,
+            liked: model.videoRelation.liked,
+            coined: model.videoRelation.coinCount > 0,
+            favorited: model.videoRelation.favorited,
+            canCoinTwo: model.videoRelation.coinCount == 0,
+            canCoinMore: model.videoRelation.coinCount < 2,
+            availableWidth: sidebarWidth,
+            onCoinTap: { model.prepareCoin() },
+            onLikeClick: {
+                Task { await model.toggleLike() }
+            },
+            onTripleClick: {
+                Task { await model.tripleLike() }
+            },
+            onCoinBlocked: {
+                model.actionMessage = "已经投过币了"
+            },
+            onCoinOne: {
+                Task { await model.coin(multiply: 1) }
+            },
+            onCoinTwo: {
+                Task { await model.coin(multiply: 2) }
+            },
+            onFavoriteClick: {
+                Task { await model.toggleFavorite() }
+            },
+            onShareClick: { context in
+                Task { await model.share(from: context) }
+            }
+        )
+        .frame(maxWidth: .infinity)
+        .videoDetailCard()
+        .clipped()
+    }
+
+    private var commentsCard: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            commentsHeader
+                .padding(.horizontal, AppLayout.videoDetailCardPadding)
+                .padding(.top, AppLayout.videoDetailCardPadding)
+                .padding(.bottom, 12)
+
+            MacOverlayScrollView(usesOverlayScrollers: false) {
+                VideoCommentsPanel(model: model)
+                    .padding(.horizontal, AppLayout.videoDetailCardPadding)
+                    .padding(.bottom, AppLayout.videoDetailCardPadding)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .videoDetailCard(padding: 0)
     }
 
     private var commentsHeader: some View {
         HStack {
             Text("评论 \(commentCountLabel)")
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
             Spacer()
             BiliCommentSortToggle(sort: model.commentSort) {
                 Task { await model.toggleCommentSort() }
             }
         }
-        .padding(.bottom, 10)
-        .padding(.trailing, AppLayout.videoDetailRightColumnTrailingInset)
     }
 
     private func playerSection(maxWidth: CGFloat, maxHeight: CGFloat) -> some View {
@@ -961,7 +998,6 @@ struct VideoDetailView: View {
                 playerScreenFrame = frame
             }
         }
-        .frame(maxHeight: .infinity, alignment: .center)
     }
 
     private func enterFullscreen() {
@@ -996,7 +1032,7 @@ struct VideoDetailView: View {
     }
 
     private var authorRowContent: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
             AsyncImage(url: model.displayVideo.authorFaceURL) { phase in
                 switch phase {
                 case .success(let image):
@@ -1009,16 +1045,22 @@ struct VideoDetailView: View {
             .frame(width: 48, height: 48)
             .clipShape(Circle())
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(model.displayVideo.authorName.ifEmpty("未知 UP 主"))
                     .font(.system(size: 18, weight: .semibold))
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
                 Text(authorSignSubtitle)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .truncationMode(.tail)
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var authorSignSubtitle: String {
@@ -1037,53 +1079,253 @@ struct VideoDetailView: View {
         )
     }
 
-    private var descriptionBlock: some View {
-        let text = model.displayVideo.description.trimmingCharacters(in: .whitespacesAndNewlines)
-        let displayText = text.isEmpty ? "这个视频还没有写简介" : text
-        return Text(displayText)
-            .font(.system(size: 16))
-            .foregroundStyle(text.isEmpty ? .secondary : .primary)
-            .lineSpacing(4)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .textSelection(.enabled)
+    private var commentCountLabel: String {
+        let count = model.detail?.replyCount ?? 0
+        return count > 0 ? count.compactCount : ""
+    }
+}
+
+private enum VideoIntroTab: String, Identifiable {
+    case overview
+    case parts
+
+    var id: String { rawValue }
+}
+
+private struct VideoIntroCard: View {
+    @ObservedObject var model: VideoDetailModel
+    @Binding var selectedTab: VideoIntroTab
+    let onTagTap: (String) -> Void
+
+    private var hasMultipleParts: Bool {
+        (model.detail?.pages.count ?? 0) > 1
     }
 
-    private func partsSection(_ pages: [BiliVideoPage]) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("分 P 列表")
-                .font(.system(size: 17, weight: .semibold))
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let error = model.detailError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.orange)
+            }
+
+            if hasMultipleParts {
+                partsTabBar
+            }
+
+            Group {
+                switch selectedTab {
+                case .overview:
+                    overviewContent
+                case .parts:
+                    if let pages = model.detail?.pages {
+                        partsContent(pages)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .videoDetailCard()
+        .onAppear {
+            if !hasMultipleParts {
+                selectedTab = .overview
+            }
+        }
+        .onChange(of: hasMultipleParts) { _, hasParts in
+            if !hasParts {
+                selectedTab = .overview
+            }
+        }
+    }
+
+    private var partsTabBar: some View {
+        HStack(spacing: 8) {
+            if selectedTab == .parts {
+                Button {
+                    selectedTab = .overview
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 11, weight: .semibold))
+                        Text("返回")
+                            .font(.system(size: 14, weight: .medium))
+                    }
+                    .foregroundStyle(Color(red: 0.45, green: 0.45, blue: 0.48))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Color.black.opacity(0.04), in: Capsule(style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer(minLength: 0)
+
+            if selectedTab != .parts {
+                Button {
+                    selectedTab = .parts
+                } label: {
+                    Text("分P")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(Color(red: 0.45, green: 0.45, blue: 0.48))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(Color.black.opacity(0.04), in: Capsule(style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var overviewContent: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(descriptionText)
+                .font(.system(size: 14))
+                .foregroundStyle(hasDescription ? .primary : .secondary)
+                .lineSpacing(5)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+
+            if !model.videoTags.isEmpty {
+                VideoTagChipFlow(tags: model.videoTags, onTagTap: onTagTap)
+            }
+        }
+    }
+
+    private var hasDescription: Bool {
+        !model.displayVideo.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var descriptionText: String {
+        let text = model.displayVideo.description.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? "这个视频还没有写简介" : text
+    }
+
+    private func partsContent(_ pages: [BiliVideoPage]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(pages) { part in
                 Button {
                     Task { await model.selectPart(part) }
                 } label: {
                     HStack {
                         Text("P\(part.page) \(part.title.ifEmpty("未命名分P"))")
-                            .font(.system(size: 15))
+                            .font(.system(size: 14))
                             .lineLimit(1)
                         Spacer()
                         if part.cid == model.activeCID {
                             Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(BiliTheme.blue)
+                                .foregroundStyle(BiliTheme.pink)
                         } else if part.duration > 0 {
                             Text(part.duration.durationText)
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, 12)
                     .padding(.vertical, 10)
+                    .background(
+                        part.cid == model.activeCID
+                            ? BiliTheme.pink.opacity(0.08)
+                            : Color.black.opacity(0.03),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
                 }
                 .buttonStyle(.plain)
-                .background(part.cid == model.activeCID ? BiliTheme.blue.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
-                .materialPanel()
+            }
+        }
+    }
+}
+
+private struct VideoTagChipFlow: View {
+    let tags: [String]
+    let onTagTap: (String) -> Void
+
+    var body: some View {
+        VideoDetailTagFlowLayout(spacing: 8) {
+            ForEach(tags, id: \.self) { tag in
+                VideoTagChip(title: tag) {
+                    onTagTap(tag)
+                }
+            }
+        }
+    }
+}
+
+private struct VideoTagChip: View {
+    let title: String
+    let onTap: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onTap) {
+            Text(title)
+                .font(.system(size: 12))
+                .foregroundStyle(
+                    isHovered
+                        ? Color(red: 0.25, green: 0.28, blue: 0.35)
+                        : Color(red: 0.35, green: 0.38, blue: 0.45)
+                )
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(chipBackground, in: Capsule(style: .continuous))
+                .overlay {
+                    Capsule(style: .continuous)
+                        .stroke(Color.black.opacity(isHovered ? 0.08 : 0.04), lineWidth: 0.5)
+                }
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.15)) {
+                isHovered = hovering
             }
         }
     }
 
-    private var commentCountLabel: String {
-        let count = model.detail?.replyCount ?? 0
-        return count > 0 ? count.compactCount : ""
+    private var chipBackground: Color {
+        isHovered ? AppLayout.searchChipHoverFill : Color.black.opacity(0.04)
+    }
+}
+
+private struct VideoDetailTagFlowLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            rowHeight = max(rowHeight, size.height)
+            x += size.width + spacing
+        }
+
+        return CGSize(width: maxWidth, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
     }
 }
 
@@ -1185,9 +1427,11 @@ private struct VideoPlayerSection: View {
                     .stroke(Color.white.opacity(0.14), lineWidth: 0.6)
             }
         }
-        .shadow(color: .black.opacity(isFullscreen ? 0 : 0.18), radius: 18, x: 0, y: 10)
         .animation(.easeOut(duration: 0.2), value: player.displayAspectRatio)
-        .frame(maxWidth: isFullscreen ? .infinity : nil, maxHeight: isFullscreen ? .infinity : nil)
+        .frame(
+            width: isFullscreen ? nil : fittedSize.width,
+            height: isFullscreen ? nil : fittedSize.height
+        )
     }
 
     private func playbackTimeMs(_ player: VideoPlaybackEngine) -> Double {
@@ -1521,20 +1765,21 @@ private struct VideoCommentsPanel: View {
     @ObservedObject var model: VideoDetailModel
 
     var body: some View {
-        LazyVStack(alignment: .leading, spacing: 0) {
+        LazyVStack(alignment: .leading, spacing: 4) {
             if model.commentsLoading, model.comments.isEmpty {
                 HStack {
                     ProgressView().controlSize(.small)
                     Text("正在加载评论")
+                        .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                 }
-                .padding(24)
+                .padding(.vertical, 20)
             } else if let error = model.commentsError, model.comments.isEmpty {
                 ContentUnavailableView("评论加载失败", systemImage: "bubble.left.and.exclamationmark", description: Text(error))
-                    .padding(32)
+                    .padding(.vertical, 24)
             } else if model.comments.isEmpty {
                 ContentUnavailableView("还没有评论", systemImage: "bubble.left")
-                    .padding(32)
+                    .padding(.vertical, 24)
             } else {
                 ForEach(model.comments) { comment in
                     CommentRow(comment: comment, nested: false)
@@ -1546,15 +1791,17 @@ private struct VideoCommentsPanel: View {
                             Task { await model.loadMoreReplies(for: comment.id) }
                         } label: {
                             Text("查看 \(max(0, comment.replyCount - Int64(comment.loadedReplies.count))) 条回复")
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(BiliTheme.blue)
-                                .padding(.leading, 56)
+                                .multilineTextAlignment(.leading)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.leading, nestedReplyIndent)
                                 .padding(.top, 2)
-                                .padding(.bottom, 4)
+                                .padding(.bottom, 6)
                         }
                         .buttonStyle(.plain)
                     }
-                    Divider().padding(.leading, 20)
                 }
 
                 if model.commentsLoadingMore && !model.comments.isEmpty {
@@ -1562,9 +1809,10 @@ private struct VideoCommentsPanel: View {
                         ProgressView()
                             .controlSize(.small)
                         Text("正在加载更多")
+                            .font(.system(size: 13))
                             .foregroundStyle(.secondary)
                     }
-                    .padding(20)
+                    .padding(.vertical, 16)
                     .frame(maxWidth: .infinity)
                 } else if !model.commentsEnd, !model.comments.isEmpty, !model.commentsLoading, !model.commentsLoadingMore {
                     Color.clear
@@ -1575,71 +1823,88 @@ private struct VideoCommentsPanel: View {
                 }
             }
         }
-        .padding(.trailing, AppLayout.videoDetailRightColumnTrailingInset)
-        .padding(.bottom, 16)
+        .padding(.bottom, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
+
+    private var nestedReplyIndent: CGFloat { 44 }
 }
 
 private struct CommentRow: View {
     let comment: BiliCommentItem
     let nested: Bool
 
-    private let authorFontSize: CGFloat = 15
-    private let bodyFontSize: CGFloat = 15
-    private let metaFontSize: CGFloat = 12
-
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: 10) {
             if nested {
-                Spacer().frame(width: 24)
+                Spacer().frame(width: 16)
             }
+
             AsyncImage(url: comment.authorFaceURL) { phase in
                 switch phase {
                 case .success(let image):
                     image.resizable().scaledToFill()
                 default:
                     Image(systemName: "person.fill")
+                        .font(.system(size: nested ? 12 : 14))
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(width: nested ? 32 : 40, height: nested ? 32 : 40)
+            .frame(width: nested ? 28 : 34, height: nested ? 28 : 34)
             .clipShape(Circle())
 
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 3) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(comment.authorName.ifEmpty("用户"))
-                        .font(.system(size: authorFontSize, weight: .semibold))
+                        .font(.system(size: nested ? 14 : 15, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.14, green: 0.14, blue: 0.16))
                         .lineLimit(1)
-                    if comment.level > 0 {
-                        BiliUserLevelIcon(level: comment.level, width: 24, height: 15)
-                    }
-                }
 
-                Text(
-                    BiliCommentFormats.metaLine(
-                        time: comment.publishTime,
-                        ipLocation: comment.ipLocation,
-                        likeCount: comment.likeCount
-                    )
-                )
-                .font(.system(size: metaFontSize))
-                .foregroundStyle(.secondary.opacity(0.58))
-                .padding(.top, 2)
+                    if comment.level > 0 {
+                        BiliUserLevelIcon(level: comment.level, width: 22, height: 14)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Text(BiliCommentFormats.formatTime(comment.publishTime))
+                        .font(.system(size: 11))
+                        .foregroundStyle(Color(red: 0.62, green: 0.64, blue: 0.68))
+                        .lineLimit(1)
+                }
 
                 if !comment.content.isEmpty {
                     BiliCommentText(
                         text: comment.content,
                         emoticons: comment.emoticons,
-                        fontSize: bodyFontSize
+                        fontSize: nested ? 14 : 15
                     )
-                    .padding(.top, 6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                HStack(spacing: 10) {
+                    if let ip = comment.ipLocation?.trimmingCharacters(in: .whitespacesAndNewlines), !ip.isEmpty {
+                        Text(ip)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Color(red: 0.68, green: 0.70, blue: 0.74))
+                    }
+
+                    Spacer(minLength: 0)
+
+                    if comment.likeCount > 0 {
+                        HStack(spacing: 3) {
+                            Image(systemName: "hand.thumbsup")
+                                .font(.system(size: 10, weight: .medium))
+                            Text(comment.likeCount.compactCount)
+                                .font(.system(size: 11))
+                        }
+                        .foregroundStyle(Color(red: 0.68, green: 0.70, blue: 0.74))
+                    }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 7)
+        .padding(.vertical, nested ? 8 : 12)
     }
 }
 

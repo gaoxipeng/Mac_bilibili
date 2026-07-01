@@ -1,6 +1,14 @@
 import AppKit
 import SwiftUI
 
+struct SearchUserResultLayout: Equatable {
+    let columnCount: Int
+    let capsuleWidth: CGFloat
+    let gridWidth: CGFloat
+
+    var usesTwoColumns: Bool { columnCount >= 2 }
+}
+
 enum AppLayout {
     static let sidebarWidth: CGFloat = 188
     static let sidebarNavTopInset: CGFloat = 52
@@ -23,14 +31,40 @@ enum AppLayout {
     static let searchSuggestionPanelWidth: CGFloat = 760
     static let searchSuggestionPanelMaxHeight: CGFloat = 520
     static let searchDiscoveryContentWidth: CGFloat = 620
+    static let searchUserResultCapsuleWidth: CGFloat = 560
+    static let searchUserResultCapsuleHeight: CGFloat = 104
+    static let searchUserResultColumnSpacing: CGFloat = 12
+    static let searchUserResultsHorizontalInset: CGFloat = 32
     static let searchPageTopInset: CGFloat = 8
+
+    static func searchUserResultLayout(contentWidth: CGFloat) -> SearchUserResultLayout {
+        let minWidthForTwoColumns = searchUserResultCapsuleWidth * 2 + searchUserResultColumnSpacing
+        if contentWidth >= minWidthForTwoColumns {
+            let columnWidth = (contentWidth - searchUserResultColumnSpacing) / 2
+            let gridWidth = columnWidth * 2 + searchUserResultColumnSpacing
+            return SearchUserResultLayout(
+                columnCount: 2,
+                capsuleWidth: columnWidth,
+                gridWidth: gridWidth
+            )
+        }
+        let capsuleWidth = min(searchUserResultCapsuleWidth, contentWidth)
+        return SearchUserResultLayout(
+            columnCount: 1,
+            capsuleWidth: capsuleWidth,
+            gridWidth: capsuleWidth
+        )
+    }
 
     static var searchHeaderGroupWidth: CGFloat {
         searchBarPreferredWidth + searchHeaderSpacing + searchTypeToggleWidth
     }
 
-    static var searchSuggestionPanelCenteringOffset: CGFloat {
-        (searchHeaderGroupWidth - searchSuggestionPanelWidth) / 2
+    static func searchSuggestionPanelWidth(for contentWidth: CGFloat) -> CGFloat {
+        min(
+            searchSuggestionPanelWidth,
+            max(searchBarPreferredWidth, contentWidth)
+        )
     }
 
     /// 搜索页搜索框距顶偏移，与左上角刷新按钮同一行，不再使用整段 floating chrome 预留高度。
@@ -54,35 +88,93 @@ enum AppLayout {
     }
 
     static var videoDetailChromeReservedHeight: CGFloat {
-        floatingChromeInset + 88
+        floatingChromeReservedHeight + 48
     }
 
     /// 竖屏长标题需要更多顶部留白，避免与播放器、右侧信息重叠。
     static var videoDetailPortraitChromeReservedHeight: CGFloat {
-        floatingChromeInset + 104
+        floatingChromeReservedHeight + 56
     }
 
     /// 右侧简介栏顶部留白；横屏时与标题区错层，竖屏时与播放器同步下移。
     static var videoDetailRightColumnTopInset: CGFloat {
-        floatingChromeInset + 4
+        videoDetailPlayerTopInset
     }
 
-    static func videoDetailChromeTitleMaxWidth(
-        playerLayoutWidth: CGFloat,
-        contentWidth: CGFloat,
-        isPortrait: Bool
-    ) -> CGFloat {
-        let chromeLeading = floatingChromeInset + floatingChromeButtonSize + 12
-        let trailingChromeReserve = floatingChromeButtonSize + floatingChromeInset + 12
-        if isPortrait {
-            return max(200, contentWidth - chromeLeading - trailingChromeReserve)
+    /// 播放器顶部留白：避开浮动返回栏与标题，略低于标题底边。
+    static var videoDetailPlayerTopInset: CGFloat {
+        floatingChromeReservedHeight + 22
+    }
+
+    static let videoDetailPageBackground = Color(red: 0.961, green: 0.963, blue: 0.969)
+    static let videoDetailCardCornerRadius: CGFloat = 12
+    static let videoDetailCardPadding: CGFloat = 16
+    static let videoDetailLeadingInset: CGFloat = 12
+    static let videoDetailTrailingInset: CGFloat = 16
+    static let videoDetailSectionSpacing: CGFloat = 8
+    static let videoDetailSidebarMinWidth: CGFloat = 260
+    static let videoDetailSidebarMinContentWidth: CGFloat = 200
+    static let videoDetailSidebarWidthRatio: CGFloat = 0.28
+    static let videoDetailSidebarMaxWidthRatio: CGFloat = 0.36
+    static let videoDetailChromeBottomSpacing: CGFloat = 10
+
+    static func videoDetailSidebarWidth(in availableWidth: CGFloat) -> CGFloat {
+        guard availableWidth > 0 else { return 0 }
+        let adaptiveMin = min(videoDetailSidebarMinWidth, availableWidth * 0.42)
+        let target = availableWidth * videoDetailSidebarWidthRatio
+        let preferred = max(target, adaptiveMin)
+        let maxWidth = max(availableWidth * videoDetailSidebarMaxWidthRatio, preferred)
+        return min(preferred, maxWidth, availableWidth)
+    }
+
+    static func videoDetailColumnWidths(in totalWidth: CGFloat) -> (player: CGFloat, sidebar: CGFloat) {
+        let horizontalPadding = videoDetailLeadingInset + videoDetailTrailingInset
+        let contentWidth = max(totalWidth - horizontalPadding, 0)
+        guard contentWidth > videoDetailSectionSpacing else { return (0, 0) }
+
+        let columnsWidth = contentWidth - videoDetailSectionSpacing
+        guard columnsWidth > 0 else { return (0, 0) }
+
+        let minPlayerWidth: CGFloat = 180
+        var sidebar = min(videoDetailSidebarWidth(in: columnsWidth), columnsWidth)
+        var player = columnsWidth - sidebar
+
+        let contentMin = min(videoDetailSidebarMinContentWidth, columnsWidth)
+        if sidebar < contentMin, columnsWidth - contentMin >= minPlayerWidth {
+            sidebar = contentMin
+            player = columnsWidth - sidebar
+        } else if player < minPlayerWidth, columnsWidth > minPlayerWidth {
+            sidebar = max(columnsWidth - minPlayerWidth, columnsWidth * videoDetailSidebarWidthRatio)
+            player = columnsWidth - sidebar
         }
-        let playerTrailing = pageHorizontalInset + playerLayoutWidth
-        return max(160, playerTrailing - chromeLeading - trailingChromeReserve)
+
+        return (max(0, player), max(0, sidebar))
     }
 
-    /// 视频详情右侧栏内容与窗口右缘的内边距。
-    static let videoDetailRightColumnTrailingInset: CGFloat = 16
+    static func videoDetailPlayerTopInset(chromeHeight: CGFloat) -> CGFloat {
+        let baseline = videoDetailPlayerTopInset
+        guard chromeHeight > 0 else { return baseline }
+        return max(baseline, chromeHeight + videoDetailChromeBottomSpacing)
+    }
+}
+
+struct VideoDetailChromeMeasuredHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct VideoDetailChromeHeightEnvironmentKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+    var videoDetailChromeHeight: CGFloat {
+        get { self[VideoDetailChromeHeightEnvironmentKey.self] }
+        set { self[VideoDetailChromeHeightEnvironmentKey.self] = newValue }
+    }
 }
 
 struct GlassCircleButton: View {
@@ -363,9 +455,11 @@ struct AppScrollView<Content: View>: View {
 }
 
 struct MacOverlayScrollView<Content: View>: View {
+    var usesOverlayScrollers: Bool
     @ViewBuilder private var content: () -> Content
 
-    init(@ViewBuilder content: @escaping () -> Content) {
+    init(usesOverlayScrollers: Bool = true, @ViewBuilder content: @escaping () -> Content) {
+        self.usesOverlayScrollers = usesOverlayScrollers
         self.content = content
     }
 
@@ -373,22 +467,28 @@ struct MacOverlayScrollView<Content: View>: View {
         ScrollView {
             content()
         }
-        .background(MacOverlayScrollConfigurator())
+        .background(MacOverlayScrollConfigurator(usesOverlayScrollers: usesOverlayScrollers))
     }
 }
 
 private struct MacOverlayScrollConfigurator: NSViewRepresentable {
+    var usesOverlayScrollers: Bool = true
+
     func makeNSView(context: Context) -> MacOverlayScrollFinderView {
-        MacOverlayScrollFinderView()
+        let view = MacOverlayScrollFinderView()
+        view.usesOverlayScrollers = usesOverlayScrollers
+        return view
     }
 
     func updateNSView(_ nsView: MacOverlayScrollFinderView, context: Context) {
+        nsView.usesOverlayScrollers = usesOverlayScrollers
         nsView.applyOverlayStyle()
     }
 }
 
 private final class MacOverlayScrollFinderView: NSView {
     private weak var configuredScrollView: NSScrollView?
+    var usesOverlayScrollers = true
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -420,17 +520,26 @@ private final class MacOverlayScrollFinderView: NSView {
     }
 
     private func configure(_ scrollView: NSScrollView) {
-        guard scrollView.scrollerStyle != .overlay
-            || !scrollView.autohidesScrollers
-            || scrollView.drawsBackground
-            || scrollView.borderType != .noBorder else {
-            return
-        }
+        if usesOverlayScrollers {
+            guard scrollView.scrollerStyle != .overlay
+                || !scrollView.autohidesScrollers
+                || scrollView.drawsBackground
+                || scrollView.borderType != .noBorder else {
+                return
+            }
 
-        scrollView.scrollerStyle = .overlay
-        scrollView.autohidesScrollers = true
-        scrollView.drawsBackground = false
-        scrollView.borderType = .noBorder
+            scrollView.scrollerStyle = .overlay
+            scrollView.autohidesScrollers = true
+            scrollView.drawsBackground = false
+            scrollView.borderType = .noBorder
+        } else {
+            scrollView.scrollerStyle = .legacy
+            scrollView.hasVerticalScroller = true
+            scrollView.autohidesScrollers = true
+            scrollView.drawsBackground = false
+            scrollView.borderType = .noBorder
+            scrollView.verticalScrollElasticity = .automatic
+        }
     }
 }
 
@@ -490,6 +599,48 @@ extension View {
     }
 }
 
+private struct VideoDetailCardModifier: ViewModifier {
+    let padding: CGFloat
+    let trailingFlush: Bool
+
+    private var flushShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            cornerRadii: RectangleCornerRadii(
+                topLeading: AppLayout.videoDetailCardCornerRadius,
+                bottomLeading: AppLayout.videoDetailCardCornerRadius,
+                bottomTrailing: 0,
+                topTrailing: 0
+            ),
+            style: .continuous
+        )
+    }
+
+    private var regularShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: AppLayout.videoDetailCardCornerRadius, style: .continuous)
+    }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if trailingFlush {
+            content
+                .padding(.leading, padding)
+                .padding(.trailing, 0)
+                .padding(.vertical, padding)
+                .background(Color.white, in: flushShape)
+                .overlay {
+                    flushShape.stroke(Color.black.opacity(0.06), lineWidth: 0.6)
+                }
+        } else {
+            content
+                .padding(padding)
+                .background(Color.white, in: regularShape)
+                .overlay {
+                    regularShape.stroke(Color.black.opacity(0.06), lineWidth: 0.6)
+                }
+        }
+    }
+}
+
 extension View {
     func videoCoverHover(isHovered: Binding<Bool>) -> some View {
         overlay {
@@ -505,6 +656,13 @@ extension View {
                     .stroke(Color.black.opacity(0.07), lineWidth: 0.6)
             }
             .shadow(color: .black.opacity(0.05), radius: 8, x: 0, y: 3)
+    }
+
+    func videoDetailCard(
+        padding: CGFloat = AppLayout.videoDetailCardPadding,
+        trailingFlush: Bool = false
+    ) -> some View {
+        modifier(VideoDetailCardModifier(padding: padding, trailingFlush: trailingFlush))
     }
 
     func glassActionMenuPanel() -> some View {

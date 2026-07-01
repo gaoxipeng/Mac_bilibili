@@ -398,6 +398,16 @@ enum JSONParser {
         )
     }
 
+    nonisolated static func parseVideoTags(from object: Any) -> [String] {
+        let data = dictionary(object)["data"] as? [[String: Any]] ?? []
+        var seen = Set<String>()
+        return data.compactMap { item -> String? in
+            let name = string(item, "tag_name", "name").htmlStripped
+            guard !name.isEmpty, seen.insert(name).inserted else { return nil }
+            return name
+        }
+    }
+
     nonisolated static func parseOnlineCount(from object: Any) -> Int64 {
         let data = dictionary(object)["data"] as? [String: Any] ?? [:]
         let total = data["total"] as? [String: Any] ?? data

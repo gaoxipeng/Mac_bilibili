@@ -373,6 +373,17 @@ actor BilibiliAPI {
         return detail
     }
 
+    func videoTags(aid: Int64, credential: BilibiliCredential? = nil) async throws -> [String] {
+        guard aid > 0 else { return [] }
+        let json = try await self.json(
+            url: "https://api.bilibili.com/x/tag/archive/tags",
+            params: ["aid": "\(aid)"],
+            credential: credential,
+            referer: BilibiliEndpoints.home
+        )
+        return JSONParser.parseVideoTags(from: json)
+    }
+
     func videoOnlineCount(
         bvid: String,
         aid: Int64,

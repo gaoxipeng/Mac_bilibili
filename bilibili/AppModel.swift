@@ -21,6 +21,9 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var loginMessage: String?
     @Published private(set) var searchFocusRequest = 0
+    @Published private(set) var pendingSearchQuery: String?
+    @Published var isSearchShowingResults = false
+    @Published private(set) var exitSearchResultsRequest = 0
 
     private var followingOffset: String?
     private var homeFreshIdx = 1
@@ -60,6 +63,21 @@ final class AppModel: ObservableObject {
 
     func requestSearchFocus() {
         searchFocusRequest += 1
+    }
+
+    func openSearch(for keyword: String) {
+        let normalized = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        pendingSearchQuery = normalized
+        selectedSection = .search
+    }
+
+    func consumePendingSearchQuery() {
+        pendingSearchQuery = nil
+    }
+
+    func requestExitSearchResults() {
+        exitSearchResultsRequest += 1
     }
 
     func reloadSelected() async {

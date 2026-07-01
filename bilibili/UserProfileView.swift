@@ -188,6 +188,12 @@ struct UserProfileView: View {
         }
         .background(Color.white)
         .task { await model.load() }
+        .onAppear {
+            MediaPlaybackCoordinator.shared.notifyObscuringPageVisible()
+        }
+        .onDisappear {
+            MediaPlaybackCoordinator.shared.notifyObscuringPageHidden()
+        }
     }
 
     private var profileHeader: some View {

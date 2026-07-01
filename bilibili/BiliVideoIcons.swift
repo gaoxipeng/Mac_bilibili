@@ -24,14 +24,131 @@ final class ShareClickContext {
     var locationInView: NSPoint = .zero
 }
 
-struct CoinIconFrameKey: PreferenceKey {
-    static var defaultValue: CGRect = .zero
+struct CoinMenuPressOverlay: NSViewRepresentable {
+    let canCoinTwo: Bool
+    let canCoinMore: Bool
+    let onPrepare: () -> Bool
+    let onBlocked: () -> Void
+    let onCoinOne: () -> Void
+    let onCoinTwo: () -> Void
 
-    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
-        let next = nextValue()
-        if next.width > 0, next.height > 0 {
-            value = next
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onCoinOne: onCoinOne, onCoinTwo: onCoinTwo)
+    }
+
+    func makeNSView(context: Context) -> CoinMenuPressView {
+        let view = CoinMenuPressView()
+        view.configure(
+            coordinator: context.coordinator,
+            canCoinTwo: canCoinTwo,
+            canCoinMore: canCoinMore,
+            onPrepare: onPrepare,
+            onBlocked: onBlocked
+        )
+        return view
+    }
+
+    func updateNSView(_ nsView: CoinMenuPressView, context: Context) {
+        context.coordinator.onCoinOne = onCoinOne
+        context.coordinator.onCoinTwo = onCoinTwo
+        nsView.configure(
+            coordinator: context.coordinator,
+            canCoinTwo: canCoinTwo,
+            canCoinMore: canCoinMore,
+            onPrepare: onPrepare,
+            onBlocked: onBlocked
+        )
+    }
+
+    final class Coordinator: NSObject {
+        var onCoinOne: () -> Void
+        var onCoinTwo: () -> Void
+
+        init(onCoinOne: @escaping () -> Void, onCoinTwo: @escaping () -> Void) {
+            self.onCoinOne = onCoinOne
+            self.onCoinTwo = onCoinTwo
         }
+
+        @objc func handleCoinOne(_ sender: NSMenuItem) {
+            onCoinOne()
+        }
+
+        @objc func handleCoinTwo(_ sender: NSMenuItem) {
+            onCoinTwo()
+        }
+    }
+}
+
+@MainActor
+final class CoinMenuPressView: NSView {
+    private let actionMenu = NSMenu()
+    private weak var coordinator: CoinMenuPressOverlay.Coordinator?
+    private var canCoinTwo = true
+    private var canCoinMore = true
+    private var onPrepare: (() -> Bool)?
+    private var onBlocked: (() -> Void)?
+
+    override var isOpaque: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard canCoinMore else {
+            onBlocked?()
+            return
+        }
+        guard onPrepare?() == true else { return }
+        guard !actionMenu.items.isEmpty else { return }
+
+        let gapBelowButton: CGFloat = 10
+        let anchor = NSPoint(x: bounds.midX, y: bounds.minY - gapBelowButton)
+        actionMenu.popUp(positioning: nil, at: anchor, in: self)
+    }
+
+    func configure(
+        coordinator: CoinMenuPressOverlay.Coordinator,
+        canCoinTwo: Bool,
+        canCoinMore: Bool,
+        onPrepare: @escaping () -> Bool,
+        onBlocked: @escaping () -> Void
+    ) {
+        self.coordinator = coordinator
+        self.canCoinTwo = canCoinTwo
+        self.canCoinMore = canCoinMore
+        self.onPrepare = onPrepare
+        self.onBlocked = onBlocked
+
+        actionMenu.removeAllItems()
+
+        let oneCoinItem = NSMenuItem(
+            title: canCoinTwo ? "1 硬币" : "再投 1 硬币",
+            action: #selector(CoinMenuPressOverlay.Coordinator.handleCoinOne(_:)),
+            keyEquivalent: ""
+        )
+        oneCoinItem.target = coordinator
+        oneCoinItem.image = Self.coinMenuIcon()
+        actionMenu.addItem(oneCoinItem)
+
+        if canCoinTwo {
+            let twoCoinItem = NSMenuItem(
+                title: "2 硬币",
+                action: #selector(CoinMenuPressOverlay.Coordinator.handleCoinTwo(_:)),
+                keyEquivalent: ""
+            )
+            twoCoinItem.target = coordinator
+            twoCoinItem.image = Self.coinMenuIcon()
+            actionMenu.addItem(twoCoinItem)
+        }
+    }
+
+    private static func coinMenuIcon() -> NSImage? {
+        NSImage(named: BiliIcon.coin.rawValue)
     }
 }
 
@@ -88,23 +205,26 @@ struct VideoDetailActionBar: View {
     var favorited = false
     var canCoinTwo = true
     var canCoinMore = true
-    @Binding var coinMenuPresented: Bool
+    var availableWidth: CGFloat = 320
     var onCoinTap: () -> Bool = { true }
     var onLikeClick: () -> Void = {}
     var onTripleClick: () -> Void = {}
     var onCoinBlocked: () -> Void = {}
+    var onCoinOne: () -> Void = {}
+    var onCoinTwo: () -> Void = {}
     var onFavoriteClick: () -> Void = {}
     var onShareClick: (ShareClickContext) -> Void = { _ in }
 
     @State private var holdProgress: CGFloat = 0
 
-    private let iconSize: CGFloat = 30
-    private let ringSize: CGFloat = 44
-    private let labelFontSize: CGFloat = 13
+    private var metrics: VideoDetailActionBarMetrics {
+        VideoDetailActionBarMetrics(width: availableWidth)
+    }
+
     private let tripleHoldDuration: TimeInterval = 2
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: metrics.columnSpacing) {
             actionColumn(
                 icon: .likeFilled,
                 label: likeCount.compactCount,
@@ -120,59 +240,12 @@ struct VideoDetailActionBar: View {
                 label: favoriteCount.compactCount,
                 tint: favorited ? BiliTheme.blue : BiliTheme.actionInactive,
                 ringProgress: holdProgress,
-                onTap: {
-                    dismissCoinMenu()
-                    onFavoriteClick()
-                }
+                onTap: onFavoriteClick
             )
             shareColumn
         }
-    }
-
-    private var shareColumn: some View {
-        VideoDetailActionItem {
-            VStack(spacing: 4) {
-                actionIconStack(
-                    icon: .share,
-                    tint: BiliTheme.actionInactive,
-                    ringProgress: 0,
-                    onTap: { dismissCoinMenu() },
-                    onSharePresentation: onShareClick
-                )
-                Text(shareCount.compactCount)
-                    .font(.system(size: labelFontSize, weight: .medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity)
-        }
-    }
-
-    private var coinColumn: some View {
-        VideoDetailActionItem(showsChrome: coinMenuPresented) {
-            VStack(spacing: 4) {
-                actionIconStack(
-                    icon: .coin,
-                    tint: coined ? BiliTheme.blue : BiliTheme.actionInactive,
-                    ringProgress: holdProgress,
-                    onTap: toggleCoinMenu
-                )
-                .background {
-                    GeometryReader { geo in
-                        Color.clear
-                            .preference(
-                                key: CoinIconFrameKey.self,
-                                value: geo.frame(in: .named("detailPane"))
-                            )
-                    }
-                }
-                Text(coinCount.compactCount)
-                    .font(.system(size: labelFontSize, weight: .medium))
-                    .foregroundStyle(coined ? BiliTheme.blue : .primary)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity)
-        }
+        .frame(maxWidth: .infinity)
+        .clipped()
     }
 
     private func actionColumn(
@@ -184,66 +257,88 @@ struct VideoDetailActionBar: View {
         onLongPress: (() -> Void)? = nil,
         onHoldProgress: ((CGFloat) -> Void)? = nil
     ) -> some View {
-        VideoDetailActionItem {
+        VideoDetailActionItem(horizontalPadding: metrics.itemPaddingH) {
             VStack(spacing: 4) {
-                actionIconStack(
-                    icon: icon,
-                    tint: tint,
-                    ringProgress: ringProgress,
-                    onTap: {
-                        dismissCoinMenu()
-                        onTap()
-                    },
-                    onLongPress: onLongPress,
-                    onHoldProgress: onHoldProgress
-                )
+                actionIconVisual(icon: icon, tint: tint, ringProgress: ringProgress)
                 Text(label)
-                    .font(.system(size: labelFontSize, weight: .medium))
+                    .font(.system(size: metrics.labelFontSize, weight: .medium))
                     .foregroundStyle(tint == BiliTheme.blue ? BiliTheme.blue : .primary)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.75)
             }
             .frame(maxWidth: .infinity)
-        }
-    }
-
-    private func actionIconStack(
-        icon: BiliIcon,
-        tint: Color,
-        ringProgress: CGFloat,
-        onTap: @escaping () -> Void,
-        onLongPress: (() -> Void)? = nil,
-        onHoldProgress: ((CGFloat) -> Void)? = nil,
-        onSharePresentation: ((ShareClickContext) -> Void)? = nil
-    ) -> some View {
-        ZStack {
-            if ringProgress > 0.02 {
-                TripleHoldProgressRing(progress: ringProgress, size: ringSize)
-            }
-            BiliIconView(icon: icon, color: tint, size: iconSize)
+        } pressOverlay: {
             ActionPressOverlay(
                 longPressDuration: tripleHoldDuration,
                 onTap: onTap,
                 onLongPress: onLongPress,
-                onHoldProgress: onHoldProgress,
-                onSharePresentation: onSharePresentation
+                onHoldProgress: onHoldProgress
             )
         }
-        .frame(width: ringSize, height: ringSize)
     }
 
-    private func toggleCoinMenu() {
-        guard canCoinMore else {
-            onCoinBlocked()
-            return
+    private var shareColumn: some View {
+        VideoDetailActionItem(horizontalPadding: metrics.itemPaddingH) {
+            VStack(spacing: 4) {
+                actionIconVisual(
+                    icon: .share,
+                    tint: BiliTheme.actionInactive,
+                    ringProgress: 0
+                )
+                Text(shareCount.compactCount)
+                    .font(.system(size: metrics.labelFontSize, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            .frame(maxWidth: .infinity)
+        } pressOverlay: {
+            ActionPressOverlay(
+                onTap: {},
+                onSharePresentation: onShareClick
+            )
         }
-        guard onCoinTap() else { return }
-        coinMenuPresented.toggle()
     }
 
-    private func dismissCoinMenu() {
-        if coinMenuPresented {
-            coinMenuPresented = false
+    private var coinColumn: some View {
+        VideoDetailActionItem(horizontalPadding: metrics.itemPaddingH) {
+            VStack(spacing: 4) {
+                actionIconVisual(
+                    icon: .coin,
+                    tint: coined ? BiliTheme.blue : BiliTheme.actionInactive,
+                    ringProgress: 0
+                )
+                Text(coinCount.compactCount)
+                    .font(.system(size: metrics.labelFontSize, weight: .medium))
+                    .foregroundStyle(coined ? BiliTheme.blue : .primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+            .frame(maxWidth: .infinity)
+        } pressOverlay: {
+            CoinMenuPressOverlay(
+                canCoinTwo: canCoinTwo,
+                canCoinMore: canCoinMore,
+                onPrepare: onCoinTap,
+                onBlocked: onCoinBlocked,
+                onCoinOne: onCoinOne,
+                onCoinTwo: onCoinTwo
+            )
         }
+    }
+
+    private func actionIconVisual(
+        icon: BiliIcon,
+        tint: Color,
+        ringProgress: CGFloat
+    ) -> some View {
+        ZStack {
+            if ringProgress > 0.02 {
+                TripleHoldProgressRing(progress: ringProgress, size: metrics.ringSize)
+            }
+            BiliIconView(icon: icon, color: tint, size: metrics.iconSize)
+        }
+        .frame(width: metrics.ringSize, height: metrics.ringSize)
     }
 
     private func updateHoldProgress(_ progress: CGFloat) {
@@ -251,9 +346,49 @@ struct VideoDetailActionBar: View {
     }
 }
 
-private struct VideoDetailActionItem<Content: View>: View {
+private struct VideoDetailActionBarMetrics {
+    let iconSize: CGFloat
+    let ringSize: CGFloat
+    let labelFontSize: CGFloat
+    let columnSpacing: CGFloat
+    let itemPaddingH: CGFloat
+
+    init(width: CGFloat) {
+        let innerWidth = max(width - AppLayout.videoDetailCardPadding * 2, 0)
+        switch innerWidth {
+        case ..<188:
+            iconSize = 20
+            ringSize = 28
+            labelFontSize = 9
+            columnSpacing = 2
+            itemPaddingH = 3
+        case ..<240:
+            iconSize = 24
+            ringSize = 34
+            labelFontSize = 10
+            columnSpacing = 3
+            itemPaddingH = 4
+        case ..<280:
+            iconSize = 24
+            ringSize = 36
+            labelFontSize = 11
+            columnSpacing = 4
+            itemPaddingH = 4
+        default:
+            iconSize = 30
+            ringSize = 44
+            labelFontSize = 13
+            columnSpacing = 8
+            itemPaddingH = 6
+        }
+    }
+}
+
+private struct VideoDetailActionItem<Content: View, PressOverlay: View>: View {
     var showsChrome = false
+    var horizontalPadding: CGFloat = 6
     @ViewBuilder var content: () -> Content
+    @ViewBuilder var pressOverlay: () -> PressOverlay
 
     @State private var isHovered = false
 
@@ -263,9 +398,9 @@ private struct VideoDetailActionItem<Content: View>: View {
 
     var body: some View {
         content()
-            .padding(.horizontal, 8)
+            .padding(.horizontal, horizontalPadding)
             .padding(.vertical, 6)
-            .frame(maxWidth: .infinity)
+            .frame(minWidth: 0, maxWidth: .infinity)
             .background {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
                     .fill(Color.black.opacity(0.04))
@@ -275,48 +410,13 @@ private struct VideoDetailActionItem<Content: View>: View {
                     }
                     .opacity(showsBackground ? 1 : 0)
             }
+            .overlay {
+                pressOverlay()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .animation(.easeOut(duration: 0.18), value: showsBackground)
             .onHover { isHovered = $0 }
-    }
-}
-
-struct VideoCoinChoiceMenu: View {
-    let canCoinTwo: Bool
-    let onCoinOne: () -> Void
-    let onCoinTwo: () -> Void
-
-    var body: some View {
-        VStack(spacing: 3) {
-            coinMenuRow(canCoinTwo ? "1 硬币" : "再投 1 硬币", action: onCoinOne)
-            if canCoinTwo {
-                coinMenuRow("2 硬币", action: onCoinTwo)
-            }
-        }
-        .fixedSize(horizontal: true, vertical: true)
-        .glassActionMenuPanel()
-    }
-
-    private func coinMenuRow(_ title: String, action: @escaping () -> Void) -> some View {
-        ActionPressLabel(title: title, action: action)
-            .frame(height: 34)
-            .padding(.horizontal, 14)
-            .background(Color.primary.opacity(0.04), in: Capsule())
-    }
-}
-
-private struct ActionPressLabel: View {
-    let title: String
-    let action: () -> Void
-
-    var body: some View {
-        ZStack {
-            Text(title)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: true, vertical: false)
-            ActionPressOverlay(onTap: action)
-        }
-        .contentShape(Capsule())
     }
 }
 

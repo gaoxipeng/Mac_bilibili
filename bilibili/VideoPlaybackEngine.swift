@@ -56,11 +56,21 @@ final class VideoPlaybackEngine: ObservableObject {
         isPlaying = true
     }
 
+    func pausePlayback() {
+        player?.pause()
+        isPlaying = false
+    }
+
+    func resumePlayback() {
+        guard let player, isReady else { return }
+        player.play()
+        isPlaying = true
+    }
+
     func togglePlayback() {
         guard let player else { return }
         if isPlaying {
-            player.pause()
-            isPlaying = false
+            pausePlayback()
         } else {
             player.play()
             isPlaying = true

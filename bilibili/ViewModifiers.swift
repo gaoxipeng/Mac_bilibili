@@ -71,8 +71,8 @@ enum AppLayout {
         floatingChromeInset
     }
     static let sidebarBackground = Color(red: 0.969, green: 0.969, blue: 0.973)
-    static let sidebarBlurWhiteTint: CGFloat = 0.46
-    static let sidebarBlurMaterial: NSVisualEffectView.Material = .popover
+    static let sidebarBlurWhiteTint: CGFloat = 0.42
+    static let sidebarBlurMaterial: NSVisualEffectView.Material = .sidebar
     static let sidebarSelectionCornerRadius: CGFloat = 10
     static let sidebarNavItemHeight: CGFloat = 42
     static let sidebarSelectionFill = BiliTheme.pink.opacity(0.12)
@@ -553,8 +553,8 @@ final class TransparentWindowConfiguratorView: NSView {
 @MainActor
 enum WindowActivationController {
     static func configure(_ window: NSWindow) {
-        window.isOpaque = true
-        window.backgroundColor = .white
+        window.isOpaque = false
+        window.backgroundColor = .clear
     }
 
     static func activateApplication(bringing window: NSWindow? = nil) {
@@ -581,7 +581,8 @@ extension View {
     func desktopBlurSidebarBackground() -> some View {
         background {
             ZStack {
-                AppLayout.sidebarBackground
+                DesktopSidebarBlurBackground()
+                Color.white.opacity(AppLayout.sidebarBlurWhiteTint)
             }
             .overlay(alignment: .trailing) {
                 Rectangle()
@@ -595,6 +596,24 @@ extension View {
         background {
             TransparentWindowConfigurator()
         }
+    }
+}
+
+private struct DesktopSidebarBlurBackground: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = AppLayout.sidebarBlurMaterial
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.isEmphasized = false
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.material = AppLayout.sidebarBlurMaterial
+        nsView.blendingMode = .behindWindow
+        nsView.state = .active
+        nsView.isEmphasized = false
     }
 }
 

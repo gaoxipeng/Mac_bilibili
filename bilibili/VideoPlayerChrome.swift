@@ -1,6 +1,5 @@
 import AppKit
 import Combine
-import CoreAudio
 import SwiftUI
 
 @MainActor
@@ -159,114 +158,37 @@ final class VideoPlayerKeyboardMonitorView: NSView {
 }
 
 enum SystemAudioVolume {
+    private enum MediaKey {
+        static let soundUp: Int32 = 0
+        static let soundDown: Int32 = 1
+    }
+
     @MainActor
     static func adjust(by delta: Float) {
-        guard let current = currentVolume() else { return }
-        setVolume((current + delta).clamped(to: 0...1))
-    }
-
-    private static func currentVolume() -> Float? {
-        guard let deviceID = defaultOutputDeviceID() else { return nil }
-        if let master = volume(deviceID: deviceID, element: kAudioObjectPropertyElementMain) {
-            return master
-        }
-        let channels = outputChannels(deviceID: deviceID)
-        let values = channels.compactMap { volume(deviceID: deviceID, element: $0) }
-        guard !values.isEmpty else { return nil }
-        return values.reduce(0, +) / Float(values.count)
-    }
-
-    private static func setVolume(_ volume: Float) {
-        guard let deviceID = defaultOutputDeviceID() else { return }
-        if setVolume(volume, deviceID: deviceID, element: kAudioObjectPropertyElementMain) {
-            return
-        }
-        for channel in outputChannels(deviceID: deviceID) {
-            _ = setVolume(volume, deviceID: deviceID, element: channel)
+        if delta > 0 {
+            postVolumeKey(MediaKey.soundUp)
+        } else if delta < 0 {
+            postVolumeKey(MediaKey.soundDown)
         }
     }
 
-    private static func defaultOutputDeviceID() -> AudioDeviceID? {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var deviceID = AudioDeviceID(0)
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            &size,
-            &deviceID
-        )
-        guard status == noErr, deviceID != 0 else { return nil }
-        return deviceID
-    }
-
-    private static func volume(deviceID: AudioDeviceID, element: AudioObjectPropertyElement) -> Float? {
-        var address = volumeAddress(element: element)
-        guard AudioObjectHasProperty(deviceID, &address) else { return nil }
-        var volume: Float32 = 0
-        var size = UInt32(MemoryLayout<Float32>.size)
-        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &volume)
-        guard status == noErr else { return nil }
-        return volume
-    }
-
-    private static func setVolume(
-        _ volume: Float,
-        deviceID: AudioDeviceID,
-        element: AudioObjectPropertyElement
-    ) -> Bool {
-        var address = volumeAddress(element: element)
-        guard AudioObjectHasProperty(deviceID, &address) else {
-            return false
+    @MainActor
+    private static func postVolumeKey(_ keyCode: Int32) {
+        for isKeyDown in [true, false] {
+            let keyState = isKeyDown ? 0xA00 : 0xB00
+            let event = NSEvent.otherEvent(
+                with: .systemDefined,
+                location: .zero,
+                modifierFlags: NSEvent.ModifierFlags(rawValue: UInt(keyState)),
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                subtype: 8,
+                data1: Int((Int(keyCode) << 16) | keyState),
+                data2: -1
+            )
+            event?.cgEvent?.post(tap: .cghidEventTap)
         }
-        var isSettable = DarwinBoolean(false)
-        guard AudioObjectIsPropertySettable(deviceID, &address, &isSettable) == noErr,
-              isSettable.boolValue else { return false }
-        var value = Float32(volume)
-        let size = UInt32(MemoryLayout<Float32>.size)
-        let status = AudioObjectSetPropertyData(deviceID, &address, 0, nil, size, &value)
-        return status == noErr
-    }
-
-    private static func volumeAddress(element: AudioObjectPropertyElement) -> AudioObjectPropertyAddress {
-        AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyVolumeScalar,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: element
-        )
-    }
-
-    private static func outputChannels(deviceID: AudioDeviceID) -> [AudioObjectPropertyElement] {
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyStreamConfiguration,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(deviceID, &address, 0, nil, &size) == noErr,
-              size >= UInt32(MemoryLayout<AudioBufferList>.size) else {
-            return [1, 2]
-        }
-        let bufferList = UnsafeMutableRawPointer.allocate(
-            byteCount: Int(size),
-            alignment: MemoryLayout<AudioBufferList>.alignment
-        )
-        defer { bufferList.deallocate() }
-        guard AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, bufferList) == noErr else {
-            return [1, 2]
-        }
-        let audioBufferList = UnsafeMutableAudioBufferListPointer(bufferList.assumingMemoryBound(to: AudioBufferList.self))
-        let channelCount = audioBufferList.reduce(0) { partial, buffer in
-            partial + Int(buffer.mNumberChannels)
-        }
-        guard channelCount > 0 else { return [1, 2] }
-        return (1...channelCount).map(AudioObjectPropertyElement.init)
     }
 }
 
@@ -282,11 +204,5 @@ enum VideoPlayerKeyboardRouting {
             return false
         }
         return true
-    }
-}
-
-private extension Float {
-    func clamped(to range: ClosedRange<Float>) -> Float {
-        min(max(self, range.lowerBound), range.upperBound)
     }
 }

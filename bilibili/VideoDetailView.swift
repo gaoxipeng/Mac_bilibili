@@ -880,6 +880,15 @@ struct VideoDetailView: View {
             maxHeight: maxHeight,
             aspectRatio: model.player.displayAspectRatio
         )
+        let contentWidth = min(fittedPlayerSize.width, playerWidth)
+        let introScrollMaxHeight = max(
+            120,
+            geometry.size.height
+                - playerTopInset
+                - fittedPlayerSize.height
+                - AppLayout.videoDetailSectionSpacing
+                - 24
+        )
 
         VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
             playerSection(
@@ -890,19 +899,26 @@ struct VideoDetailView: View {
             .opacity(fullscreenPresenter.isPresented ? 0 : 1)
             .allowsHitTesting(!fullscreenPresenter.isPresented)
 
-            VideoIntroCard(
-                model: model,
-                onTagTap: { appModel.openSearch(for: $0) }
-            )
-            .frame(width: min(fittedPlayerSize.width, playerWidth))
+            MacOverlayScrollView(usesOverlayScrollers: false) {
+                VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
+                    VideoIntroCard(
+                        model: model,
+                        onTagTap: { appModel.openSearch(for: $0) }
+                    )
+                    .frame(width: contentWidth)
 
-            if (model.detail?.pages.count ?? 0) > 1 {
-                VideoMultiPartCard(model: model)
-                    .frame(width: min(fittedPlayerSize.width, playerWidth))
+                    if (model.detail?.pages.count ?? 0) > 1 {
+                        VideoMultiPartCard(model: model)
+                            .frame(width: contentWidth)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.bottom, 8)
             }
+            .frame(maxHeight: introScrollMaxHeight)
         }
         .padding(.top, playerTopInset)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func rightSidebar(playerTopInset: CGFloat, sidebarWidth: CGFloat) -> some View {

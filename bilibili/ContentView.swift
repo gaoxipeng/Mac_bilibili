@@ -13,7 +13,6 @@ struct ContentView: View {
             sidebarPane
             mainPane
         }
-        .background(Color.white)
         .configureTransparentWindow()
         .ignoresSafeArea(edges: .top)
         .task {
@@ -108,7 +107,6 @@ struct ContentView: View {
         GlassSidebar(model: model, selection: $sidebarSelection)
             .frame(width: AppLayout.sidebarWidth)
             .frame(maxHeight: .infinity)
-            .background(AppLayout.sidebarBackground)
     }
 
     @ViewBuilder

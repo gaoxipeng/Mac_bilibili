@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct DanmakuSettingsOverlay: View {
@@ -11,7 +12,7 @@ struct DanmakuSettingsOverlay: View {
                 .ignoresSafeArea()
                 .onTapGesture(perform: onDismiss)
 
-            VStack(spacing: 14) {
+            VStack(spacing: 16) {
                 DanmakuSettingRow(
                     title: "显示区域",
                     valueLabel: DanmakuSettings.displayAreaLabel(settings.displayAreaPercent)
@@ -61,8 +62,8 @@ struct DanmakuSettingsOverlay: View {
                     )
                 }
             }
-            .padding(14)
-            .frame(maxWidth: 300)
+            .padding(16)
+            .frame(maxWidth: 336)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
@@ -80,64 +81,165 @@ private struct DanmakuSettingRow<Slider: View>: View {
     @ViewBuilder let slider: () -> Slider
 
     var body: some View {
-        HStack(alignment: .center, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(Color(red: 0.11, green: 0.11, blue: 0.12))
                 Text(valueLabel)
-                    .font(.system(size: 12))
+                    .font(.system(size: 14))
                     .foregroundStyle(Color(red: 0.39, green: 0.39, blue: 0.4))
             }
-            .frame(width: 58, alignment: .leading)
+            .frame(width: 72, alignment: .leading)
 
             slider()
                 .frame(maxWidth: .infinity)
+                .frame(height: 28)
         }
     }
 }
 
-private struct DanmakuSteppedSlider: View {
+private enum DanmakuSliderColors {
+    static let active = NSColor(red: 0, green: 174 / 255, blue: 236 / 255, alpha: 1)
+}
+
+private struct DanmakuSteppedSlider: NSViewRepresentable {
     let stepCount: Int
     let selectedIndex: Int
     let onSelectedIndexChange: (Int) -> Void
 
-    private var maxIndex: Int { max(0, stepCount - 1) }
+    func makeNSView(context: Context) -> DanmakuSliderNSView {
+        let view = DanmakuSliderNSView()
+        view.onValueChange = { value in
+            onSelectedIndexChange(Int(value.rounded()))
+        }
+        view.configureStepped(stepCount: stepCount, selectedIndex: selectedIndex)
+        return view
+    }
 
-    var body: some View {
-        Slider(
-            value: Binding(
-                get: { Double(selectedIndex) },
-                set: { onSelectedIndexChange(Int($0.rounded())) }
-            ),
-            in: 0...Double(maxIndex),
-            step: 1,
-            label: { EmptyView() },
-            tick: { value in SliderTick(value) }
-        )
-        .labelsHidden()
-        .tint(BiliTheme.pink)
+    func updateNSView(_ nsView: DanmakuSliderNSView, context: Context) {
+        nsView.onValueChange = { value in
+            onSelectedIndexChange(Int(value.rounded()))
+        }
+        nsView.configureStepped(stepCount: stepCount, selectedIndex: selectedIndex)
     }
 }
 
-private struct DanmakuContinuousSlider: View {
+private struct DanmakuContinuousSlider: NSViewRepresentable {
     let value: Double
     let range: ClosedRange<Double>
     let step: Double
     let onValueChange: (Double) -> Void
 
-    var body: some View {
-        Slider(
-            value: Binding(
-                get: { value },
-                set: { onValueChange($0) }
-            ),
-            in: range,
-            step: step,
-            label: { EmptyView() }
-        )
-        .labelsHidden()
-        .tint(BiliTheme.pink)
+    func makeNSView(context: Context) -> DanmakuSliderNSView {
+        let view = DanmakuSliderNSView()
+        view.onValueChange = onValueChange
+        view.configureContinuous(value: value, range: range, step: step)
+        return view
+    }
+
+    func updateNSView(_ nsView: DanmakuSliderNSView, context: Context) {
+        nsView.onValueChange = onValueChange
+        nsView.configureContinuous(value: value, range: range, step: step)
+    }
+}
+
+@MainActor
+private final class DanmakuSliderNSView: NSView {
+    var onValueChange: ((Double) -> Void)?
+
+    private let slider = NSSlider()
+    private var isProgrammaticUpdate = false
+    private var stepSize: Double = 1
+    private var snapsToIntegerValues = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureAppearance()
+        slider.isContinuous = true
+        slider.controlSize = .small
+        slider.target = self
+        slider.action = #selector(sliderChanged(_:))
+        addSubview(slider)
+        applyBlueTrackStyle()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        slider.frame = bounds
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        configureAppearance()
+        applyBlueTrackStyle()
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        configureAppearance()
+        applyBlueTrackStyle()
+    }
+
+    func configureStepped(stepCount: Int, selectedIndex: Int) {
+        let maxIndex = max(0, stepCount - 1)
+        isProgrammaticUpdate = true
+        slider.minValue = 0
+        slider.maxValue = Double(maxIndex)
+        slider.numberOfTickMarks = 0
+        slider.allowsTickMarkValuesOnly = false
+        slider.doubleValue = Double(min(max(selectedIndex, 0), maxIndex))
+        stepSize = 1
+        snapsToIntegerValues = true
+        isProgrammaticUpdate = false
+        applyBlueTrackStyle()
+    }
+
+    func configureContinuous(value: Double, range: ClosedRange<Double>, step: Double) {
+        isProgrammaticUpdate = true
+        slider.minValue = range.lowerBound
+        slider.maxValue = range.upperBound
+        slider.numberOfTickMarks = 0
+        slider.allowsTickMarkValuesOnly = false
+        slider.doubleValue = min(max(value, range.lowerBound), range.upperBound)
+        stepSize = step
+        snapsToIntegerValues = false
+        isProgrammaticUpdate = false
+        applyBlueTrackStyle()
+    }
+
+    private func configureAppearance() {
+        let aqua = NSAppearance(named: .aqua)
+        appearance = aqua
+        slider.appearance = aqua
+    }
+
+    private func applyBlueTrackStyle() {
+        slider.trackFillColor = DanmakuSliderColors.active
+        slider.needsDisplay = true
+    }
+
+    @objc private func sliderChanged(_ sender: NSSlider) {
+        guard !isProgrammaticUpdate else { return }
+        var value = sender.doubleValue
+        if snapsToIntegerValues {
+            value = min(max(value.rounded(), sender.minValue), sender.maxValue)
+        } else if stepSize > 0 {
+            let stepped = ((value - sender.minValue) / stepSize).rounded() * stepSize + sender.minValue
+            value = min(max(stepped, sender.minValue), sender.maxValue)
+        }
+        if abs(sender.doubleValue - value) > 0.001 {
+            isProgrammaticUpdate = true
+            sender.doubleValue = value
+            isProgrammaticUpdate = false
+        }
+        applyBlueTrackStyle()
+        onValueChange?(value)
     }
 }
 

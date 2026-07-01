@@ -88,15 +88,16 @@ struct VideoPlayerSurface: NSViewRepresentable {
 
 struct FullscreenPlayerHostView: NSViewRepresentable {
     @ObservedObject var model: VideoDetailModel
+    var keyboardHandlers: VideoPlayerKeyboardHandlers
 
     func makeNSView(context: Context) -> FullscreenPlayerHostNSView {
         let view = FullscreenPlayerHostNSView()
-        view.sync(model: model)
+        view.sync(model: model, keyboardHandlers: keyboardHandlers)
         return view
     }
 
     func updateNSView(_ nsView: FullscreenPlayerHostNSView, context: Context) {
-        nsView.sync(model: model)
+        nsView.sync(model: model, keyboardHandlers: keyboardHandlers)
     }
 }
 
@@ -104,7 +105,10 @@ final class FullscreenPlayerHostNSView: NSView {
     private let playerContainer = PlayerClipContainerView(cornerRadius: 0)
     private let danmakuView = DanmakuRenderNSView()
     private let wheelMonitor = VideoScrollWheelMonitorView()
+    private let keyboardMonitor = VideoPlayerKeyboardMonitorView()
     private weak var currentModel: VideoDetailModel?
+
+    override var acceptsFirstResponder: Bool { true }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -120,10 +124,14 @@ final class FullscreenPlayerHostNSView: NSView {
         wheelMonitor.wantsLayer = true
         wheelMonitor.layer?.backgroundColor = NSColor.clear.cgColor
         wheelMonitor.layer?.zPosition = 20
+        keyboardMonitor.wantsLayer = true
+        keyboardMonitor.layer?.backgroundColor = NSColor.clear.cgColor
+        keyboardMonitor.layer?.zPosition = 30
 
         addSubview(playerContainer)
         addSubview(danmakuView)
         addSubview(wheelMonitor)
+        addSubview(keyboardMonitor)
     }
 
     @available(*, unavailable)
@@ -136,18 +144,21 @@ final class FullscreenPlayerHostNSView: NSView {
         playerContainer.frame = bounds
         danmakuView.frame = bounds
         wheelMonitor.frame = bounds
+        keyboardMonitor.frame = bounds
         playerContainer.autoresizingMask = [.width, .height]
         danmakuView.autoresizingMask = [.width, .height]
         wheelMonitor.autoresizingMask = [.width, .height]
+        keyboardMonitor.autoresizingMask = [.width, .height]
         if let currentModel {
-            sync(model: currentModel)
+            sync(model: currentModel, keyboardHandlers: keyboardMonitor.handlers)
         }
     }
 
-    func sync(model: VideoDetailModel) {
+    func sync(model: VideoDetailModel, keyboardHandlers: VideoPlayerKeyboardHandlers) {
         currentModel = model
         let player = model.player
         wheelMonitor.player = player
+        keyboardMonitor.handlers = keyboardHandlers
         playerContainer.playerView.player = player.avPlayer
 
         guard player.isReady else {
@@ -176,14 +187,33 @@ final class FullscreenPlayerHostNSView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil {
+        if let window {
             wheelMonitor.installMonitorIfNeeded()
+            keyboardMonitor.installMonitorIfNeeded()
+            window.makeFirstResponder(self)
             if let currentModel {
-                sync(model: currentModel)
+                sync(model: currentModel, keyboardHandlers: keyboardMonitor.handlers)
             }
         } else {
             wheelMonitor.tearDownMonitor()
+            keyboardMonitor.tearDownMonitor()
         }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if keyboardMonitor.handlers.shouldHandle(),
+           keyboardMonitor.handleKeyEvent(event) {
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if keyboardMonitor.handlers.shouldHandle(),
+           keyboardMonitor.handleKeyEvent(event) {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 }
 

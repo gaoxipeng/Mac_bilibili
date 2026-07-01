@@ -20,8 +20,11 @@ final class VideoPlaybackEngine: ObservableObject {
 
     @Published private(set) var isReady = false
     @Published private(set) var videoAspectRatio: CGFloat = 16.0 / 9.0
+    @Published private(set) var volume: Float = 1
+    @Published private(set) var isMuted = false
 
     private var presentationSizeObservation: NSKeyValueObservation?
+    private var volumeBeforeMute: Float = 1
 
     var avPlayer: AVPlayer? { player }
 
@@ -52,6 +55,7 @@ final class VideoPlaybackEngine: ObservableObject {
         observeEnd(player)
         observeStatus(item)
         observePresentationSize(item)
+        applyVolume()
         player.play()
         isPlaying = true
     }
@@ -108,6 +112,44 @@ final class VideoPlaybackEngine: ObservableObject {
     func nudgePlayback(by seconds: Double) {
         applyWheelScrub(delta: seconds)
         scheduleWheelScrubEnd(after: .milliseconds(150))
+    }
+
+    func seek(by seconds: Double) {
+        let target = min(duration, max(0, preciseCurrentTime + seconds))
+        seek(to: target, resumeAfter: isPlaying)
+    }
+
+    func adjustVolume(by delta: Float) {
+        if isMuted, delta > 0 {
+            isMuted = false
+        }
+        setVolume(volume + delta)
+    }
+
+    func setVolume(_ value: Float) {
+        let clamped = min(max(value, 0), 1)
+        volume = clamped
+        if !isMuted {
+            volumeBeforeMute = clamped > 0 ? clamped : volumeBeforeMute
+        }
+        applyVolume()
+    }
+
+    func toggleMute() {
+        if isMuted {
+            isMuted = false
+            if volume <= 0 {
+                volume = volumeBeforeMute > 0 ? volumeBeforeMute : 1
+            }
+        } else {
+            volumeBeforeMute = volume > 0 ? volume : 1
+            isMuted = true
+        }
+        applyVolume()
+    }
+
+    private func applyVolume() {
+        player?.volume = isMuted ? 0 : volume
     }
 
     func applyWheelScrub(delta seconds: Double) {

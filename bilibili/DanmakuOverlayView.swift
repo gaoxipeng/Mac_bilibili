@@ -10,6 +10,7 @@ struct DanmakuOverlayView: NSViewRepresentable, Equatable {
     let settings: DanmakuSettings
     var layoutMode: DanmakuLayoutMode = .inline
     var isActive: Bool = true
+    var playbackEngine: VideoPlaybackEngine?
 
     nonisolated static func == (lhs: DanmakuOverlayView, rhs: DanmakuOverlayView) -> Bool {
         if lhs.items.count != rhs.items.count { return false }
@@ -29,12 +30,13 @@ struct DanmakuOverlayView: NSViewRepresentable, Equatable {
     func makeNSView(context: Context) -> DanmakuRenderNSView {
         let view = DanmakuRenderNSView()
         view.wantsLayer = true
-        view.layerContentsRedrawPolicy = .onSetNeedsDisplay
         view.layer?.backgroundColor = NSColor.clear.cgColor
+        view.layer?.masksToBounds = false
         return view
     }
 
     func updateNSView(_ nsView: DanmakuRenderNSView, context: Context) {
+        nsView.playbackEngine = playbackEngine
         nsView.apply(
             items: items,
             positionMs: positionMs,
@@ -54,6 +56,8 @@ struct DanmakuOverlayView: NSViewRepresentable, Equatable {
 final class DanmakuRenderNSView: NSView {
     private let timeline = DanmakuTimeline()
     private var displayLink: CADisplayLink?
+    private var textLayers: [Int: DanmakuTextLayerState] = [:]
+    private var lastResolvedPositionMillis: Double?
 
     private var items: [BiliDanmakuItem] = []
     private var positionMs: Int64 = 0
@@ -71,21 +75,9 @@ final class DanmakuRenderNSView: NSView {
     private var configuredEnabled = false
     private var configuredActive = true
 
-    private var renderContext: CGContext?
-    private var renderContextPixelSize = CGSize.zero
-
-    private static let layerRenderPixelAreaThreshold: CGFloat = 960 * 540 * 4
+    weak var playbackEngine: VideoPlaybackEngine?
 
     override var isOpaque: Bool { false }
-
-    override var wantsUpdateLayer: Bool {
-        layoutMode == .inline && renderPixelArea <= Self.layerRenderPixelAreaThreshold
-    }
-
-    private var renderPixelArea: CGFloat {
-        let scale = window?.backingScaleFactor ?? 2
-        return bounds.width * bounds.height * scale * scale
-    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -94,9 +86,15 @@ final class DanmakuRenderNSView: NSView {
         refreshDisplayLink()
     }
 
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateDisplayLinkFrameRate()
+    }
+
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        invalidateRenderContext()
+        let size = normalizedRenderSize()
+        guard danmakuSizeChanged(size, configuredSize) else { return }
         reconfigureTimelineIfNeeded(force: true)
         syncCurrentFrameAndRender()
     }
@@ -119,11 +117,12 @@ final class DanmakuRenderNSView: NSView {
         self.layoutMode = layoutMode
 
         let playStateChanged = isPlaying != wasPlaying
+        let currentPositionMillis = resolvedPositionMillis()
         if playStateChanged {
             timeline.reanchorOnPlayStateChange(
                 isPlaying: isPlaying,
-                positionMs: positionMs,
-                realtimeMs: currentDisplayLinkTimeMs()
+                positionMillis: currentPositionMillis,
+                realtimeMillis: currentDisplayLinkMillis()
             )
             wasPlaying = isPlaying
         }
@@ -131,7 +130,7 @@ final class DanmakuRenderNSView: NSView {
         let timelineChanged = reconfigureTimelineIfNeeded(force: false)
 
         if timelineChanged || playStateChanged || !isPlaying || !enabled || !isActive {
-            syncCurrentFrameAndRender()
+            syncCurrentFrameAndRender(positionMillis: currentPositionMillis)
         }
 
         if timelineChanged || playStateChanged {
@@ -139,14 +138,15 @@ final class DanmakuRenderNSView: NSView {
         } else {
             refreshDisplayLinkIfNeeded()
         }
+        updateLayerTreePlayback()
     }
 
     @discardableResult
     private func reconfigureTimelineIfNeeded(force: Bool) -> Bool {
-        let size = CGSize(width: max(1, bounds.width), height: max(1, bounds.height))
+        let size = normalizedRenderSize()
         let signature = DanmakuItemsSignature(items: items)
         let changed = force
-            || size != configuredSize
+            || danmakuSizeChanged(size, configuredSize)
             || layoutMode != configuredLayoutMode
             || settings != configuredSettings
             || signature != configuredItemsSignature
@@ -169,6 +169,9 @@ final class DanmakuRenderNSView: NSView {
             size: size,
             layoutMode: layoutMode
         )
+        if changed {
+            removeStaleTextLayers(keeping: [])
+        }
         return true
     }
 
@@ -177,14 +180,7 @@ final class DanmakuRenderNSView: NSView {
         guard displayLink == nil else { return }
 
         let link = displayLink(target: self, selector: #selector(displayLinkFired(_:)))
-
-        let maxFPS = window?.screen?.maximumFramesPerSecond ?? 60
-        let preferredFPS = min(maxFPS, 90)
-        link.preferredFrameRateRange = CAFrameRateRange(
-            minimum: min(60, Float(preferredFPS)),
-            maximum: Float(maxFPS),
-            preferred: Float(preferredFPS)
-        )
+        updateDisplayLinkFrameRate(link)
         link.add(to: .main, forMode: .common)
         displayLink = link
     }
@@ -208,134 +204,215 @@ final class DanmakuRenderNSView: NSView {
         startDisplayLinkIfNeeded()
     }
 
+    private func updateDisplayLinkFrameRate(_ link: CADisplayLink? = nil) {
+        let targetLink = link ?? displayLink
+        guard let targetLink else { return }
+
+        let maxFPS = max(window?.screen?.maximumFramesPerSecond ?? 60, 60)
+        targetLink.preferredFrameRateRange = CAFrameRateRange(
+            minimum: Float(maxFPS),
+            maximum: Float(maxFPS),
+            preferred: Float(maxFPS)
+        )
+    }
+
     @objc private func displayLinkFired(_ link: CADisplayLink) {
         guard isActive, enabled, isPlaying, !items.isEmpty else { return }
+        let positionMillis = resolvedPositionMillis()
+        resetRenderedLayersIfPositionJumped(positionMillis)
         timeline.sync(
-            positionMs: positionMs,
+            positionMillis: positionMillis,
             isPlaying: true,
-            realtimeMs: displayLinkTimeMs(link)
+            realtimeMillis: displayLinkTimeMillis(link)
         )
-        markNeedsRender()
+        renderCurrentFrame()
     }
 
-    private func syncCurrentFrameAndRender() {
+    private func syncCurrentFrameAndRender(positionMillis: Double? = nil) {
+        let positionMillis = positionMillis ?? resolvedPositionMillis()
+        resetRenderedLayersIfPositionJumped(positionMillis)
         timeline.sync(
-            positionMs: positionMs,
+            positionMillis: positionMillis,
             isPlaying: isPlaying,
-            realtimeMs: currentDisplayLinkTimeMs()
+            realtimeMillis: currentDisplayLinkMillis()
         )
-        markNeedsRender()
+        renderCurrentFrame()
     }
 
-    private func markNeedsRender() {
-        if wantsUpdateLayer {
-            layer?.setNeedsDisplay()
-            displayIfNeeded()
-            return
+    private func resolvedPositionMillis() -> Double {
+        if let playbackEngine,
+           playbackEngine.isPlaying,
+           !playbackEngine.isScrubbing {
+            return playbackEngine.preciseCurrentTime * 1000
         }
-        needsDisplay = true
-        layer?.setNeedsDisplay()
-        displayIfNeeded()
+
+        if let playbackEngine, playbackEngine.isScrubbing {
+            let seconds = playbackEngine.scrubPreviewTime ?? playbackEngine.preciseCurrentTime
+            return seconds * 1000
+        }
+
+        return Double(positionMs)
     }
 
-    override func updateLayer() {
-        guard enabled, isActive else {
-            layer?.contents = nil
+    private func renderCurrentFrame() {
+        guard enabled, isActive, bounds.width > 1, bounds.height > 1 else {
+            removeStaleTextLayers(keeping: [])
             return
         }
 
         let frames = timeline.currentDrawFrames()
-        guard !frames.isEmpty, bounds.width > 0, bounds.height > 0 else {
-            layer?.contents = nil
+        guard !frames.isEmpty else {
+            removeStaleTextLayers(keeping: [])
             return
         }
 
-        layer?.contents = renderFramesToImage(frames)
-    }
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        var visibleIDs = Set<Int>()
+        visibleIDs.reserveCapacity(frames.count)
 
-    override func draw(_ dirtyRect: NSRect) {
-        guard enabled, isActive else { return }
-
-        let frames = timeline.currentDrawFrames()
-        guard !frames.isEmpty else { return }
-
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         for frame in frames {
-            let drawY = bounds.height - frame.y - frame.textHeight
-            frame.mainText.draw(at: CGPoint(x: frame.x, y: drawY))
+            visibleIDs.insert(frame.id)
+            render(frame: frame, contentsScale: scale)
+        }
+        CATransaction.commit()
+
+        removeStaleTextLayers(keeping: visibleIDs)
+        CATransaction.flush()
+    }
+
+    private func render(frame: DanmakuDrawFrame, contentsScale: CGFloat) {
+        if let existing = textLayers[frame.id] {
+            existing.layer.contentsScale = contentsScale
+            if !existing.isAnimated {
+                existing.layer.frame = layerFrame(for: frame)
+            }
+            return
+        }
+
+        let created = CATextLayer()
+        created.string = frame.mainText
+        created.contentsScale = contentsScale
+        created.isWrapped = false
+        created.truncationMode = .none
+        created.alignmentMode = .left
+        created.rasterizationScale = contentsScale
+        created.shouldRasterize = true
+        created.actions = [
+            "position": NSNull(),
+            "bounds": NSNull(),
+            "frame": NSNull(),
+            "contents": NSNull(),
+            "opacity": NSNull()
+        ]
+        created.frame = layerFrame(for: frame)
+        layer?.addSublayer(created)
+        let animated = frame.isScrolling && addScrollAnimation(to: created, frame: frame)
+        textLayers[frame.id] = DanmakuTextLayerState(layer: created, isAnimated: animated)
+    }
+
+    private func layerFrame(for frame: DanmakuDrawFrame) -> CGRect {
+        CGRect(
+            x: frame.x,
+            y: bounds.height - frame.y - frame.textHeight,
+            width: frame.textWidth + 4,
+            height: frame.textHeight + 3
+        )
+    }
+
+    private func addScrollAnimation(to textLayer: CATextLayer, frame: DanmakuDrawFrame) -> Bool {
+        let remainingMillis = frame.durationMillis - frame.elapsedMillis
+        guard remainingMillis > 16 else { return false }
+
+        let startX = frame.x + (frame.textWidth + 4) / 2
+        let endX = frame.endX + (frame.textWidth + 4) / 2
+        let currentY = textLayer.position.y
+        textLayer.position = CGPoint(x: endX, y: currentY)
+
+        let animation = CABasicAnimation(keyPath: "position.x")
+        animation.fromValue = startX
+        animation.toValue = endX
+        animation.duration = remainingMillis / 1000
+        animation.timingFunction = CAMediaTimingFunction(name: .linear)
+        animation.isRemovedOnCompletion = false
+        animation.fillMode = .forwards
+        textLayer.add(animation, forKey: "danmaku-scroll-x")
+        return true
+    }
+
+    private func removeStaleTextLayers(keeping visibleIDs: Set<Int>) {
+        guard !textLayers.isEmpty else { return }
+        let staleIDs = textLayers.keys.filter { !visibleIDs.contains($0) }
+        guard !staleIDs.isEmpty else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for id in staleIDs {
+            textLayers[id]?.layer.removeFromSuperlayer()
+            textLayers.removeValue(forKey: id)
+        }
+        CATransaction.commit()
+        CATransaction.flush()
+    }
+
+    private func resetRenderedLayersIfPositionJumped(_ positionMillis: Double) {
+        defer { lastResolvedPositionMillis = positionMillis }
+        guard let lastResolvedPositionMillis else { return }
+        let delta = positionMillis - lastResolvedPositionMillis
+        if delta > 1_500 || delta < -500 {
+            removeStaleTextLayers(keeping: [])
         }
     }
 
-    private func renderFramesToImage(_ frames: [DanmakuDrawFrame]) -> CGImage? {
-        let scale = window?.backingScaleFactor ?? 2
-        let pixelWidth = Int(bounds.width * scale)
-        let pixelHeight = Int(bounds.height * scale)
-        guard pixelWidth > 0, pixelHeight > 0 else { return nil }
-
-        let pixelSize = CGSize(width: pixelWidth, height: pixelHeight)
-        let context: CGContext
-        if pixelSize == renderContextPixelSize, let renderContext {
-            context = renderContext
-        } else if let created = makeRenderContext(pixelWidth: pixelWidth, pixelHeight: pixelHeight) {
-            renderContext = created
-            renderContextPixelSize = pixelSize
-            context = created
+    private func updateLayerTreePlayback() {
+        guard let layer else { return }
+        let shouldPlay = isActive && enabled && isPlaying
+        if shouldPlay {
+            guard layer.speed == 0 else { return }
+            let pausedTime = layer.timeOffset
+            layer.speed = 1
+            layer.timeOffset = 0
+            layer.beginTime = 0
+            let elapsedSincePause = layer.convertTime(CACurrentMediaTime(), from: nil) - pausedTime
+            layer.beginTime = elapsedSincePause
         } else {
-            return nil
+            guard layer.speed != 0 else { return }
+            let pausedTime = layer.convertTime(CACurrentMediaTime(), from: nil)
+            layer.speed = 0
+            layer.timeOffset = pausedTime
         }
-
-        context.clear(CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
-
-        NSGraphicsContext.saveGraphicsState()
-        let graphicsContext = NSGraphicsContext(cgContext: context, flipped: false)
-        NSGraphicsContext.current = graphicsContext
-
-        for frame in frames {
-            let drawY = bounds.height - frame.y - frame.textHeight
-            frame.mainText.draw(at: CGPoint(x: frame.x, y: drawY))
-        }
-
-        NSGraphicsContext.restoreGraphicsState()
-        return context.makeImage()
     }
 
-    private func makeRenderContext(pixelWidth: Int, pixelHeight: Int) -> CGContext? {
-        let scale = window?.backingScaleFactor ?? 2
-        guard let context = CGContext(
-            data: nil,
-            width: pixelWidth,
-            height: pixelHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: 0,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            return nil
-        }
-        context.scaleBy(x: scale, y: scale)
-        return context
-    }
-
-    private func invalidateRenderContext() {
-        renderContext = nil
-        renderContextPixelSize = .zero
-    }
-
-    private func currentDisplayLinkTimeMs() -> Int64 {
+    private func currentDisplayLinkMillis() -> Double {
         if let displayLink {
-            return displayLinkTimeMs(displayLink)
+            return displayLinkTimeMillis(displayLink)
         }
-        return Int64(CACurrentMediaTime() * 1000)
+        return CACurrentMediaTime() * 1000
     }
 
-    private func displayLinkTimeMs(_ link: CADisplayLink) -> Int64 {
-        Int64(link.timestamp * 1000)
+    private func displayLinkTimeMillis(_ link: CADisplayLink) -> Double {
+        link.timestamp * 1000
+    }
+
+    private func normalizedRenderSize() -> CGSize {
+        CGSize(width: max(1, bounds.width), height: max(1, bounds.height))
     }
 
     deinit {
         MainActor.assumeIsolated {
             stopDisplayLink()
+            removeStaleTextLayers(keeping: [])
         }
     }
+}
+
+private struct DanmakuTextLayerState {
+    let layer: CATextLayer
+    let isAnimated: Bool
+}
+
+private nonisolated func danmakuSizeChanged(_ lhs: CGSize, _ rhs: CGSize) -> Bool {
+    abs(lhs.width - rhs.width) > 0.5 || abs(lhs.height - rhs.height) > 0.5
 }
 
 private nonisolated struct DanmakuItemsSignature: Equatable {

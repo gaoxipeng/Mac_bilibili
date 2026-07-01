@@ -1384,7 +1384,8 @@ private struct VideoPlayerSection: View {
                         enabled: model.danmakuVisible,
                         settings: model.danmakuSettings,
                         layoutMode: isFullscreen ? .fullscreen : .inline,
-                        isActive: rendersDanmaku
+                        isActive: rendersDanmaku,
+                        playbackEngine: player
                     )
                     .equatable()
                 }
@@ -1463,7 +1464,8 @@ private struct VideoPlayerFullscreenContent: View {
                     enabled: model.danmakuVisible,
                     settings: model.danmakuSettings,
                     layoutMode: .fullscreen,
-                    isActive: true
+                    isActive: true,
+                    playbackEngine: player
                 )
                 .allowsHitTesting(false)
                 .ignoresSafeArea()

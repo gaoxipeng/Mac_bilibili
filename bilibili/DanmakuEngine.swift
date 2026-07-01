@@ -4,14 +4,15 @@ import QuartzCore
 import SwiftUI
 
 private let fixedDanmakuDurationMs: Int64 = 4_000
-private let scrollBaseDurationMs: Int64 = 7_000
+private let scrollBaseDurationMs: Int64 = 7_200
 private let scrollPerCharDurationMs: Int64 = 120
-private let spawnLookaheadMs: Int64 = 120
+private let spawnLookaheadMs: Int64 = 900
 private let spawnBacklogSkipMs: Int64 = 14_000
-private let maxSpawnInspectionsPerFrame = 80
-private let maxDanmakuTrackCapacity = 28
-private let fixedDanmakuRowCount = 8
-private let trackGapSec: Float = 0.15
+private let maxSpawnInspectionsPerFrame = 180
+private let maxDanmakuTrackCapacity = 48
+private let fixedDanmakuRowCount = 14
+private let trackGapSec: Float = 0.12
+private let playbackDriftReanchorThresholdMs: Double = 260
 
 func danmakuScrollDurationMs(item: BiliDanmakuItem, speedMultiplier: Float) -> Int64 {
     let base = scrollBaseDurationMs + Int64(item.content.count) * scrollPerCharDurationMs
@@ -37,16 +38,26 @@ func danmakuFontSize(
 }
 
 struct DanmakuDrawFrame {
+    let id: Int
+    let mode: BiliDanmakuMode
     let x: CGFloat
     let y: CGFloat
+    let endX: CGFloat
+    let textWidth: CGFloat
     let textHeight: CGFloat
+    let elapsedMillis: Double
+    let durationMillis: Double
     let mainText: NSAttributedString
+
+    var isScrolling: Bool {
+        mode == .scroll || mode == .reverseScroll
+    }
 }
 
 private struct ActiveDanmaku {
     let item: BiliDanmakuItem
     var track: Int
-    var animStartDisplayTimeMs: Int64
+    var animStartDisplayTimeMillis: Double
     let textWidth: CGFloat
     let textHeight: CGFloat
     let fontSize: CGFloat
@@ -64,15 +75,17 @@ final class DanmakuTimeline {
     private var bottomFixedReleaseTimes = [Float](repeating: 0, count: fixedDanmakuRowCount)
     private var nextIndex = 0
 
-    private var displayTimeMs: Int64 = 0
-    private var anchorPositionMs: Int64 = 0
-    private var anchorRealtimeMs: Int64 = 0
-    private var lastObservedPositionMs: Int64 = 0
+    private var displayTimeMillis: Double = 0
+    private var anchorPositionMillis: Double = 0
+    private var anchorRealtimeMillis: Double = 0
+    private var lastObservedPositionMillis: Double = 0
 
     private var settings = DanmakuSettings()
     private var enabled = false
     private var layoutWidth: CGFloat = 1
     private var layoutMetrics = DanmakuLayoutMetrics.make(mode: .inline, layoutHeight: 1)
+    private var layoutStrategy = DanmakuLayoutStrategy.inline
+    private var trackLineHeight: CGFloat = 24
     private var itemsSignature = DanmakuItemsSignature.empty
     private var drawFrames: [DanmakuDrawFrame] = []
     private var measureCache: [DanmakuMeasureKey: DanmakuMeasuredText] = [:]
@@ -87,7 +100,7 @@ final class DanmakuTimeline {
         let signature = DanmakuItemsSignature(items: items)
         let layoutHeight = max(1, size.height)
         let metrics = DanmakuLayoutMetrics.make(mode: layoutMode, layoutHeight: layoutHeight)
-        let sizeChanged = layoutWidth != size.width || self.layoutMetrics != metrics
+        let sizeChanged = abs(layoutWidth - size.width) > 0.5 || !layoutMetricsApproximatelyEqual(self.layoutMetrics, metrics)
         let settingsChanged = self.settings != settings
         let itemsChanged = signature != itemsSignature
         self.items = items
@@ -95,20 +108,32 @@ final class DanmakuTimeline {
         self.settings = settings
         layoutWidth = max(1, size.width)
         layoutMetrics = metrics
+        layoutStrategy = DanmakuLayoutStrategy(
+            mode: layoutMode,
+            settings: settings,
+            width: max(1, size.width),
+            metrics: metrics
+        )
+        trackLineHeight = Self.resolvedTrackLineHeight(
+            items: items,
+            settings: settings,
+            metrics: metrics,
+            strategy: layoutStrategy
+        )
         itemsSignature = signature
         if itemsChanged || settingsChanged {
             measureCache.removeAll()
         }
         if itemsChanged || settingsChanged || sizeChanged {
-            resetTimeline(positionMs: anchorPositionMs)
+            resetTimeline(positionMillis: anchorPositionMillis)
         }
     }
 
     func sync(
-        positionMs: Int64,
+        positionMillis: Double,
         isPlaying: Bool,
         playbackSpeed: Float = 1,
-        realtimeMs: Int64? = nil
+        realtimeMillis: Double? = nil
     ) {
         guard enabled, !items.isEmpty else {
             activeDanmaku.removeAll()
@@ -116,24 +141,34 @@ final class DanmakuTimeline {
             return
         }
 
-        let positionDelta = positionMs - lastObservedPositionMs
-        let positionJumped = positionDelta > 1_500 || positionDelta < -120
-        lastObservedPositionMs = positionMs
+        let positionDelta = positionMillis - lastObservedPositionMillis
+        let positionJumped = positionDelta > 1_500 || positionDelta < -500
+        lastObservedPositionMillis = positionMillis
         if positionJumped {
-            resetTimeline(positionMs: positionMs)
+            resetTimeline(positionMillis: positionMillis)
         } else if !isPlaying {
-            anchorPositionMs = positionMs
-            anchorRealtimeMs = realtimeMs ?? currentRealtimeMs()
-            displayTimeMs = positionMs
+            anchorPositionMillis = positionMillis
+            anchorRealtimeMillis = realtimeMillis ?? currentRealtimeMillis()
+            displayTimeMillis = positionMillis
         }
 
         if isPlaying {
-            let elapsed = (realtimeMs ?? currentRealtimeMs()) - anchorRealtimeMs
-            displayTimeMs = anchorPositionMs + Int64(Double(elapsed) * Double(max(0.1, playbackSpeed)))
+            if let realtimeMillis {
+                let elapsed = realtimeMillis - anchorRealtimeMillis
+                displayTimeMillis = anchorPositionMillis + elapsed * Double(max(0.1, playbackSpeed))
+                let drift = positionMillis - displayTimeMillis
+                if abs(drift) > playbackDriftReanchorThresholdMs {
+                    anchorPositionMillis = positionMillis
+                    anchorRealtimeMillis = realtimeMillis
+                    displayTimeMillis = positionMillis
+                }
+            } else {
+                displayTimeMillis = positionMillis
+            }
         }
 
-        spawnDue(displayTimeMs: displayTimeMs)
-        pruneExpired(displayTimeMs: displayTimeMs)
+        spawnDue(displayTimeMillis: displayTimeMillis)
+        pruneExpired(displayTimeMillis: displayTimeMillis)
         rebuildDrawFrames()
     }
 
@@ -141,60 +176,64 @@ final class DanmakuTimeline {
         drawFrames
     }
 
-    func reanchorOnPlayStateChange(isPlaying: Bool, positionMs: Int64, realtimeMs: Int64? = nil) {
-        if isPlaying {
-            anchorPositionMs = positionMs
-            displayTimeMs = positionMs
-            anchorRealtimeMs = realtimeMs ?? currentRealtimeMs()
-        } else {
-            anchorPositionMs = positionMs
-            displayTimeMs = positionMs
-            anchorRealtimeMs = realtimeMs ?? currentRealtimeMs()
-        }
+    func reanchorOnPlayStateChange(isPlaying: Bool, positionMillis: Double, realtimeMillis: Double? = nil) {
+        anchorPositionMillis = positionMillis
+        displayTimeMillis = positionMillis
+        anchorRealtimeMillis = realtimeMillis ?? currentRealtimeMillis()
+        lastObservedPositionMillis = positionMillis
     }
 
-    private func resetTimeline(positionMs: Int64) {
+    private func resetTimeline(positionMillis: Double) {
         activeDanmaku.removeAll(keepingCapacity: true)
         spawnedIDs.removeAll(keepingCapacity: true)
         drawFrames.removeAll(keepingCapacity: true)
         trackReleaseTimes = [Float](repeating: 0, count: maxDanmakuTrackCapacity)
         topFixedReleaseTimes = [Float](repeating: 0, count: fixedDanmakuRowCount)
         bottomFixedReleaseTimes = [Float](repeating: 0, count: fixedDanmakuRowCount)
-        nextIndex = spawnIndexForPosition(items: items, positionMs: max(0, positionMs - spawnBacklogSkipMs))
-        anchorPositionMs = positionMs
-        displayTimeMs = positionMs
-        anchorRealtimeMs = currentRealtimeMs()
-        lastObservedPositionMs = positionMs
+        nextIndex = spawnIndexForPosition(
+            items: items,
+            positionMillis: max(0, positionMillis - Double(spawnBacklogSkipMs))
+        )
+        anchorPositionMillis = positionMillis
+        displayTimeMillis = positionMillis
+        anchorRealtimeMillis = currentRealtimeMillis()
+        lastObservedPositionMillis = positionMillis
     }
 
-    private func spawnDue(displayTimeMs: Int64) {
+    private func spawnDue(displayTimeMillis: Double) {
         if nextIndex < items.count,
-           items[nextIndex].timeMs < displayTimeMs - spawnBacklogSkipMs {
-            nextIndex = spawnIndexForPosition(items: items, positionMs: displayTimeMs - spawnLookaheadMs)
+           Double(items[nextIndex].timeMs) < displayTimeMillis - Double(spawnBacklogSkipMs) {
+            nextIndex = spawnIndexForPosition(
+                items: items,
+                positionMillis: displayTimeMillis - Double(spawnLookaheadMs)
+            )
         }
         var inspected = 0
         while nextIndex < items.count,
-              items[nextIndex].timeMs <= displayTimeMs + spawnLookaheadMs,
+              Double(items[nextIndex].timeMs) <= displayTimeMillis + Double(spawnLookaheadMs),
               inspected < maxSpawnInspectionsPerFrame {
             let item = items[nextIndex]
             nextIndex += 1
             inspected += 1
-            _ = trySpawn(item: item, animStartDisplayTimeMs: item.timeMs, displayTimeMs: displayTimeMs)
+            _ = trySpawn(
+                item: item,
+                animStartDisplayTimeMillis: Double(item.timeMs),
+                displayTimeMillis: displayTimeMillis
+            )
         }
     }
 
-    private func trySpawn(item: BiliDanmakuItem, animStartDisplayTimeMs: Int64, displayTimeMs: Int64) -> Bool {
+    private func trySpawn(item: BiliDanmakuItem, animStartDisplayTimeMillis: Double, displayTimeMillis: Double) -> Bool {
         guard !spawnedIDs.contains(item.id) else { return false }
-        guard passesDensityGate(item: item, items: items) else { return false }
+        guard layoutStrategy.shouldKeep(item: item, totalItemCount: items.count) else { return false }
         guard let measured = measureDanmaku(item: item) else { return false }
 
         let mode = BiliDanmakuMode.from(item.mode) ?? .scroll
-        let speedMultiplier = settings.speedLevel.durationMultiplier
-        let currentTimeSec = Float(animStartDisplayTimeMs) / 1000
+        let speedMultiplier = layoutStrategy.speedMultiplier
         let scrollAreaHeight = scrollAreaHeightPx()
         let screenWidth = layoutWidth
         let gapPx = layoutMetrics.scrollGap
-        let trackLineHeight = layoutMetrics.trackLineHeight
+        let scheduledStartMillis = scheduledDisplayTimeMillis(for: item, mode: mode)
 
         let active: ActiveDanmaku?
         switch mode {
@@ -205,7 +244,7 @@ final class DanmakuTimeline {
             if let row = assignFixedDanmakuRow(
                 releaseTimes: &releaseTimes,
                 maxRows: maxRows,
-                currentTimeSec: currentTimeSec,
+                currentTimeSec: Float(scheduledStartMillis / 1000),
                 durationSec: durationSec
             ) {
                 if mode == .top {
@@ -216,7 +255,7 @@ final class DanmakuTimeline {
                 active = ActiveDanmaku(
                     item: item,
                     track: row,
-                    animStartDisplayTimeMs: animStartDisplayTimeMs,
+                    animStartDisplayTimeMillis: scheduledStartMillis,
                     textWidth: measured.textWidth,
                     textHeight: measured.textHeight,
                     fontSize: measured.fontSize,
@@ -227,13 +266,13 @@ final class DanmakuTimeline {
                 active = nil
             }
         case .scroll, .reverseScroll:
-            let durationSec = Float(danmakuScrollDurationMs(item: item, speedMultiplier: speedMultiplier)) / 1000
-            let maxTracks = min(layoutMetrics.maxTrackCount, max(1, Int(scrollAreaHeight / trackLineHeight)))
+            let durationSec = Float(layoutStrategy.scrollDurationMillis(for: item)) / 1000
+            let maxTracks = min(layoutStrategy.maxTrackCount, max(1, Int(scrollAreaHeight / trackLineHeight)))
             let reverse = mode == .reverseScroll
-            let durationMs = danmakuScrollDurationMs(item: item, speedMultiplier: speedMultiplier)
+            let durationMs = layoutStrategy.scrollDurationMillis(for: item)
             if let track = assignDanmakuTrack(
                 activeDanmaku: activeDanmaku,
-                displayTimeMs: animStartDisplayTimeMs,
+                displayTimeMillis: scheduledStartMillis,
                 trackReleaseTimes: &trackReleaseTimes,
                 maxTracks: maxTracks,
                 durationSec: durationSec,
@@ -247,7 +286,7 @@ final class DanmakuTimeline {
                 active = ActiveDanmaku(
                     item: item,
                     track: track,
-                    animStartDisplayTimeMs: animStartDisplayTimeMs,
+                    animStartDisplayTimeMillis: scheduledStartMillis,
                     textWidth: measured.textWidth,
                     textHeight: measured.textHeight,
                     fontSize: measured.fontSize,
@@ -263,6 +302,11 @@ final class DanmakuTimeline {
         spawnedIDs.insert(item.id)
         activeDanmaku.append(active)
         return true
+    }
+
+    private func scheduledDisplayTimeMillis(for item: BiliDanmakuItem, mode: BiliDanmakuMode) -> Double {
+        let spread = layoutStrategy.spawnSpreadMillis(for: item, mode: mode, totalItemCount: items.count)
+        return Double(item.timeMs) + spread
     }
 
     private func measureDanmaku(item: BiliDanmakuItem) -> DanmakuMeasuredText? {
@@ -308,23 +352,22 @@ final class DanmakuTimeline {
         return measured
     }
 
-    private func pruneExpired(displayTimeMs: Int64) {
-        let speedMultiplier = settings.speedLevel.durationMultiplier
+    private func pruneExpired(displayTimeMillis: Double) {
+        let speedMultiplier = layoutStrategy.speedMultiplier
         activeDanmaku.removeAll { active in
-            let elapsed = displayTimeMs - active.animStartDisplayTimeMs
+            let elapsed = displayTimeMillis - active.animStartDisplayTimeMillis
             guard elapsed >= 0 else { return false }
             let mode = BiliDanmakuMode.from(active.item.mode) ?? .scroll
             switch mode {
             case .bottom, .top:
-                return elapsed > Int64(Float(fixedDanmakuDurationMs) * speedMultiplier)
+                return elapsed > Double(fixedDanmakuDurationMs) * Double(speedMultiplier)
             case .scroll, .reverseScroll:
-                return elapsed > active.scrollDurationMs
+                return elapsed > Double(active.scrollDurationMs)
             }
         }
     }
 
     private func rebuildDrawFrames() {
-        let trackLineHeight = layoutMetrics.trackLineHeight
         let bottomReservePx = layoutMetrics.bottomReserve
         let heightPx = layoutMetrics.layoutHeight
         let widthPx = layoutWidth
@@ -334,9 +377,16 @@ final class DanmakuTimeline {
         drawFrames.reserveCapacity(activeDanmaku.count)
 
         for active in activeDanmaku {
-            let elapsed = displayTimeMs - active.animStartDisplayTimeMs
+            let elapsed = displayTimeMillis - active.animStartDisplayTimeMillis
             guard elapsed >= 0 else { continue }
             let mode = BiliDanmakuMode.from(active.item.mode) ?? .scroll
+            let durationMillis: Double
+            switch mode {
+            case .bottom, .top:
+                durationMillis = Double(fixedDanmakuDurationMs) * Double(layoutStrategy.speedMultiplier)
+            case .scroll, .reverseScroll:
+                durationMillis = Double(active.scrollDurationMs)
+            }
             let rowGap = trackLineHeight
             let y: CGFloat
             switch mode {
@@ -351,24 +401,34 @@ final class DanmakuTimeline {
                 y = CGFloat(active.track) * rowGap + max(0, (rowGap - active.textHeight) / 2)
             }
             let x: CGFloat
+            let endX: CGFloat
             switch mode {
             case .bottom, .top:
                 x = (widthPx - active.textWidth) / 2
+                endX = x
             case .reverseScroll:
                 let duration = CGFloat(active.scrollDurationMs)
                 let progress = min(1, max(0, CGFloat(elapsed) / max(1, duration)))
                 x = -active.textWidth + (widthPx + active.textWidth) * progress
+                endX = widthPx
             case .scroll:
                 let duration = CGFloat(active.scrollDurationMs)
                 let progress = min(1, max(0, CGFloat(elapsed) / max(1, duration)))
                 x = widthPx - (widthPx + active.textWidth) * progress
+                endX = -active.textWidth
             }
-            drawFrames.append(
-                DanmakuDrawFrame(
-                    x: x,
-                    y: y,
-                    textHeight: active.textHeight,
-                    mainText: active.mainText
+                drawFrames.append(
+                    DanmakuDrawFrame(
+                        id: active.item.id,
+                        mode: mode,
+                        x: x,
+                        y: y,
+                        endX: endX,
+                        textWidth: active.textWidth,
+                        textHeight: active.textHeight,
+                        elapsedMillis: elapsed,
+                        durationMillis: durationMillis,
+                        mainText: active.mainText
                 )
             )
         }
@@ -382,8 +442,22 @@ final class DanmakuTimeline {
         return full * percent
     }
 
-    private func currentRealtimeMs() -> Int64 {
-        Int64(CACurrentMediaTime() * 1000)
+    private func currentRealtimeMillis() -> Double {
+        CACurrentMediaTime() * 1000
+    }
+
+    private static func resolvedTrackLineHeight(
+        items: [BiliDanmakuItem],
+        settings: DanmakuSettings,
+        metrics: DanmakuLayoutMetrics,
+        strategy: DanmakuLayoutStrategy
+    ) -> CGFloat {
+        let fallbackFontSize: CGFloat = metrics.mode == .inline ? 28 : 44
+        let maxFontSize = items.reduce(CGFloat(0)) { partial, item in
+            max(partial, metrics.fontSize(itemFontSize: item.fontSize, settings: settings))
+        }
+        let protectedFontSize = max(maxFontSize, min(fallbackFontSize, metrics.fontSize(itemFontSize: 25, settings: settings)))
+        return max(strategy.minimumTrackLineHeight, ceil(protectedFontSize * strategy.lineHeightMultiplier + strategy.lineHeightPadding))
     }
 }
 
@@ -395,6 +469,106 @@ private func danmakuNSColor(_ argb: Int) -> NSColor {
         blue: CGFloat(value & 0xFF) / 255,
         alpha: 1
     )
+}
+
+private func layoutMetricsApproximatelyEqual(_ lhs: DanmakuLayoutMetrics, _ rhs: DanmakuLayoutMetrics) -> Bool {
+    lhs.mode == rhs.mode && abs(lhs.layoutHeight - rhs.layoutHeight) <= 0.5
+}
+
+private struct DanmakuLayoutStrategy {
+    let mode: DanmakuLayoutMode
+    let speedMultiplier: Float
+    let spawnSpreadMillis: Double
+    let fixedSpawnSpreadMillis: Double
+    let densityKeepRatio: Double
+    let minimumTrackLineHeight: CGFloat
+    let lineHeightMultiplier: CGFloat
+    let lineHeightPadding: CGFloat
+    let maxTrackCount: Int
+
+    static let inline = DanmakuLayoutStrategy(
+        mode: .inline,
+        speedMultiplier: DanmakuSpeedLevel.medium.durationMultiplier,
+        spawnSpreadMillis: 520,
+        fixedSpawnSpreadMillis: 220,
+        densityKeepRatio: 1,
+        minimumTrackLineHeight: 24,
+        lineHeightMultiplier: 1.36,
+        lineHeightPadding: 6,
+        maxTrackCount: 18
+    )
+
+    init(mode: DanmakuLayoutMode, settings: DanmakuSettings, width: CGFloat, metrics: DanmakuLayoutMetrics) {
+        self.mode = mode
+        speedMultiplier = settings.speedLevel.durationMultiplier
+        switch mode {
+        case .inline:
+            spawnSpreadMillis = 560
+            fixedSpawnSpreadMillis = 220
+            densityKeepRatio = metrics.layoutHeight < 220 ? 0.84 : 0.92
+            minimumTrackLineHeight = 24
+            lineHeightMultiplier = 1.38
+            lineHeightPadding = 7
+            maxTrackCount = 20
+        case .fullscreen:
+            spawnSpreadMillis = width > 1_600 ? 780 : 680
+            fixedSpawnSpreadMillis = 320
+            densityKeepRatio = 1
+            minimumTrackLineHeight = 34
+            lineHeightMultiplier = 1.34
+            lineHeightPadding = 8
+            maxTrackCount = 44
+        }
+    }
+
+    private init(
+        mode: DanmakuLayoutMode,
+        speedMultiplier: Float,
+        spawnSpreadMillis: Double,
+        fixedSpawnSpreadMillis: Double,
+        densityKeepRatio: Double,
+        minimumTrackLineHeight: CGFloat,
+        lineHeightMultiplier: CGFloat,
+        lineHeightPadding: CGFloat,
+        maxTrackCount: Int
+    ) {
+        self.mode = mode
+        self.speedMultiplier = speedMultiplier
+        self.spawnSpreadMillis = spawnSpreadMillis
+        self.fixedSpawnSpreadMillis = fixedSpawnSpreadMillis
+        self.densityKeepRatio = densityKeepRatio
+        self.minimumTrackLineHeight = minimumTrackLineHeight
+        self.lineHeightMultiplier = lineHeightMultiplier
+        self.lineHeightPadding = lineHeightPadding
+        self.maxTrackCount = maxTrackCount
+    }
+
+    func scrollDurationMillis(for item: BiliDanmakuItem) -> Int64 {
+        danmakuScrollDurationMs(item: item, speedMultiplier: speedMultiplier)
+    }
+
+    func spawnSpreadMillis(for item: BiliDanmakuItem, mode: BiliDanmakuMode, totalItemCount: Int) -> Double {
+        let base = mode == .scroll || mode == .reverseScroll ? spawnSpreadMillis : fixedSpawnSpreadMillis
+        guard base > 0 else { return 0 }
+        let densityBoost = totalItemCount > 4_000 ? 1.18 : (totalItemCount > 1_500 ? 1.08 : 1)
+        return Double(stableDanmakuHash(item.id, item.timeMs) % 1_000) / 999 * base * densityBoost
+    }
+
+    func shouldKeep(item: BiliDanmakuItem, totalItemCount: Int) -> Bool {
+        guard densityKeepRatio < 0.999 else { return true }
+        let pressureRatio: Double
+        if totalItemCount > 8_000 {
+            pressureRatio = densityKeepRatio * 0.70
+        } else if totalItemCount > 4_000 {
+            pressureRatio = densityKeepRatio * 0.78
+        } else if totalItemCount > 2_000 {
+            pressureRatio = densityKeepRatio * 0.88
+        } else {
+            pressureRatio = densityKeepRatio
+        }
+        let bucket = stableDanmakuHash(item.id, item.timeMs) % 10_000
+        return Double(bucket) < pressureRatio * 10_000
+    }
 }
 
 private struct DanmakuMeasuredText {
@@ -426,23 +600,24 @@ private struct DanmakuItemsSignature: Equatable {
     }
 }
 
-private func spawnIndexForPosition(items: [BiliDanmakuItem], positionMs: Int64) -> Int {
+private func spawnIndexForPosition(items: [BiliDanmakuItem], positionMillis: Double) -> Int {
     guard !items.isEmpty else { return 0 }
+    let positionMs = Int64(positionMillis.rounded(.down))
     if let index = items.firstIndex(where: { $0.timeMs >= positionMs }) {
         return index
     }
     return items.count
 }
 
-private func passesDensityGate(item: BiliDanmakuItem, items: [BiliDanmakuItem]) -> Bool {
-    guard items.count > 1_200 else { return true }
-    let keepRatio: Float = {
-        if items.count > 8_000 { return 0.45 }
-        if items.count > 4_000 { return 0.55 }
-        if items.count > 2_000 { return 0.68 }
-        return 0.82
-    }()
-    return abs(item.id % 100) < Int(keepRatio * 100)
+private func stableDanmakuHash(_ id: Int, _ timeMs: Int64) -> Int {
+    var value = UInt64(bitPattern: Int64(id))
+    value &+= UInt64(bitPattern: timeMs) &* 0x9E37_79B9_7F4A_7C15
+    value ^= value >> 30
+    value &*= 0xBF58_476D_1CE4_E5B9
+    value ^= value >> 27
+    value &*= 0x94D0_49BB_1331_11EB
+    value ^= value >> 31
+    return Int(value % UInt64(Int.max))
 }
 
 private func fixedDanmakuMaxRows(scrollAreaHeight: CGFloat, lineHeight: CGFloat) -> Int {
@@ -477,7 +652,7 @@ private func assignFixedDanmakuRow(
 
 private func assignDanmakuTrack(
     activeDanmaku: [ActiveDanmaku],
-    displayTimeMs: Int64,
+    displayTimeMillis: Double,
     trackReleaseTimes: inout [Float],
     maxTracks: Int,
     durationSec: Float,
@@ -489,13 +664,13 @@ private func assignDanmakuTrack(
     reverse: Bool
 ) -> Int? {
     let trackCount = min(maxTracks, trackReleaseTimes.count)
-    let currentTimeSec = Float(displayTimeMs) / 1000
+    let currentTimeSec = Float(displayTimeMillis / 1000)
     let available = (0..<trackCount).filter { track in
         trackReleaseTimes[track] <= currentTimeSec &&
             canSpawnScrollOnTrack(
                 track: track,
                 activeDanmaku: activeDanmaku,
-                displayTimeMs: displayTimeMs,
+                displayTimeMillis: displayTimeMillis,
                 screenWidth: screenWidth,
                 gapPx: gapPx,
                 speedMultiplier: speedMultiplier,
@@ -503,7 +678,7 @@ private func assignDanmakuTrack(
             )
     }
     guard !available.isEmpty else { return nil }
-    let track = available[Int(displayTimeMs % Int64(available.count))]
+    let track = available[Int(Int64(displayTimeMillis) % Int64(available.count))]
     let entryBlock = scrollTrackEntryBlockSec(
         durationSec: durationSec,
         textWidth: textWidth,
@@ -517,7 +692,7 @@ private func assignDanmakuTrack(
 private func canSpawnScrollOnTrack(
     track: Int,
     activeDanmaku: [ActiveDanmaku],
-    displayTimeMs: Int64,
+    displayTimeMillis: Double,
     screenWidth: CGFloat,
     gapPx: CGFloat,
     speedMultiplier: Float,
@@ -529,10 +704,10 @@ private func canSpawnScrollOnTrack(
         guard mode == .scroll || isReverse else { continue }
         guard reverse == isReverse else { continue }
 
-        let elapsed = displayTimeMs - active.animStartDisplayTimeMs
+        let elapsed = displayTimeMillis - active.animStartDisplayTimeMillis
         guard elapsed >= 0 else { continue }
         let durationMs = danmakuScrollDurationMs(item: active.item, speedMultiplier: speedMultiplier)
-        guard elapsed < durationMs else { continue }
+        guard elapsed < Double(durationMs) else { continue }
 
         let leftPx: CGFloat
         if reverse {

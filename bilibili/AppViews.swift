@@ -16,6 +16,73 @@ enum VideoCardLayout {
         Int((minWidth * max(1, displayScale) * 1.05).rounded(.up))
     }
 
+    static func columnCount(for width: CGFloat) -> Int {
+        guard width > 0 else { return 1 }
+        return max(1, Int((width + gridSpacing) / (minWidth + gridSpacing)))
+    }
+
+    static func columnWidth(for totalWidth: CGFloat, columnCount: Int) -> CGFloat {
+        let spacingTotal = CGFloat(max(columnCount - 1, 0)) * gridSpacing
+        return max((totalWidth - spacingTotal) / CGFloat(columnCount), 1)
+    }
+
+    static func estimatedCardHeight(
+        for video: BiliVideo,
+        columnWidth: CGFloat,
+        largeTypography: Bool,
+        waterfallStyle: Bool
+    ) -> CGFloat {
+        let coverHeight = columnWidth / coverAspect
+        let horizontalInset = metadataPadding.leading + metadataPadding.trailing
+        let titleWidth = max(columnWidth - horizontalInset, 1)
+        let titleFontSize: CGFloat = largeTypography ? 22 : 18
+        let lineHeight = titleFontSize * 1.28
+        let avgCharWidth = titleFontSize * 0.92
+        let charsPerLine = max(1, Int(titleWidth / avgCharWidth))
+        let maxLines = waterfallStyle ? 6 : 2
+        let lineCount = min(
+            max(1, Int(ceil(Double(video.title.count) / Double(charsPerLine)))),
+            maxLines
+        )
+        let titleHeight = CGFloat(lineCount) * lineHeight
+        let statsHeight: CGFloat = largeTypography ? 24 : 20
+        let authorHeight: CGFloat = largeTypography ? 30 : 26
+        return coverHeight
+            + metadataPadding.top
+            + metadataPadding.bottom
+            + titleHeight
+            + metadataSpacing
+            + statsHeight
+            + metadataSpacing
+            + authorHeight
+    }
+
+    static func distribute(
+        _ videos: [BiliVideo],
+        columnCount: Int,
+        columnWidth: CGFloat,
+        largeTypography: Bool,
+        waterfallStyle: Bool
+    ) -> [[BiliVideo]] {
+        guard columnCount > 0 else { return [videos] }
+
+        var columns = Array(repeating: [BiliVideo](), count: columnCount)
+        var columnHeights = Array(repeating: CGFloat(0), count: columnCount)
+
+        for video in videos {
+            let targetColumn = columnHeights.enumerated().min(by: { $0.element < $1.element })?.offset ?? 0
+            columns[targetColumn].append(video)
+            columnHeights[targetColumn] += estimatedCardHeight(
+                for: video,
+                columnWidth: columnWidth,
+                largeTypography: largeTypography,
+                waterfallStyle: waterfallStyle
+            ) + gridSpacing
+        }
+
+        return columns
+    }
+
     static let gridColumns = [
         GridItem(.adaptive(minimum: minWidth), spacing: gridSpacing, alignment: .top)
     ]
@@ -26,6 +93,7 @@ struct VideoFeedGrid<Trailing: View>: View {
     var largeTypography = false
     var onVideoAppear: ((BiliVideo) -> Void)? = nil
     @ViewBuilder var trailing: () -> Trailing
+    @State private var availableWidth: CGFloat = 0
 
     init(
         videos: [BiliVideo],
@@ -40,37 +108,77 @@ struct VideoFeedGrid<Trailing: View>: View {
     }
 
     var body: some View {
-        LazyVGrid(
-            columns: VideoCardLayout.gridColumns,
-            alignment: .leading,
-            spacing: VideoCardLayout.gridSpacing
-        ) {
-            videoItems
+        let layoutWidth = resolvedLayoutWidth
+        let columnCount = VideoCardLayout.columnCount(for: layoutWidth)
+        let columnWidth = VideoCardLayout.columnWidth(for: layoutWidth, columnCount: columnCount)
+        let columns = VideoCardLayout.distribute(
+            videos,
+            columnCount: columnCount,
+            columnWidth: columnWidth,
+            largeTypography: largeTypography,
+            waterfallStyle: true
+        )
+
+        VStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
+            HStack(alignment: .top, spacing: VideoCardLayout.gridSpacing) {
+                ForEach(0..<columnCount, id: \.self) { columnIndex in
+                    LazyVStack(spacing: VideoCardLayout.gridSpacing) {
+                        ForEach(columns[columnIndex]) { video in
+                            FeedVideoCard(
+                                video: video,
+                                largeTypography: largeTypography,
+                                waterfallStyle: true
+                            )
+                            .frame(width: columnWidth, alignment: .top)
+                            .onAppear { onVideoAppear?(video) }
+                        }
+                    }
+                    .frame(width: columnWidth, alignment: .top)
+                }
+            }
+
             trailing()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            GeometryReader { geometry in
+                Color.clear
+                    .preference(key: FeedAvailableWidthPreferenceKey.self, value: geometry.size.width)
+            }
+        }
+        .onPreferenceChange(FeedAvailableWidthPreferenceKey.self) { width in
+            guard width > 0, abs(width - availableWidth) > 0.5 else { return }
+            availableWidth = width
+        }
     }
 
-    @ViewBuilder
-    private var videoItems: some View {
-        ForEach(videos) { video in
-            FeedVideoCard(video: video, largeTypography: largeTypography)
-                .frame(
-                    maxWidth: .infinity,
-                    maxHeight: nil,
-                    alignment: .top
-                )
-                .onAppear { onVideoAppear?(video) }
+    private var resolvedLayoutWidth: CGFloat {
+        if availableWidth > 0 {
+            return availableWidth
         }
+        return VideoCardLayout.minWidth * 2 + VideoCardLayout.gridSpacing
+    }
+}
+
+private struct FeedAvailableWidthPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
 private struct FeedVideoCard: View {
     let video: BiliVideo
     let largeTypography: Bool
+    var waterfallStyle = false
 
     var body: some View {
-        VideoCard(video: video, largeTypography: largeTypography)
+        VideoCard(
+            video: video,
+            largeTypography: largeTypography,
+            waterfallStyle: waterfallStyle
+        )
     }
 }
 
@@ -461,6 +569,7 @@ struct StateBanner: View {
 struct VideoCard: View {
     let video: BiliVideo
     var largeTypography = false
+    var waterfallStyle = false
     @State private var isCoverHovered = false
 
     private var titleFont: Font {
@@ -553,7 +662,7 @@ struct VideoCard: View {
                     Text(video.title)
                         .font(titleFont)
                         .foregroundStyle(.primary)
-                        .lineLimit(2)
+                        .lineLimit(waterfallStyle ? nil : 2)
                         .multilineTextAlignment(.leading)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                         .fixedSize(horizontal: false, vertical: true)

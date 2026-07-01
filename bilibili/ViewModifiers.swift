@@ -35,7 +35,6 @@ enum AppLayout {
     static let searchUserResultCapsuleHeight: CGFloat = 104
     static let searchUserResultColumnSpacing: CGFloat = 12
     static let searchUserResultsHorizontalInset: CGFloat = 32
-    static let searchPageTopInset: CGFloat = 8
 
     static func searchUserResultLayout(contentWidth: CGFloat) -> SearchUserResultLayout {
         let minWidthForTwoColumns = searchUserResultCapsuleWidth * 2 + searchUserResultColumnSpacing
@@ -67,9 +66,9 @@ enum AppLayout {
         )
     }
 
-    /// 搜索页搜索框距顶偏移，与左上角刷新按钮同一行，不再使用整段 floating chrome 预留高度。
+    /// 搜索框顶部与浮动返回/刷新按钮顶部对齐。
     static var searchBarTopOffset: CGFloat {
-        floatingChromeInset + searchPageTopInset
+        floatingChromeInset
     }
     static let sidebarBackground = Color(red: 0.969, green: 0.969, blue: 0.973)
     static let sidebarBlurWhiteTint: CGFloat = 0.46

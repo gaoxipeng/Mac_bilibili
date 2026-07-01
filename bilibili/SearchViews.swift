@@ -332,10 +332,6 @@ struct SearchDashboard: View {
     @State private var isSearchDropdownPresented = false
     @State private var searchDropdownActiveEntryID: String?
 
-    private var searchChromeBackReserve: CGFloat {
-        AppLayout.floatingChromeInset + AppLayout.floatingChromeButtonSize + 12
-    }
-
     var body: some View {
         GeometryReader { geometry in
             let metrics = SearchPageMetrics(viewportWidth: geometry.size.width)
@@ -343,12 +339,7 @@ struct SearchDashboard: View {
             VStack(spacing: 0) {
                 VStack(spacing: 8) {
                     HStack(spacing: 0) {
-                        if searchModel.isShowingResults {
-                            Spacer()
-                                .frame(width: searchChromeBackReserve)
-                        } else {
-                            Spacer(minLength: metrics.horizontalPadding)
-                        }
+                        Spacer(minLength: metrics.horizontalPadding)
 
                         HStack(alignment: .center, spacing: AppLayout.searchHeaderSpacing) {
                             MacSearchSuggestCombo(

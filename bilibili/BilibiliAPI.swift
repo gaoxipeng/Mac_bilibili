@@ -98,7 +98,7 @@ actor BilibiliAPI {
         return JSONParser.parseSearchUserPage(from: json)
     }
 
-    func hotSearchItems(limit: Int = 20) async throws -> [BiliHotSearchItem] {
+    func hotSearchItems(limit: Int = 30) async throws -> [BiliHotSearchItem] {
         let json = try await json(
             url: "https://s.search.bilibili.com/main/hotword",
             params: ["limit": "\(max(1, limit))"],
@@ -175,6 +175,28 @@ actor BilibiliAPI {
             throw APIError.message("无法读取用户资料")
         }
         return profile
+    }
+
+    func userSign(mid: Int64, credential: BilibiliCredential? = nil) async -> String {
+        let referer = "https://space.bilibili.com/\(mid)"
+        let cardJSON = try? await json(
+            url: "https://api.bilibili.com/x/web-interface/card",
+            params: ["mid": "\(mid)", "photo": "true"],
+            credential: credential,
+            referer: referer
+        )
+        if let sign = cardJSON.flatMap({ JSONParser.parseUserCardProfile(from: $0) })?.sign
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !sign.isEmpty {
+            return sign
+        }
+        let accJSON = try? await wbiJSON(
+            url: "https://api.bilibili.com/x/space/wbi/acc/info",
+            params: ["mid": "\(mid)"],
+            credential: credential,
+            referer: referer
+        )
+        return accJSON.flatMap { JSONParser.parseUserAccInfo(from: $0) }?.sign ?? ""
     }
 
     func userProfile(mid: Int64, credential: BilibiliCredential? = nil) async throws -> BiliUserProfile {
@@ -349,6 +371,29 @@ actor BilibiliAPI {
             throw APIError.message("无法读取视频详情")
         }
         return detail
+    }
+
+    func videoOnlineCount(
+        bvid: String,
+        aid: Int64,
+        cid: Int64,
+        credential: BilibiliCredential? = nil
+    ) async -> Int64 {
+        guard !bvid.isEmpty, cid > 0 else { return 0 }
+        let referer = "https://www.bilibili.com/video/\(bvid)"
+        guard let json = try? await self.json(
+            url: "https://api.bilibili.com/x/player/online/total",
+            params: [
+                "bvid": bvid,
+                "aid": "\(aid)",
+                "cid": "\(cid)"
+            ],
+            credential: credential,
+            referer: referer
+        ) else {
+            return 0
+        }
+        return JSONParser.parseOnlineCount(from: json)
     }
 
     func videoRelation(

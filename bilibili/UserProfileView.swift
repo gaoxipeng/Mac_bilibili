@@ -247,7 +247,7 @@ struct UserProfileView: View {
                         .font(.system(size: 30, weight: .bold))
                         .lineLimit(2)
                     if let level = model.profile?.level, level > 0 {
-                        BiliUserLevelIcon(level: level, width: 38, height: 24)
+                        BiliUserLevelIcon(level: level, width: 30, height: 19)
                     }
                 }
 
@@ -443,17 +443,6 @@ private struct ProfileCoverCarousel: View {
                 } else {
                     coverImage(urls[0])
                 }
-
-                LinearGradient(
-                    colors: [
-                        Color.black.opacity(0.08),
-                        Color.black.opacity(0.02),
-                        Color.white.opacity(0.05),
-                        Color.white.opacity(0.92)
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
 
                 if hasMultiple {
                     VStack {

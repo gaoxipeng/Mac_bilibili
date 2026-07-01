@@ -5,6 +5,7 @@ struct ContentView: View {
     @State private var sidebarSelection: AppSection? = .home
     @State private var navigationPath = NavigationPath()
     @State private var detailChrome: VideoDetailChromeInfo?
+    @State private var detailChromeLayout: VideoDetailChromeLayout?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -61,17 +62,20 @@ struct ContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onPreferenceChange(VideoDetailChromePreferenceKey.self) { detailChrome = $0 }
+            .onPreferenceChange(VideoDetailChromeLayoutKey.self) { detailChromeLayout = $0 }
 
             DetailFloatingChrome(
                 model: model,
                 navigationPath: $navigationPath,
                 canGoBack: !navigationPath.isEmpty,
-                detailChrome: detailChrome
+                detailChrome: detailChrome,
+                detailChromeLayout: detailChromeLayout
             )
         }
         .onChange(of: navigationPath.count) { _, count in
             if count == 0 {
                 detailChrome = nil
+                detailChromeLayout = nil
                 VideoFullscreenPresenter.restoreMainWindowAppearance()
                 Task { await model.refreshSectionAfterReturningFromDetail() }
             }
@@ -120,12 +124,11 @@ struct ContentView: View {
             )
         case .hot:
             VideoGridView(
-                title: "排行",
-                subtitle: "按播放、互动等指标排序",
                 videos: model.hotVideos,
                 loading: model.isLoading,
                 error: model.errorMessage,
-                emptyTitle: "排行榜为空"
+                emptyTitle: "排行榜为空",
+                showsPageHeader: false
             )
         case .history:
             HistoryView(
@@ -168,6 +171,18 @@ private struct DetailFloatingChrome: View {
     @Binding var navigationPath: NavigationPath
     let canGoBack: Bool
     let detailChrome: VideoDetailChromeInfo?
+    let detailChromeLayout: VideoDetailChromeLayout?
+
+    private var chromeTitleMaxWidth: CGFloat {
+        if let detailChromeLayout {
+            return AppLayout.videoDetailChromeTitleMaxWidth(
+                playerLayoutWidth: detailChromeLayout.playerLayoutWidth,
+                contentWidth: detailChromeLayout.contentWidth,
+                isPortrait: detailChromeLayout.isPortrait
+            )
+        }
+        return 360
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -180,24 +195,35 @@ private struct DetailFloatingChrome: View {
             }
 
             if let detailChrome {
-                VideoDetailChromeHeaderView(info: detailChrome)
-            } else if !canGoBack {
-                Spacer()
-            }
+                VideoDetailChromeHeaderView(
+                    info: detailChrome,
+                    maxTitleWidth: chromeTitleMaxWidth
+                )
 
-            if !canGoBack {
-                GlassRefreshButton {
-                    Task { await model.reloadSelected() }
+                Spacer(minLength: 0)
+
+                if let webURL = detailChrome.webURL {
+                    GlassMoreButton(webURL: webURL)
                 }
-                .disabled(model.isLoading)
-                .opacity(model.isLoading ? 0.45 : 1)
+            } else {
+                if !canGoBack {
+                    Spacer()
+                }
+
+                if !canGoBack {
+                    GlassRefreshButton {
+                        Task { await model.reloadSelected() }
+                    }
+                    .disabled(model.isLoading)
+                    .opacity(model.isLoading ? 0.45 : 1)
+                }
             }
         }
         .padding(.horizontal, AppLayout.floatingChromeInset)
         .padding(.top, AppLayout.floatingChromeInset)
-        .padding(.trailing, AppLayout.floatingChromeInset)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .animation(.easeOut(duration: 0.26), value: canGoBack)
+        .animation(.easeOut(duration: 0.26), value: detailChrome?.title)
     }
 }
 
@@ -228,6 +254,9 @@ private struct Sidebar: View {
                         section: section,
                         selected: selection == section
                     ) {
+                        if section == .search {
+                            model.requestSearchFocus()
+                        }
                         selection = section
                     }
                 }

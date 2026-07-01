@@ -398,6 +398,13 @@ enum JSONParser {
         )
     }
 
+    nonisolated static func parseOnlineCount(from object: Any) -> Int64 {
+        let data = dictionary(object)["data"] as? [String: Any] ?? [:]
+        let total = data["total"] as? [String: Any] ?? data
+        let count = int64(total, "total").ifZero(int64(total, "count"))
+        return max(0, count)
+    }
+
     nonisolated static func parseVideoReqUser(from data: [String: Any]) -> BiliVideoRelation {
         guard let reqUser = data["req_user"] as? [String: Any] else { return BiliVideoRelation() }
         return BiliVideoRelation(

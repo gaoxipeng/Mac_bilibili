@@ -2,8 +2,8 @@ import SwiftUI
 
 struct BiliUserLevelIcon: View {
     let level: Int
-    var width: CGFloat = 34
-    var height: CGFloat = 22
+    var width: CGFloat = 27
+    var height: CGFloat = 17
 
     var body: some View {
         if level > 0 {

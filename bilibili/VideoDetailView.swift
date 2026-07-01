@@ -32,6 +32,7 @@ final class VideoDetailModel: ObservableObject {
     private var watchHistoryTask: Task<Void, Never>?
     private let initialProgressSeconds: Int
     private var hasAppliedInitialProgress = false
+    private var playerChangeSink: AnyCancellable?
 
     @Published var danmakuItems: [BiliDanmakuItem] = []
     @Published var danmakuVisible = DanmakuPlayerPreferences.isDanmakuVisible()
@@ -39,6 +40,8 @@ final class VideoDetailModel: ObservableObject {
     @Published var showDanmakuSettings = false
 
     @Published var videoRelation = BiliVideoRelation()
+    @Published var authorSign = ""
+    @Published var onlineCount: Int64 = 0
     @Published var videoActionLoading = false
     @Published var actionMessage: String?
     @Published var needsLoginPrompt = false
@@ -48,6 +51,9 @@ final class VideoDetailModel: ObservableObject {
         self.credential = credential
         self.activeCID = video.cid
         self.initialProgressSeconds = max(0, initialProgressSeconds)
+        playerChangeSink = player.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
     }
 
     var displayVideo: BiliVideo {
@@ -57,6 +63,8 @@ final class VideoDetailModel: ObservableObject {
     func load() async {
         isLoadingDetail = true
         detailError = nil
+        authorSign = ""
+        onlineCount = 0
         defer { isLoadingDetail = false }
 
         do {
@@ -65,12 +73,40 @@ final class VideoDetailModel: ObservableObject {
             if activeCID <= 0 {
                 activeCID = loaded.video.cid
             }
+            async let authorSignTask = loadAuthorSign()
+            async let onlineCountTask = loadOnlineCount()
             await loadVideoRelation()
             await loadPlayback()
             await scheduleInitialCommentsLoad()
+            await authorSignTask
+            await onlineCountTask
         } catch {
             detailError = error.localizedDescription
         }
+    }
+
+    private func loadAuthorSign() async {
+        let mid = displayVideo.authorMid
+        guard mid > 0 else {
+            authorSign = ""
+            return
+        }
+        authorSign = await api.userSign(mid: mid, credential: credential)
+    }
+
+    private func loadOnlineCount() async {
+        let video = displayVideo
+        let cid = activeCID > 0 ? activeCID : video.cid
+        guard !video.bvid.isEmpty, cid > 0 else {
+            onlineCount = 0
+            return
+        }
+        onlineCount = await api.videoOnlineCount(
+            bvid: video.bvid,
+            aid: video.aid,
+            cid: cid,
+            credential: credential
+        )
     }
 
     func loadVideoRelation() async {
@@ -213,8 +249,16 @@ final class VideoDetailModel: ObservableObject {
             )
             updateDetail(shareDelta: 1)
         } catch {
+            guard !Self.isDuplicateShareError(error) else { return }
             actionMessage = error.localizedDescription
         }
+    }
+
+    private static func isDuplicateShareError(_ error: Error) -> Bool {
+        guard case APIError.message(let message) = error else { return false }
+        return message.contains("重复分享")
+            || message.contains("已经分享")
+            || message.contains("已分享过")
     }
 
     func presentShareSheet(for url: URL, context: ShareClickContext) {
@@ -316,6 +360,7 @@ final class VideoDetailModel: ObservableObject {
         guard part.cid != activeCID else { return }
         activeCID = part.cid
         await loadPlayback()
+        await loadOnlineCount()
     }
 
     func loadPlayback() async {
@@ -576,6 +621,8 @@ final class VideoDetailModel: ObservableObject {
         comments = []
         loadedCommentsKey = nil
         commentsLoadInFlight = false
+        authorSign = ""
+        onlineCount = 0
     }
 }
 
@@ -584,6 +631,8 @@ struct VideoDetailChromeInfo: Equatable {
     let viewCount: Int64
     let danmakuCount: Int64
     let publishTime: Date?
+    let onlineCount: Int64
+    let webURL: URL?
 }
 
 struct VideoDetailChromePreferenceKey: PreferenceKey {
@@ -596,16 +645,37 @@ struct VideoDetailChromePreferenceKey: PreferenceKey {
     }
 }
 
+struct VideoDetailChromeLayout: Equatable {
+    let playerLayoutWidth: CGFloat
+    let contentWidth: CGFloat
+    let isPortrait: Bool
+}
+
+struct VideoDetailChromeLayoutKey: PreferenceKey {
+    static var defaultValue: VideoDetailChromeLayout?
+
+    static func reduce(value: inout VideoDetailChromeLayout?, nextValue: () -> VideoDetailChromeLayout?) {
+        if let next = nextValue() {
+            value = next
+        }
+    }
+}
+
 struct VideoDetailChromeHeaderView: View {
     let info: VideoDetailChromeInfo
+    var maxTitleWidth: CGFloat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(info.title)
                 .font(.title)
                 .foregroundStyle(.primary)
-                .lineLimit(2)
                 .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(
+                    maxWidth: maxTitleWidth,
+                    alignment: .leading
+                )
 
             HStack(spacing: 16) {
                 BiliStatLabel(icon: .play, value: info.viewCount.compactCount, iconSize: 20)
@@ -615,9 +685,18 @@ struct VideoDetailChromeHeaderView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
+                if info.onlineCount > 0 {
+                    Text("\(info.onlineCount.compactCount) 人在看")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(
+            maxWidth: maxTitleWidth,
+            alignment: .leading
+        )
+        .layoutPriority(-1)
     }
 }
 
@@ -644,22 +723,43 @@ struct VideoDetailView: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let isPortraitVideo = model.player.displayAspectRatio < 1
+            let chromeTopInset = isPortraitVideo
+                ? AppLayout.videoDetailPortraitChromeReservedHeight
+                : AppLayout.videoDetailChromeReservedHeight
+
             HStack(alignment: .top, spacing: 28) {
                 playerSection(
                     maxWidth: playerWidth(in: geometry.size.width),
-                    maxHeight: playerMaxHeight(in: geometry)
+                    maxHeight: playerMaxHeight(in: geometry, chromeTopInset: chromeTopInset)
                 )
-                .padding(.top, AppLayout.videoDetailChromeReservedHeight)
+                .padding(.top, chromeTopInset)
                 .opacity(fullscreenPresenter.isPresented ? 0 : 1)
                 .allowsHitTesting(!fullscreenPresenter.isPresented)
 
                 rightColumn
-                    .padding(.top, AppLayout.videoDetailRightColumnTopInset)
+                    .padding(
+                        .top,
+                        isPortraitVideo
+                            ? chromeTopInset
+                            : AppLayout.videoDetailRightColumnTopInset
+                    )
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
             .padding(.horizontal, AppLayout.pageHorizontalInset)
             .padding(.bottom, 24)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background {
+                Color.clear
+                    .preference(
+                        key: VideoDetailChromeLayoutKey.self,
+                        value: VideoDetailChromeLayout(
+                            playerLayoutWidth: playerLayoutWidth(in: geometry),
+                            contentWidth: geometry.size.width,
+                            isPortrait: isPortraitVideo
+                        )
+                    )
+            }
         }
         .background(Color.white)
         .navigationBarBackButtonHidden(true)
@@ -702,12 +802,12 @@ struct VideoDetailView: View {
         }
     }
 
-    private func playerMaxHeight(in geometry: GeometryProxy) -> CGFloat {
-        let verticalInsets = AppLayout.videoDetailChromeReservedHeight + 24
+    private func playerMaxHeight(in geometry: GeometryProxy, chromeTopInset: CGFloat) -> CGFloat {
+        let verticalInsets = chromeTopInset + 24
         return max(240, geometry.size.height - verticalInsets)
     }
 
-    private func playerWidth(in totalWidth: CGFloat) -> CGFloat {
+    private func playerColumnWidth(in totalWidth: CGFloat) -> CGFloat {
         let horizontalPadding = AppLayout.pageHorizontalInset * 2
         let columnSpacing: CGFloat = 28
         let minRightColumn: CGFloat = 300
@@ -715,6 +815,24 @@ struct VideoDetailView: View {
         let maxPlayerWidth = max(available - minRightColumn, 280)
         let preferred = available * 0.66
         return min(max(preferred, 400), maxPlayerWidth)
+    }
+
+    private func playerLayoutWidth(in geometry: GeometryProxy) -> CGFloat {
+        let columnWidth = playerColumnWidth(in: geometry.size.width)
+        return VideoPlayerChrome.fittedSize(
+            maxWidth: columnWidth,
+            maxHeight: playerMaxHeight(
+                in: geometry,
+                chromeTopInset: model.player.displayAspectRatio < 1
+                    ? AppLayout.videoDetailPortraitChromeReservedHeight
+                    : AppLayout.videoDetailChromeReservedHeight
+            ),
+            aspectRatio: model.player.displayAspectRatio
+        ).width
+    }
+
+    private func playerWidth(in totalWidth: CGFloat) -> CGFloat {
+        playerColumnWidth(in: totalWidth)
     }
 
     private var rightColumn: some View {
@@ -894,11 +1012,18 @@ struct VideoDetailView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.displayVideo.authorName.ifEmpty("未知 UP 主"))
                     .font(.system(size: 18, weight: .semibold))
-                Text("UP 主")
+                Text(authorSignSubtitle)
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
             }
         }
+    }
+
+    private var authorSignSubtitle: String {
+        let sign = model.authorSign.trimmingCharacters(in: .whitespacesAndNewlines)
+        return sign.isEmpty ? "这个人还没有写简介" : sign
     }
 
     private var detailChromeInfo: VideoDetailChromeInfo {
@@ -906,7 +1031,9 @@ struct VideoDetailView: View {
             title: model.displayVideo.title,
             viewCount: model.displayVideo.viewCount,
             danmakuCount: model.displayVideo.danmakuCount,
-            publishTime: model.detail?.publishTime
+            publishTime: model.detail?.publishTime,
+            onlineCount: model.onlineCount,
+            webURL: model.displayVideo.webURL
         )
     }
 
@@ -1485,7 +1612,7 @@ private struct CommentRow: View {
                         .font(.system(size: authorFontSize, weight: .semibold))
                         .lineLimit(1)
                     if comment.level > 0 {
-                        BiliUserLevelIcon(level: comment.level, width: 30, height: 19)
+                        BiliUserLevelIcon(level: comment.level, width: 24, height: 15)
                     }
                 }
 

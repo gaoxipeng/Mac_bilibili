@@ -15,9 +15,28 @@ enum AppLayout {
     static let searchPageMaxWidth: CGFloat = 1040
     static let searchPageWideBreakpoint: CGFloat = 1440
     static let searchPageCompactBreakpoint: CGFloat = 900
-    static let searchBarPreferredWidth: CGFloat = 580
-    static let searchBarMinWidth: CGFloat = 520
-    static let searchPageTopInset: CGFloat = 24
+    static let searchBarPreferredWidth: CGFloat = 440
+    static let searchBarMinWidth: CGFloat = 360
+    static let searchBarHeight: CGFloat = 42
+    static let searchHeaderSpacing: CGFloat = 10
+    static let searchTypeToggleWidth: CGFloat = 132
+    static let searchSuggestionPanelWidth: CGFloat = 760
+    static let searchSuggestionPanelMaxHeight: CGFloat = 520
+    static let searchDiscoveryContentWidth: CGFloat = 620
+    static let searchPageTopInset: CGFloat = 8
+
+    static var searchHeaderGroupWidth: CGFloat {
+        searchBarPreferredWidth + searchHeaderSpacing + searchTypeToggleWidth
+    }
+
+    static var searchSuggestionPanelCenteringOffset: CGFloat {
+        (searchHeaderGroupWidth - searchSuggestionPanelWidth) / 2
+    }
+
+    /// 搜索页搜索框距顶偏移，与左上角刷新按钮同一行，不再使用整段 floating chrome 预留高度。
+    static var searchBarTopOffset: CGFloat {
+        floatingChromeInset + searchPageTopInset
+    }
     static let sidebarBackground = Color(red: 0.969, green: 0.969, blue: 0.973)
     static let sidebarBlurWhiteTint: CGFloat = 0.46
     static let sidebarBlurMaterial: NSVisualEffectView.Material = .popover
@@ -38,9 +57,28 @@ enum AppLayout {
         floatingChromeInset + 88
     }
 
-    /// 右侧简介栏不与左侧浮动标题重叠，顶部留白更小。
+    /// 竖屏长标题需要更多顶部留白，避免与播放器、右侧信息重叠。
+    static var videoDetailPortraitChromeReservedHeight: CGFloat {
+        floatingChromeInset + 104
+    }
+
+    /// 右侧简介栏顶部留白；横屏时与标题区错层，竖屏时与播放器同步下移。
     static var videoDetailRightColumnTopInset: CGFloat {
         floatingChromeInset + 4
+    }
+
+    static func videoDetailChromeTitleMaxWidth(
+        playerLayoutWidth: CGFloat,
+        contentWidth: CGFloat,
+        isPortrait: Bool
+    ) -> CGFloat {
+        let chromeLeading = floatingChromeInset + floatingChromeButtonSize + 12
+        let trailingChromeReserve = floatingChromeButtonSize + floatingChromeInset + 12
+        if isPortrait {
+            return max(200, contentWidth - chromeLeading - trailingChromeReserve)
+        }
+        let playerTrailing = pageHorizontalInset + playerLayoutWidth
+        return max(160, playerTrailing - chromeLeading - trailingChromeReserve)
     }
 
     /// 视频详情右侧栏内容与窗口右缘的内边距。
@@ -56,19 +94,7 @@ struct GlassCircleButton: View {
 
     var body: some View {
         Button(action: action) {
-            ZStack {
-                Circle()
-                    .fill(isHovered ? Color.black.opacity(0.08) : Color.white.opacity(0.92))
-
-                Image(systemName: systemImage)
-                    .font(.system(size: size * 0.41, weight: .semibold))
-                    .foregroundStyle(.primary)
-            }
-            .frame(width: size, height: size)
-            .overlay {
-                Circle().stroke(Color.black.opacity(0.08), lineWidth: 0.6)
-            }
-            .shadow(color: .black.opacity(0.08), radius: 10, x: 0, y: 4)
+            GlassCircleIcon(systemImage: systemImage, size: size, isHovered: isHovered)
         }
         .buttonStyle(GlassCircleButtonStyle())
         .onHover { hovering in
@@ -76,6 +102,28 @@ struct GlassCircleButton: View {
                 isHovered = hovering
             }
         }
+    }
+}
+
+struct GlassCircleIcon: View {
+    let systemImage: String
+    var size: CGFloat = 32
+    var isHovered = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(isHovered ? Color.black.opacity(0.08) : Color.white.opacity(0.92))
+
+            Image(systemName: systemImage)
+                .font(.system(size: size * 0.41, weight: .semibold))
+                .foregroundStyle(.primary)
+        }
+        .frame(width: size, height: size)
+        .overlay {
+            Circle().stroke(Color.black.opacity(0.08), lineWidth: 0.6)
+        }
+        .shadow(color: .black.opacity(0.08), radius: 10, x: 0, y: 4)
     }
 }
 
@@ -102,6 +150,10 @@ private extension AnyTransition {
                 .combined(with: .scale(scale: 0.92, anchor: .center))
         )
     }
+
+    static var glassMoreButton: AnyTransition {
+        glassRefreshButton
+    }
 }
 
 struct GlassBackButton: View {
@@ -119,6 +171,176 @@ struct GlassRefreshButton: View {
     var body: some View {
         GlassCircleButton(systemImage: "arrow.clockwise", action: action)
             .transition(.glassRefreshButton)
+    }
+}
+
+struct GlassMoreButton: View {
+    let webURL: URL
+
+    var body: some View {
+        GlassMorePopUpButtonRepresentable(webURL: webURL)
+            .frame(width: AppLayout.floatingChromeButtonSize, height: AppLayout.floatingChromeButtonSize)
+            .transition(.glassMoreButton)
+    }
+}
+
+struct GlassMorePopUpButtonRepresentable: NSViewRepresentable {
+    let webURL: URL
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> GlassMorePopUpButtonView {
+        let view = GlassMorePopUpButtonView()
+        view.configure(webURL: webURL, coordinator: context.coordinator)
+        return view
+    }
+
+    func updateNSView(_ nsView: GlassMorePopUpButtonView, context: Context) {
+        nsView.configure(webURL: webURL, coordinator: context.coordinator)
+    }
+
+    final class Coordinator: NSObject {
+        var webURL: URL?
+
+        @objc func openInBrowser(_ sender: NSMenuItem) {
+            guard let webURL else { return }
+            NSWorkspace.shared.open(webURL)
+        }
+    }
+}
+
+final class GlassMorePopUpButtonView: NSView, NSMenuDelegate {
+    private let iconView = NSImageView()
+    private let actionMenu = NSMenu()
+    private weak var coordinator: GlassMorePopUpButtonRepresentable.Coordinator?
+    private var trackingArea: NSTrackingArea?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    private func setup() {
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.imageScaling = .scaleNone
+        iconView.imageAlignment = .alignCenter
+        iconView.isEditable = false
+        iconView.animates = false
+
+        addSubview(iconView)
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: AppLayout.floatingChromeButtonSize),
+            heightAnchor.constraint(equalToConstant: AppLayout.floatingChromeButtonSize),
+            iconView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: AppLayout.floatingChromeButtonSize),
+            iconView.heightAnchor.constraint(equalToConstant: AppLayout.floatingChromeButtonSize),
+        ])
+
+        wantsLayer = true
+        layer?.cornerRadius = AppLayout.floatingChromeButtonSize / 2
+        iconView.image = Self.makeMoreIconImage()
+        updateChromeBackground(hovered: false)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard !actionMenu.items.isEmpty else { return }
+        let gapBelowButton: CGFloat = 10
+        let anchor = NSPoint(x: bounds.midX, y: bounds.minY - gapBelowButton)
+        actionMenu.popUp(positioning: nil, at: anchor, in: self)
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    func configure(webURL: URL, coordinator: GlassMorePopUpButtonRepresentable.Coordinator) {
+        self.coordinator = coordinator
+        coordinator.webURL = webURL
+
+        actionMenu.removeAllItems()
+        actionMenu.delegate = self
+
+        let openItem = NSMenuItem(
+            title: "在浏览器中打开",
+            action: #selector(GlassMorePopUpButtonRepresentable.Coordinator.openInBrowser(_:)),
+            keyEquivalent: ""
+        )
+        openItem.target = coordinator
+        openItem.image = NSImage(systemSymbolName: "safari", accessibilityDescription: nil)
+        actionMenu.addItem(openItem)
+
+        toolTip = "更多"
+    }
+
+    private static func makeMoreIconImage() -> NSImage {
+        let buttonSize = AppLayout.floatingChromeButtonSize
+        let image = NSImage(size: NSSize(width: buttonSize, height: buttonSize))
+        image.lockFocus()
+
+        let dotRadius: CGFloat = 2.1
+        let spacing: CGFloat = 4.6
+        let center = CGPoint(x: buttonSize / 2, y: buttonSize / 2)
+        NSColor.labelColor.setFill()
+        for offset in [-spacing, 0, spacing] {
+            let rect = NSRect(
+                x: center.x + offset - dotRadius,
+                y: center.y - dotRadius,
+                width: dotRadius * 2,
+                height: dotRadius * 2
+            )
+            NSBezierPath(ovalIn: rect).fill()
+        }
+
+        image.unlockFocus()
+        image.isTemplate = false
+        return image
+    }
+
+    func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) {}
+
+    func menuWillOpen(_ menu: NSMenu) {}
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        updateChromeBackground(hovered: true)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        updateChromeBackground(hovered: false)
+    }
+
+    private func updateChromeBackground(hovered: Bool) {
+        let fill: NSColor = hovered
+            ? NSColor.black.withAlphaComponent(0.08)
+            : NSColor.white.withAlphaComponent(0.92)
+        layer?.backgroundColor = fill.cgColor
+        layer?.borderColor = NSColor.black.withAlphaComponent(0.08).cgColor
+        layer?.borderWidth = 0.6
+        layer?.shadowColor = NSColor.black.withAlphaComponent(0.08).cgColor
+        layer?.shadowOpacity = 1
+        layer?.shadowRadius = 10
+        layer?.shadowOffset = CGSize(width: 0, height: -4)
     }
 }
 
@@ -294,6 +516,24 @@ extension View {
                     .stroke(Color.black.opacity(0.08), lineWidth: 0.6)
             }
             .shadow(color: .black.opacity(0.08), radius: 12, x: 0, y: 6)
+    }
+}
+
+struct VideoCoverDurationBadge: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.caption.monospacedDigit().weight(.semibold))
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.28), radius: 1, x: 0, y: 0.5)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .glassEffect(.clear, in: .capsule)
+            .overlay {
+                Capsule()
+                    .stroke(.white.opacity(0.24), lineWidth: 0.5)
+            }
     }
 }
 

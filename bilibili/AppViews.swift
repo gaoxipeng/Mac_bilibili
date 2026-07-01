@@ -86,12 +86,6 @@ struct FollowingView: View {
     var body: some View {
         AppScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
-                PageHeader(
-                    title: "关注",
-                    subtitle: loggedIn ? "你关注的 UP 主更新" : "登录后查看关注 UP 的最新视频",
-                    largeTypography: true
-                )
-
                 if !loggedIn {
                     ContentUnavailableView(
                         "登录后查看关注内容",
@@ -163,12 +157,6 @@ struct FavoritesView: View {
     var body: some View {
         AppScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
-                PageHeader(
-                    title: "收藏",
-                    subtitle: loggedIn ? "默认收藏夹" : "登录后查看收藏视频",
-                    largeTypography: true
-                )
-
                 if !loggedIn {
                     ContentUnavailableView(
                         "登录后查看收藏",
@@ -339,7 +327,6 @@ struct HistoryView: View {
     var body: some View {
         AppScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
-                PageHeader(title: "历史", subtitle: "观看记录")
                 StateBanner(
                     loading: loading,
                     error: error,
@@ -549,12 +536,7 @@ struct VideoCard: View {
                 .animation(coverHoverAnimation, value: isCoverHovered)
 
                 if video.duration > 0 {
-                    Text(video.durationText)
-                        .font(.caption.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(.black.opacity(0.68), in: Capsule())
+                    VideoCoverDurationBadge(text: video.durationText)
                         .padding(8)
                 }
             }

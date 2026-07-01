@@ -2,7 +2,7 @@ import AppKit
 import Combine
 import SwiftUI
 
-enum SearchResultTab: String, CaseIterable, Identifiable {
+enum SearchResultTab: String, CaseIterable, Identifiable, Hashable {
     case videos
     case users
 
@@ -221,7 +221,7 @@ final class SearchViewModel: ObservableObject {
             do {
                 let result = try await api.searchVideos(keyword: capturedTerm, page: 1, credential: credential)
                 guard !Task.isCancelled, previewGeneration == generation, activeQuery == nil else { return }
-                previewVideos = Array(result.items.prefix(6))
+                previewVideos = result.items
             } catch {
                 guard !Task.isCancelled, previewGeneration == generation else { return }
                 previewVideos = []
@@ -313,65 +313,77 @@ struct SearchDashboard: View {
     @Binding var navigationPath: NavigationPath
     @StateObject private var searchModel = SearchViewModel()
     @State private var queryText = ""
-    @State private var isSearchDropdownOpen = false
+    @State private var isSearchDropdownPresented = false
+    @State private var searchDropdownActiveEntryID: String?
 
     var body: some View {
         GeometryReader { geometry in
             let metrics = SearchPageMetrics(viewportWidth: geometry.size.width)
 
-            ZStack(alignment: .topLeading) {
-                MacOverlayScrollView {
-                    HStack(spacing: 0) {
-                        Spacer(minLength: metrics.horizontalPadding)
-
-                        VStack(alignment: .leading, spacing: 32) {
-                            Color.clear
-                                .frame(height: searchComboReservedHeight)
-
-                            if searchModel.isShowingResults {
-                                searchResultsContent(metrics: metrics)
-                            } else if !isSearchDropdownOpen {
-                                discoverySection
-                            }
-                        }
-                        .frame(maxWidth: metrics.containerWidth, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                        Spacer(minLength: metrics.horizontalPadding)
-                    }
-                    .padding(.top, AppLayout.floatingChromeReservedHeight + AppLayout.searchPageTopInset)
-                    .padding(.bottom, 32)
-                }
-
-                if isSearchDropdownOpen {
-                    Color.black.opacity(0.001)
-                        .ignoresSafeArea()
-                        .onTapGesture {
-                            isSearchDropdownOpen = false
-                        }
-                        .zIndex(8)
-                }
-
+            VStack(spacing: 0) {
                 HStack(spacing: 0) {
                     Spacer(minLength: metrics.horizontalPadding)
 
-                    MacSearchSuggestCombo(
-                        text: $queryText,
-                        searchModel: searchModel,
-                        isDropdownOpen: $isSearchDropdownOpen,
-                        onSearch: { runSearch($0) },
-                        onVideoSelect: { video in
-                            isSearchDropdownOpen = false
-                            navigationPath.append(VideoPlaybackRequest(video))
-                        }
-                    )
-                    .frame(width: metrics.searchBarWidth, alignment: .leading)
+                    HStack(alignment: .center, spacing: AppLayout.searchHeaderSpacing) {
+                        MacSearchSuggestCombo(
+                            text: $queryText,
+                            searchModel: searchModel,
+                            focusRequest: model.searchFocusRequest,
+                            isDropdownPresented: $isSearchDropdownPresented,
+                            dropdownActiveEntryID: $searchDropdownActiveEntryID,
+                            onSearch: { runSearch($0) },
+                            onVideoSelect: { video in
+                                navigationPath.append(VideoPlaybackRequest(video))
+                            }
+                        )
+                        .frame(width: AppLayout.searchBarPreferredWidth, alignment: .leading)
+
+                        SearchTypeSegmentedControl(
+                            selection: Binding(
+                                get: { searchModel.selectedTab },
+                                set: { searchModel.selectedTab = $0 }
+                            )
+                        )
+                        .frame(height: AppLayout.searchBarHeight)
+                    }
+                    .frame(width: AppLayout.searchHeaderGroupWidth, alignment: .leading)
 
                     Spacer(minLength: metrics.horizontalPadding)
                 }
-                .padding(.top, AppLayout.floatingChromeReservedHeight + AppLayout.searchPageTopInset)
                 .zIndex(10)
+                .padding(.top, AppLayout.searchBarTopOffset)
+                .padding(.bottom, 8)
+
+                MacOverlayScrollView {
+                    ZStack(alignment: .topLeading) {
+                        if searchModel.isShowingResults {
+                            searchResultsContent
+                                .padding(.horizontal, AppLayout.feedHorizontalInset)
+                                .padding(.bottom, 32)
+                                .transition(.opacity.combined(with: .offset(y: -8)))
+                        } else {
+                            HStack(spacing: 0) {
+                                Spacer(minLength: metrics.horizontalPadding)
+
+                                discoverySection
+
+                                Spacer(minLength: metrics.horizontalPadding)
+                            }
+                            .padding(.bottom, 32)
+                            .transition(.opacity.combined(with: .offset(y: 8)))
+                        }
+                    }
+                    .animation(.easeOut(duration: 0.20), value: searchModel.isShowingResults)
+                }
+                .zIndex(0)
             }
+            .overlay(alignment: .top) {
+                if isSearchDropdownPresented {
+                    searchSuggestDropdownOverlay(metrics: metrics)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            .animation(.easeOut(duration: 0.16), value: isSearchDropdownPresented)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear {
@@ -384,25 +396,61 @@ struct SearchDashboard: View {
         }
     }
 
-    private var searchComboReservedHeight: CGFloat {
-        52 + 8
-    }
-
     private func runSearch(_ keyword: String) {
         let value = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return }
-        isSearchDropdownOpen = false
         DispatchQueue.main.async {
             queryText = value
             searchModel.performSearch(value)
         }
     }
 
-    private var discoverySection: some View {
-        VStack(alignment: .leading, spacing: 32) {
-            searchHistorySection
-            hotSearchSection
+    private var searchDropdownEntries: [SearchDropdownEntry] {
+        var entries = searchModel.suggests.map { SearchDropdownEntry.suggest($0) }
+        entries.append(contentsOf: searchModel.previewVideos.map { .video($0) })
+        return entries
+    }
+
+    @ViewBuilder
+    private func searchSuggestDropdownOverlay(metrics: SearchPageMetrics) -> some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: metrics.horizontalPadding)
+
+            SearchSuggestDropdownPanel(
+                entries: searchDropdownEntries,
+                query: queryText.trimmingCharacters(in: .whitespacesAndNewlines),
+                previewLoading: searchModel.previewLoading,
+                activeEntryID: searchDropdownActiveEntryID,
+                onActivate: handleDropdownActivate,
+                onHoverEntry: { searchDropdownActiveEntryID = $0 }
+            )
+
+            Spacer(minLength: metrics.horizontalPadding)
         }
+        .padding(.top, AppLayout.searchBarTopOffset + AppLayout.searchBarHeight + 8)
+        .zIndex(100)
+    }
+
+    private func handleDropdownActivate(_ entry: SearchDropdownEntry) {
+        searchDropdownActiveEntryID = nil
+        switch entry {
+        case .suggest(let keyword):
+            runSearch(keyword)
+        case .video(let video):
+            navigationPath.append(VideoPlaybackRequest(video))
+        }
+    }
+
+    private var discoverySection: some View {
+        let hotBlockWidth = AppLayout.searchDiscoveryContentWidth
+        let chipWidth = (hotBlockWidth - 10) / 2
+
+        return VStack(alignment: .leading, spacing: 32) {
+            searchHistorySection
+            hotSearchSection(chipWidth: chipWidth)
+        }
+        .frame(width: hotBlockWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private var searchHistorySection: some View {
@@ -417,8 +465,6 @@ struct SearchDashboard: View {
                         searchModel.clearHistory()
                     }
                 }
-
-                Spacer(minLength: 0)
             }
 
             if searchModel.searchHistory.isEmpty {
@@ -447,7 +493,7 @@ struct SearchDashboard: View {
         }
     }
 
-    private var hotSearchSection: some View {
+    private func hotSearchSection(chipWidth: CGFloat) -> some View {
         let columns = hotSearchColumns(searchModel.hotWords)
         return VStack(alignment: .leading, spacing: 12) {
             Text("bilibili热搜")
@@ -468,8 +514,8 @@ struct SearchDashboard: View {
                     .foregroundStyle(Color(red: 0.55, green: 0.55, blue: 0.58))
             } else {
                 HStack(alignment: .top, spacing: 10) {
-                    hotSearchColumn(columns.left)
-                    hotSearchColumn(columns.right)
+                    hotSearchColumn(columns.left, chipWidth: chipWidth)
+                    hotSearchColumn(columns.right, chipWidth: chipWidth)
                 }
             }
         }
@@ -480,36 +526,19 @@ struct SearchDashboard: View {
         return (Array(items.prefix(split)), Array(items.dropFirst(split)))
     }
 
-    private func hotSearchColumn(_ items: [BiliHotSearchItem]) -> some View {
-        VStack(spacing: 8) {
+    private func hotSearchColumn(_ items: [BiliHotSearchItem], chipWidth: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
             ForEach(items) { item in
-                SearchHotCapsuleChip(item: item) {
+                SearchHotCapsuleChip(item: item, chipWidth: chipWidth) {
                     runSearch(item.keyword)
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
-    private func searchResultsContent(metrics: SearchPageMetrics) -> some View {
+    private var searchResultsContent: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 24) {
-                ForEach(SearchResultTab.allCases) { tab in
-                    Button {
-                        searchModel.selectedTab = tab
-                    } label: {
-                        Text(tab.title)
-                            .font(.system(size: 15, weight: searchModel.selectedTab == tab ? .semibold : .regular))
-                            .foregroundStyle(searchModel.selectedTab == tab ? BiliTheme.pink : Color(red: 0.45, green: 0.45, blue: 0.48))
-                            .padding(.vertical, 4)
-                    }
-                    .buttonStyle(SearchTabButtonStyle(isSelected: searchModel.selectedTab == tab))
-                }
-                Spacer(minLength: 0)
-            }
-            .frame(maxWidth: metrics.searchBarWidth, alignment: .leading)
-
             if let error = searchModel.errorMessage {
                 Text(error)
                     .font(.system(size: 13))
@@ -526,7 +555,7 @@ struct SearchDashboard: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(maxWidth: metrics.containerWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var videoResults: some View {
@@ -606,24 +635,15 @@ struct SearchDashboard: View {
 }
 
 private struct SearchPageMetrics {
-    let containerWidth: CGFloat
-    let searchBarWidth: CGFloat
     let horizontalPadding: CGFloat
 
     init(viewportWidth: CGFloat) {
         if viewportWidth < AppLayout.searchPageCompactBreakpoint {
             horizontalPadding = AppLayout.mainContentPaddingCompact
-            containerWidth = max(0, viewportWidth - horizontalPadding * 2)
-            searchBarWidth = containerWidth
         } else {
             horizontalPadding = max(
                 AppLayout.mainContentPaddingCompact,
                 (viewportWidth - AppLayout.searchPageMaxWidth) * 0.42
-            )
-            containerWidth = min(AppLayout.searchPageMaxWidth, viewportWidth - horizontalPadding * 2)
-            searchBarWidth = min(
-                max(AppLayout.searchBarMinWidth, AppLayout.searchBarPreferredWidth),
-                containerWidth
             )
         }
     }
@@ -696,21 +716,197 @@ private struct SearchTextActionButton: View {
     }
 }
 
-private struct SearchTabButtonStyle: ButtonStyle {
-    let isSelected: Bool
+private struct SearchTypeSegmentedControl: View {
+    @Binding var selection: SearchResultTab
+    @State private var isPressing = false
+    @State private var dragX: CGFloat?
+    @State private var animationTrigger = 0
 
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .opacity(configuration.isPressed ? 0.72 : 1)
-            .background(
-                configuration.isPressed ? BiliTheme.pink.opacity(isSelected ? 0.10 : 0.05) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+    private let outerPadding: CGFloat = 5
+    private let indicatorInset: CGFloat = 3
+
+    var body: some View {
+        GeometryReader { proxy in
+            let size = proxy.size
+            let segmentWidth = max(1, (size.width - outerPadding * 2) / CGFloat(SearchResultTab.allCases.count))
+            let indicatorWidth = max(1, segmentWidth - indicatorInset * 2)
+            let indicatorHeight = max(1, size.height - outerPadding * 2)
+            let restingX = outerPadding + CGFloat(selectedIndex) * segmentWidth + indicatorInset
+            let draggingX = clampedIndicatorX(
+                centerX: dragX ?? restingX + indicatorWidth / 2,
+                indicatorWidth: indicatorWidth,
+                totalWidth: size.width
             )
+            let indicatorX = isPressing ? draggingX : restingX
+
+            ZStack(alignment: .leading) {
+                SearchTypeLiquidIndicator(isPressing: isPressing, animationTrigger: animationTrigger)
+                    .frame(width: indicatorWidth, height: indicatorHeight)
+                    .offset(x: indicatorX, y: outerPadding)
+                    .animation(
+                        isPressing
+                        ? .interactiveSpring(response: 0.18, dampingFraction: 0.78, blendDuration: 0.02)
+                        : .spring(response: 0.34, dampingFraction: 0.58, blendDuration: 0.04),
+                        value: indicatorX
+                    )
+                    .animation(.spring(response: 0.22, dampingFraction: 0.62, blendDuration: 0.02), value: isPressing)
+
+                HStack(spacing: 0) {
+                    ForEach(SearchResultTab.allCases) { tab in
+                        Text(tab.title)
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(Color.black.opacity(selection == tab ? 0.92 : 0.82))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                select(tab)
+                            }
+                    }
+                }
+            }
+            .contentShape(Capsule(style: .continuous))
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if !isPressing {
+                            withAnimation(.spring(response: 0.18, dampingFraction: 0.68, blendDuration: 0.02)) {
+                                isPressing = true
+                            }
+                        }
+                        dragX = value.location.x
+                        updateSelection(for: value.location.x, segmentWidth: segmentWidth)
+                    }
+                    .onEnded { value in
+                        updateSelection(for: value.location.x, segmentWidth: segmentWidth)
+                        dragX = nil
+                        animationTrigger += 1
+                        withAnimation(.spring(response: 0.36, dampingFraction: 0.56, blendDuration: 0.04)) {
+                            isPressing = false
+                        }
+                    }
+            )
+        }
+        .frame(width: AppLayout.searchTypeToggleWidth, height: AppLayout.searchBarHeight)
+        .background(Color.white.opacity(0.78), in: Capsule(style: .continuous))
+        .overlay {
+            Capsule(style: .continuous)
+                .stroke(Color.black.opacity(0.08), lineWidth: 0.8)
+        }
+        .shadow(color: .black.opacity(0.035), radius: 6, x: 0, y: 2)
+        .contentShape(Capsule(style: .continuous))
+    }
+
+    private var selectedIndex: Int {
+        SearchResultTab.allCases.firstIndex(of: selection) ?? 0
+    }
+
+    private func select(_ tab: SearchResultTab) {
+        guard selection != tab else {
+            animationTrigger += 1
+            return
+        }
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.58, blendDuration: 0.04)) {
+            selection = tab
+        }
+        animationTrigger += 1
+    }
+
+    private func updateSelection(for x: CGFloat, segmentWidth: CGFloat) {
+        let adjustedX = x - outerPadding
+        let index = min(
+            SearchResultTab.allCases.count - 1,
+            max(0, Int((adjustedX / segmentWidth).rounded(.down)))
+        )
+        let tab = SearchResultTab.allCases[index]
+        guard selection != tab else { return }
+        withAnimation(.interactiveSpring(response: 0.20, dampingFraction: 0.72, blendDuration: 0.02)) {
+            selection = tab
+        }
+    }
+
+    private func clampedIndicatorX(centerX: CGFloat, indicatorWidth: CGFloat, totalWidth: CGFloat) -> CGFloat {
+        let expandedOverflow = indicatorWidth * 0.08
+        return min(
+            totalWidth - outerPadding - indicatorWidth - expandedOverflow,
+            max(outerPadding + expandedOverflow, centerX - indicatorWidth / 2)
+        )
+    }
+}
+
+private struct SearchTypeLiquidIndicator: View {
+    let isPressing: Bool
+    let animationTrigger: Int
+
+    var body: some View {
+        Capsule(style: .continuous)
+            .fill(Color(red: 0.84, green: 0.84, blue: 0.84))
+            .glassEffect(.regular.interactive(), in: .capsule)
+            .phaseAnimator(
+                SearchTypeSelectionPhase.allCases,
+                trigger: animationTrigger
+            ) { content, phase in
+                content
+                    .scaleEffect(
+                        x: isPressing ? 1.12 : phase.xScale,
+                        y: isPressing ? 1.08 : phase.yScale
+                    )
+                    .blur(radius: isPressing ? 0.18 : phase.blurRadius)
+                    .shadow(
+                        color: .black.opacity(isPressing ? 0.11 : 0.04),
+                        radius: isPressing ? 9 : 4,
+                        x: 0,
+                        y: isPressing ? 4 : 2
+                    )
+            } animation: { phase in
+                phase.animation
+            }
+    }
+}
+
+private enum SearchTypeSelectionPhase: CaseIterable {
+    case resting
+    case droplet
+    case rebound
+    case settled
+
+    var xScale: CGFloat {
+        switch self {
+        case .resting, .settled: 1
+        case .droplet: 1.18
+        case .rebound: 0.96
+        }
+    }
+
+    var yScale: CGFloat {
+        switch self {
+        case .resting, .settled: 1
+        case .droplet: 0.90
+        case .rebound: 1.04
+        }
+    }
+
+    var blurRadius: CGFloat {
+        self == .droplet ? 0.2 : 0
+    }
+
+    var animation: Animation {
+        switch self {
+        case .resting:
+            .linear(duration: 0.01)
+        case .droplet:
+            .smooth(duration: 0.11)
+        case .rebound:
+            .spring(response: 0.18, dampingFraction: 0.58, blendDuration: 0.02)
+        case .settled:
+            .spring(response: 0.26, dampingFraction: 0.68, blendDuration: 0.04)
+        }
     }
 }
 
 private struct SearchHotCapsuleChip: View {
     let item: BiliHotSearchItem
+    let chipWidth: CGFloat
     let onTap: () -> Void
 
     @State private var isHovered = false
@@ -723,16 +919,23 @@ private struct SearchHotCapsuleChip: View {
                     .font(.system(size: 13))
                     .foregroundStyle(Color(red: 0.12, green: 0.12, blue: 0.14))
                     .lineLimit(1)
+                    .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 9)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.white, in: Capsule(style: .continuous))
+            .frame(width: chipWidth, alignment: .leading)
+            .background(chipBackground, in: Capsule(style: .continuous))
             .overlay {
                 Capsule(style: .continuous)
-                    .stroke(borderColor, lineWidth: 0.6)
+                    .stroke(AppLayout.searchSurfaceBorder, lineWidth: 0.6)
             }
+            .shadow(
+                color: .black.opacity(isHovered ? 0.08 : 0),
+                radius: isHovered ? 10 : 0,
+                x: 0,
+                y: isHovered ? 4 : 0
+            )
             .contentShape(Capsule(style: .continuous))
         }
         .buttonStyle(.plain)
@@ -743,23 +946,23 @@ private struct SearchHotCapsuleChip: View {
         }
     }
 
-    private var borderColor: Color {
-        if isHovered {
-            return BiliTheme.pink.opacity(0.35)
-        }
-        return AppLayout.searchSurfaceBorder
+    private var chipBackground: Color {
+        isHovered ? AppLayout.searchChipHoverFill : Color.white
     }
 }
 
 private struct MacSearchSuggestCombo: View {
     @Binding var text: String
     @ObservedObject var searchModel: SearchViewModel
-    @Binding var isDropdownOpen: Bool
+    var focusRequest = 0
+    @Binding var isDropdownPresented: Bool
+    @Binding var dropdownActiveEntryID: String?
 
     @FocusState private var isFocused: Bool
     @State private var isHovered = false
-    @State private var activeEntryID: String?
     @State private var dropdownSuppressed = false
+    @State private var isClearingText = false
+    @State private var clearTask: Task<Void, Never>?
 
     let onSearch: (String) -> Void
     let onVideoSelect: (BiliVideo) -> Void
@@ -772,57 +975,50 @@ private struct MacSearchSuggestCombo: View {
         isFocused
             && !searchModel.isShowingResults
             && !dropdownSuppressed
-            && isDropdownOpen
+            && !trimmedText.isEmpty
     }
 
     private var dropdownEntries: [SearchDropdownEntry] {
-        if trimmedText.isEmpty {
-            var entries: [SearchDropdownEntry] = searchModel.visibleHistory.map { .history($0) }
-            entries.append(contentsOf: searchModel.hotWords.prefix(10).map { .hot($0) })
-            return entries
-        }
         var entries = searchModel.suggests.map { SearchDropdownEntry.suggest($0) }
         entries.append(contentsOf: searchModel.previewVideos.map { .video($0) })
         return entries
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            searchField
-
-            if shouldShowDropdown {
-                SearchSuggestDropdownPanel(
-                    entries: dropdownEntries,
-                    query: trimmedText,
-                    previewLoading: searchModel.previewLoading,
-                    activeEntryID: activeEntryID,
-                    onActivate: activateEntry,
-                    onHoverEntry: { activeEntryID = $0 }
-                )
-                .transition(.opacity.combined(with: .move(edge: .top)))
+        searchField
+            .frame(width: AppLayout.searchBarPreferredWidth, height: AppLayout.searchBarHeight, alignment: .leading)
+            .onChange(of: shouldShowDropdown) { _, visible in
+                isDropdownPresented = visible
             }
-        }
-        .animation(.easeOut(duration: 0.16), value: shouldShowDropdown)
-        .onChange(of: isFocused) { _, focused in
-            if focused {
-                dropdownSuppressed = false
-                isDropdownOpen = true
-            } else {
-                isDropdownOpen = false
-                activeEntryID = nil
+            .onChange(of: isFocused) { _, focused in
+                if !focused {
+                    dropdownActiveEntryID = nil
+                }
             }
-        }
         .onChange(of: text) { _, _ in
+            guard !isClearingText else { return }
             dropdownSuppressed = false
-            if isFocused {
-                isDropdownOpen = true
-            }
-            activeEntryID = nil
+            dropdownActiveEntryID = nil
             searchModel.handleInputChange(text)
         }
         .onChange(of: dropdownEntries.map(\.id)) { _, ids in
-            guard let activeEntryID, !ids.contains(activeEntryID) else { return }
-            self.activeEntryID = ids.first
+            guard let dropdownActiveEntryID, !ids.contains(dropdownActiveEntryID) else { return }
+            self.dropdownActiveEntryID = ids.first
+        }
+        .onAppear {
+            focusSearchField()
+        }
+        .onChange(of: focusRequest) { _, _ in
+            focusSearchField()
+        }
+        .onDisappear {
+            clearTask?.cancel()
+        }
+    }
+
+    private func focusSearchField() {
+        DispatchQueue.main.async {
+            isFocused = true
         }
     }
 
@@ -831,8 +1027,7 @@ private struct MacSearchSuggestCombo: View {
             .onKeyPress(.escape) {
                 if shouldShowDropdown {
                     dropdownSuppressed = true
-                    isDropdownOpen = false
-                    activeEntryID = nil
+                    dropdownActiveEntryID = nil
                     return .handled
                 }
                 return .ignored
@@ -851,26 +1046,26 @@ private struct MacSearchSuggestCombo: View {
 
     private var searchField: some View {
         searchFieldKeyHandlers(
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: 15, weight: .regular))
+                    .font(.system(size: 14, weight: .regular))
                     .foregroundStyle(Color(red: 0.55, green: 0.55, blue: 0.58))
 
                 TextField("搜索视频、UP主", text: $text)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 15))
+                    .font(.system(size: 14))
                     .focused($isFocused)
                     .onSubmit {
-                        if let activeEntryID,
-                           let entry = dropdownEntries.first(where: { $0.id == activeEntryID }) {
+                        if let dropdownActiveEntryID,
+                           let entry = dropdownEntries.first(where: { $0.id == dropdownActiveEntryID }) {
                             activateEntry(entry)
                         } else {
                             onSearch(text)
                         }
                     }
                     .onKeyPress(.return) {
-                        if let activeEntryID,
-                           let entry = dropdownEntries.first(where: { $0.id == activeEntryID }) {
+                        if let dropdownActiveEntryID,
+                           let entry = dropdownEntries.first(where: { $0.id == dropdownActiveEntryID }) {
                             activateEntry(entry)
                             return .handled
                         }
@@ -879,11 +1074,7 @@ private struct MacSearchSuggestCombo: View {
 
                 if !text.isEmpty {
                     Button {
-                        text = ""
-                        searchModel.resetInput()
-                        isDropdownOpen = true
-                        dropdownSuppressed = false
-                        isFocused = true
+                        clearTextWithAnimation()
                     } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 9, weight: .bold))
@@ -894,17 +1085,18 @@ private struct MacSearchSuggestCombo: View {
                     .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 18)
-            .frame(height: 52)
-            .background {
-                Capsule(style: .continuous)
-                    .fill(isHovered && !isFocused ? Color.black.opacity(0.02) : Color.white)
-            }
+            .padding(.horizontal, 14)
+            .frame(height: AppLayout.searchBarHeight)
+            .glassEffect(.clear, in: .capsule)
             .overlay {
                 Capsule(style: .continuous)
-                    .stroke(searchFieldBorderColor, lineWidth: isFocused ? 1.4 : 0.8)
+                    .stroke(searchFieldBorderColor, lineWidth: isFocused ? 1.2 : 0.6)
             }
-            .shadow(color: .black.opacity(isFocused ? 0.08 : 0.04), radius: isFocused ? 12 : 8, x: 0, y: 4)
+            .shadow(color: .black.opacity(isFocused ? 0.08 : 0.04), radius: isFocused ? 10 : 6, x: 0, y: 3)
+            .contentShape(Capsule(style: .continuous))
+            .onTapGesture {
+                isFocused = true
+            }
             .onHover { hovering in
                 withAnimation(.easeOut(duration: 0.12)) {
                     isHovered = hovering
@@ -923,31 +1115,47 @@ private struct MacSearchSuggestCombo: View {
         return AppLayout.searchSurfaceBorder
     }
 
+    private func clearTextWithAnimation() {
+        clearTask?.cancel()
+        isClearingText = true
+        dropdownActiveEntryID = nil
+        withAnimation(.easeOut(duration: 0.16)) {
+            dropdownSuppressed = true
+            text = ""
+        }
+        isFocused = true
+
+        clearTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.20)) {
+                searchModel.resetInput()
+            }
+            dropdownSuppressed = false
+            isClearingText = false
+        }
+    }
+
     private func moveActiveEntry(by offset: Int) {
         let entries = dropdownEntries
         guard !entries.isEmpty else { return }
-        guard let activeEntryID,
-              let currentIndex = entries.firstIndex(where: { $0.id == activeEntryID }) else {
-            self.activeEntryID = entries[offset > 0 ? 0 : entries.count - 1].id
+        guard let dropdownActiveEntryID,
+              let currentIndex = entries.firstIndex(where: { $0.id == dropdownActiveEntryID }) else {
+            self.dropdownActiveEntryID = entries[offset > 0 ? 0 : entries.count - 1].id
             return
         }
         let nextIndex = (currentIndex + offset + entries.count) % entries.count
-        self.activeEntryID = entries[nextIndex].id
+        self.dropdownActiveEntryID = entries[nextIndex].id
     }
 
     private func activateEntry(_ entry: SearchDropdownEntry) {
-        isDropdownOpen = false
         dropdownSuppressed = true
-        activeEntryID = nil
+        dropdownActiveEntryID = nil
         switch entry {
-        case .history(let keyword), .suggest(let keyword):
+        case .suggest(let keyword):
             text = keyword
             onSearch(keyword)
-        case .hot(let item):
-            text = item.keyword
-            onSearch(item.keyword)
         case .video(let video):
-            isDropdownOpen = false
             dropdownSuppressed = true
             onVideoSelect(video)
         }
@@ -955,15 +1163,11 @@ private struct MacSearchSuggestCombo: View {
 }
 
 private enum SearchDropdownEntry: Identifiable, Equatable {
-    case history(String)
-    case hot(BiliHotSearchItem)
     case suggest(String)
     case video(BiliVideo)
 
     var id: String {
         switch self {
-        case .history(let value): "history-\(value)"
-        case .hot(let item): "hot-\(item.id)"
         case .suggest(let value): "suggest-\(value)"
         case .video(let video): "video-\(video.bvid)"
         }
@@ -979,21 +1183,29 @@ private struct SearchSuggestDropdownPanel: View {
     let onHoverEntry: (String?) -> Void
 
     var body: some View {
-        MacOverlayScrollView {
-            VStack(alignment: .leading, spacing: 0) {
-                if entries.isEmpty, !previewLoading {
-                    SearchDropdownEmptyHint(text: query.isEmpty ? "输入关键词开始搜索" : "暂无联想结果")
-                } else {
-                    if query.isEmpty {
-                        discoveryContent
-                    } else {
-                        typedQueryContent
+        Group {
+            if entries.isEmpty, !previewLoading {
+                SearchDropdownEmptyHint(text: "暂无联想结果")
+            } else {
+                HStack(alignment: .top, spacing: 0) {
+                    MacOverlayScrollView {
+                        suggestionsColumn
                     }
+                    .frame(maxWidth: .infinity, maxHeight: AppLayout.searchSuggestionPanelMaxHeight)
+
+                    SearchDropdownVerticalDivider()
+                        .padding(.vertical, 14)
+
+                    MacOverlayScrollView {
+                        resultsColumn
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: AppLayout.searchSuggestionPanelMaxHeight)
                 }
+                .padding(.vertical, 8)
             }
-            .padding(.vertical, 8)
         }
-        .frame(maxHeight: 420)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(width: AppLayout.searchSuggestionPanelWidth, alignment: .topLeading)
         .background {
             SearchDropdownBackground(cornerRadius: 20)
         }
@@ -1005,64 +1217,9 @@ private struct SearchSuggestDropdownPanel: View {
     }
 
     @ViewBuilder
-    private var discoveryContent: some View {
-        let historyEntries = entries.compactMap { entry -> String? in
-            if case .history(let keyword) = entry { return keyword }
-            return nil
-        }
-        let hotEntries = entries.compactMap { entry -> BiliHotSearchItem? in
-            if case .hot(let item) = entry { return item }
-            return nil
-        }
-
-        if !historyEntries.isEmpty {
-            dropdownSection(title: "搜索历史") {
-                ForEach(Array(historyEntries.enumerated()), id: \.offset) { index, keyword in
-                    let entryID = SearchDropdownEntry.history(keyword).id
-                    SearchDropdownKeywordRow(
-                        icon: "clock.arrow.circlepath",
-                        title: keyword,
-                        highlight: query,
-                        isActive: activeEntryID == entryID,
-                        onTap: { onActivate(.history(keyword)) },
-                        onHover: { onHoverEntry(entryID) }
-                    )
-                    if index < historyEntries.count - 1 || !hotEntries.isEmpty {
-                        SearchDropdownDivider()
-                    }
-                }
-            }
-        }
-
-        if !hotEntries.isEmpty {
-            dropdownSection(title: "bilibili热搜") {
-                ForEach(Array(hotEntries.enumerated()), id: \.element.id) { index, item in
-                    let entryID = SearchDropdownEntry.hot(item).id
-                    SearchDropdownKeywordRow(
-                        icon: "flame.fill",
-                        iconTint: hotIconColor(for: item.rank),
-                        title: item.showName,
-                        highlight: query,
-                        isActive: activeEntryID == entryID,
-                        onTap: { onActivate(.hot(item)) },
-                        onHover: { onHoverEntry(entryID) }
-                    )
-                    if index < hotEntries.count - 1 {
-                        SearchDropdownDivider()
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var typedQueryContent: some View {
+    private var suggestionsColumn: some View {
         let suggestEntries = entries.compactMap { entry -> String? in
             if case .suggest(let keyword) = entry { return keyword }
-            return nil
-        }
-        let videoEntries = entries.compactMap { entry -> BiliVideo? in
-            if case .video(let video) = entry { return video }
             return nil
         }
 
@@ -1078,11 +1235,26 @@ private struct SearchSuggestDropdownPanel: View {
                         onTap: { onActivate(.suggest(keyword)) },
                         onHover: { onHoverEntry(entryID) }
                     )
-                    if index < suggestEntries.count - 1 || !videoEntries.isEmpty || previewLoading {
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if index < suggestEntries.count - 1 {
                         SearchDropdownDivider()
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        } else {
+            dropdownSection(title: "搜索建议") {
+                SearchDropdownEmptyHint(text: "暂无联想")
+                    .padding(.top, 4)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var resultsColumn: some View {
+        let videoEntries = entries.compactMap { entry -> BiliVideo? in
+            if case .video(let video) = entry { return video }
+            return nil
         }
 
         if previewLoading, videoEntries.isEmpty {
@@ -1109,11 +1281,13 @@ private struct SearchSuggestDropdownPanel: View {
                         onSelect: { onActivate(.video(video)) },
                         onHover: { onHoverEntry(entryID) }
                     )
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     if index < videoEntries.count - 1 {
                         SearchDropdownDivider()
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
     }
 
@@ -1128,15 +1302,6 @@ private struct SearchSuggestDropdownPanel: View {
                     .padding(.bottom, 4)
             }
             content()
-        }
-    }
-
-    private func hotIconColor(for rank: Int) -> Color {
-        switch rank {
-        case 1: Color(red: 0.996, green: 0.176, blue: 0.275)
-        case 2: Color(red: 1.0, green: 0.4, blue: 0.0)
-        case 3: Color(red: 1.0, green: 0.667, blue: 0.0)
-        default: Color(red: 0.55, green: 0.55, blue: 0.58)
         }
     }
 }
@@ -1194,6 +1359,14 @@ private struct SearchDropdownDivider: View {
     }
 }
 
+private struct SearchDropdownVerticalDivider: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color.black.opacity(0.07))
+            .frame(width: 0.6)
+    }
+}
+
 private struct SearchDropdownKeywordRow: View {
     let icon: String
     var iconTint: Color = Color(red: 0.55, green: 0.55, blue: 0.58)
@@ -1211,8 +1384,7 @@ private struct SearchDropdownKeywordRow: View {
                     .foregroundStyle(iconTint)
                     .frame(width: 20)
 
-                SearchKeywordHighlightText(text: title, keyword: highlight)
-                    .font(.system(size: 15))
+                SearchKeywordHighlightText(text: title, keyword: highlight, fontSize: 15)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -1252,8 +1424,12 @@ private struct SearchDropdownVideoRow: View {
                 )
 
                 VStack(alignment: .leading, spacing: 4) {
-                    SearchKeywordHighlightText(text: video.title, keyword: highlight)
-                        .font(.system(size: 15, weight: .medium))
+                    SearchKeywordHighlightText(
+                        text: video.title,
+                        keyword: highlight,
+                        fontSize: 15,
+                        fontWeight: .medium
+                    )
                         .lineLimit(1)
 
                     Text(video.authorName)
@@ -1279,9 +1455,20 @@ private struct SearchDropdownVideoRow: View {
 private struct SearchKeywordHighlightText: View {
     let text: String
     let keyword: String
+    var fontSize: CGFloat = 15
+    var fontWeight: Font.Weight = .regular
+    var highlightWeight: Font.Weight = .semibold
 
     private var defaultTextColor: Color {
         Color(red: 0.12, green: 0.12, blue: 0.14)
+    }
+
+    private var baseFont: Font {
+        .system(size: fontSize, weight: fontWeight)
+    }
+
+    private var highlightFont: Font {
+        .system(size: fontSize, weight: highlightWeight)
     }
 
     var body: some View {
@@ -1294,6 +1481,7 @@ private struct SearchKeywordHighlightText: View {
         guard !term.isEmpty else {
             var plain = AttributedString(source)
             plain.foregroundColor = defaultTextColor
+            plain.font = baseFont
             return plain
         }
 
@@ -1304,17 +1492,19 @@ private struct SearchKeywordHighlightText: View {
             if range.lowerBound > searchStart {
                 var prefix = AttributedString(String(source[searchStart..<range.lowerBound]))
                 prefix.foregroundColor = defaultTextColor
+                prefix.font = baseFont
                 result.append(prefix)
             }
             var match = AttributedString(String(source[range]))
             match.foregroundColor = BiliTheme.pink
-            match.font = .body.weight(.semibold)
+            match.font = highlightFont
             result.append(match)
             searchStart = range.upperBound
         }
         if searchStart < source.endIndex {
             var suffix = AttributedString(String(source[searchStart...]))
             suffix.foregroundColor = defaultTextColor
+            suffix.font = baseFont
             result.append(suffix)
         }
         return result
@@ -1413,7 +1603,7 @@ private struct SearchUserRow: View {
                             .font(.system(size: 15, weight: .semibold))
                             .lineLimit(1)
                         if user.level > 0 {
-                            BiliUserLevelIcon(level: user.level, width: 30, height: 19)
+                            BiliUserLevelIcon(level: user.level, width: 24, height: 15)
                         }
                     }
                     Text("\(user.fans.compactCount) 粉丝")

@@ -20,6 +20,7 @@ final class AppModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var loginMessage: String?
+    @Published private(set) var searchFocusRequest = 0
 
     private var followingOffset: String?
     private var homeFreshIdx = 1
@@ -55,6 +56,10 @@ final class AppModel: ObservableObject {
         default:
             break
         }
+    }
+
+    func requestSearchFocus() {
+        searchFocusRequest += 1
     }
 
     func reloadSelected() async {

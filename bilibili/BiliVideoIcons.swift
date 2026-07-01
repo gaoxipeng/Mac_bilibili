@@ -104,7 +104,7 @@ struct VideoDetailActionBar: View {
     private let tripleHoldDuration: TimeInterval = 2
 
     var body: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 8) {
             actionColumn(
                 icon: .likeFilled,
                 label: likeCount.compactCount,
@@ -127,49 +127,52 @@ struct VideoDetailActionBar: View {
             )
             shareColumn
         }
-        .padding(.vertical, 4)
     }
 
     private var shareColumn: some View {
-        VStack(spacing: 4) {
-            actionIconStack(
-                icon: .share,
-                tint: BiliTheme.actionInactive,
-                ringProgress: 0,
-                onTap: { dismissCoinMenu() },
-                onSharePresentation: onShareClick
-            )
-            Text(shareCount.compactCount)
-                .font(.system(size: labelFontSize, weight: .medium))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
+        VideoDetailActionItem {
+            VStack(spacing: 4) {
+                actionIconStack(
+                    icon: .share,
+                    tint: BiliTheme.actionInactive,
+                    ringProgress: 0,
+                    onTap: { dismissCoinMenu() },
+                    onSharePresentation: onShareClick
+                )
+                Text(shareCount.compactCount)
+                    .font(.system(size: labelFontSize, weight: .medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
     }
 
     private var coinColumn: some View {
-        VStack(spacing: 4) {
-            actionIconStack(
-                icon: .coin,
-                tint: coined ? BiliTheme.blue : BiliTheme.actionInactive,
-                ringProgress: holdProgress,
-                onTap: toggleCoinMenu
-            )
-            .background {
-                GeometryReader { geo in
-                    Color.clear
-                        .preference(
-                            key: CoinIconFrameKey.self,
-                            value: geo.frame(in: .named("detailPane"))
-                        )
+        VideoDetailActionItem(showsChrome: coinMenuPresented) {
+            VStack(spacing: 4) {
+                actionIconStack(
+                    icon: .coin,
+                    tint: coined ? BiliTheme.blue : BiliTheme.actionInactive,
+                    ringProgress: holdProgress,
+                    onTap: toggleCoinMenu
+                )
+                .background {
+                    GeometryReader { geo in
+                        Color.clear
+                            .preference(
+                                key: CoinIconFrameKey.self,
+                                value: geo.frame(in: .named("detailPane"))
+                            )
+                    }
                 }
+                Text(coinCount.compactCount)
+                    .font(.system(size: labelFontSize, weight: .medium))
+                    .foregroundStyle(coined ? BiliTheme.blue : .primary)
+                    .lineLimit(1)
             }
-            Text(coinCount.compactCount)
-                .font(.system(size: labelFontSize, weight: .medium))
-                .foregroundStyle(coined ? BiliTheme.blue : .primary)
-                .lineLimit(1)
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
     }
 
     private func actionColumn(
@@ -181,24 +184,26 @@ struct VideoDetailActionBar: View {
         onLongPress: (() -> Void)? = nil,
         onHoldProgress: ((CGFloat) -> Void)? = nil
     ) -> some View {
-        VStack(spacing: 4) {
-            actionIconStack(
-                icon: icon,
-                tint: tint,
-                ringProgress: ringProgress,
-                onTap: {
-                    dismissCoinMenu()
-                    onTap()
-                },
-                onLongPress: onLongPress,
-                onHoldProgress: onHoldProgress
-            )
-            Text(label)
-                .font(.system(size: labelFontSize, weight: .medium))
-                .foregroundStyle(tint == BiliTheme.blue ? BiliTheme.blue : .primary)
-                .lineLimit(1)
+        VideoDetailActionItem {
+            VStack(spacing: 4) {
+                actionIconStack(
+                    icon: icon,
+                    tint: tint,
+                    ringProgress: ringProgress,
+                    onTap: {
+                        dismissCoinMenu()
+                        onTap()
+                    },
+                    onLongPress: onLongPress,
+                    onHoldProgress: onHoldProgress
+                )
+                Text(label)
+                    .font(.system(size: labelFontSize, weight: .medium))
+                    .foregroundStyle(tint == BiliTheme.blue ? BiliTheme.blue : .primary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
         }
-        .frame(maxWidth: .infinity)
     }
 
     private func actionIconStack(
@@ -243,6 +248,35 @@ struct VideoDetailActionBar: View {
 
     private func updateHoldProgress(_ progress: CGFloat) {
         holdProgress = progress
+    }
+}
+
+private struct VideoDetailActionItem<Content: View>: View {
+    var showsChrome = false
+    @ViewBuilder var content: () -> Content
+
+    @State private var isHovered = false
+
+    private var showsBackground: Bool {
+        isHovered || showsChrome
+    }
+
+    var body: some View {
+        content()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .background {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.black.opacity(0.04))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.black.opacity(0.08), lineWidth: 1)
+                    }
+                    .opacity(showsBackground ? 1 : 0)
+            }
+            .animation(.easeOut(duration: 0.18), value: showsBackground)
+            .onHover { isHovered = $0 }
     }
 }
 

@@ -44,7 +44,7 @@ enum DanmakuPlayerPreferences {
 }
 
 private extension Int {
-    func clamped(to range: ClosedRange<Int>) -> Int {
+    nonisolated func clamped(to range: ClosedRange<Int>) -> Int {
         Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
     }
 }

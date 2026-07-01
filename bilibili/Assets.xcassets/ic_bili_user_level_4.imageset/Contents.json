@@ -1,0 +1,15 @@
+{
+  "images": [
+    {
+      "filename": "ic_bili_user_level_4.svg",
+      "idiom": "universal"
+    }
+  ],
+  "info": {
+    "author": "xcode",
+    "version": 1
+  },
+  "properties": {
+    "preserves-vector-representation": true
+  }
+}

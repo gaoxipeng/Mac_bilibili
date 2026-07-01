@@ -1,18 +1,17 @@
 import AppKit
 import Foundation
+import QuartzCore
 import SwiftUI
 
 private let fixedDanmakuDurationMs: Int64 = 4_000
 private let scrollBaseDurationMs: Int64 = 7_000
 private let scrollPerCharDurationMs: Int64 = 120
 private let spawnLookaheadMs: Int64 = 120
-private let spawnBacklogSkipMs: Int64 = 900
+private let spawnBacklogSkipMs: Int64 = 14_000
 private let maxSpawnInspectionsPerFrame = 80
-private let danmakuTrackCount = 18
+private let maxDanmakuTrackCapacity = 28
 private let fixedDanmakuRowCount = 8
 private let trackGapSec: Float = 0.15
-private let scrollDanmakuGap: CGFloat = 28
-private let danmakuTrackLineHeight: CGFloat = 26
 
 func danmakuScrollDurationMs(item: BiliDanmakuItem, speedMultiplier: Float) -> Int64 {
     let base = scrollBaseDurationMs + Int64(item.content.count) * scrollPerCharDurationMs
@@ -29,10 +28,12 @@ func danmakuColor(_ argb: Int) -> Color {
     )
 }
 
-func danmakuFontSize(itemFontSize: Int, videoHeight: CGFloat, fontSizePercent: Int) -> CGFloat {
-    let scale = min(1.35, max(0.75, videoHeight / 210))
-    let size = CGFloat(itemFontSize) * 0.52 * scale * CGFloat(fontSizePercent) / 100
-    return min(28, max(10, size))
+func danmakuFontSize(
+    itemFontSize: Int,
+    settings: DanmakuSettings,
+    metrics: DanmakuLayoutMetrics
+) -> CGFloat {
+    metrics.fontSize(itemFontSize: itemFontSize, settings: settings)
 }
 
 struct DanmakuDrawFrame {
@@ -58,7 +59,7 @@ final class DanmakuTimeline {
     private var items: [BiliDanmakuItem] = []
     private var activeDanmaku: [ActiveDanmaku] = []
     private var spawnedIDs = Set<Int>()
-    private var trackReleaseTimes = [Float](repeating: 0, count: danmakuTrackCount)
+    private var trackReleaseTimes = [Float](repeating: 0, count: maxDanmakuTrackCapacity)
     private var topFixedReleaseTimes = [Float](repeating: 0, count: fixedDanmakuRowCount)
     private var bottomFixedReleaseTimes = [Float](repeating: 0, count: fixedDanmakuRowCount)
     private var nextIndex = 0
@@ -71,8 +72,7 @@ final class DanmakuTimeline {
     private var settings = DanmakuSettings()
     private var enabled = false
     private var layoutWidth: CGFloat = 1
-    private var layoutHeight: CGFloat = 1
-    private var bottomReserve: CGFloat = 46
+    private var layoutMetrics = DanmakuLayoutMetrics.make(mode: .inline, layoutHeight: 1)
     private var itemsSignature = DanmakuItemsSignature.empty
     private var drawFrames: [DanmakuDrawFrame] = []
     private var measureCache: [DanmakuMeasureKey: DanmakuMeasuredText] = [:]
@@ -82,18 +82,19 @@ final class DanmakuTimeline {
         enabled: Bool,
         settings: DanmakuSettings,
         size: CGSize,
-        bottomReserve: CGFloat
+        layoutMode: DanmakuLayoutMode
     ) {
         let signature = DanmakuItemsSignature(items: items)
-        let sizeChanged = layoutWidth != size.width || layoutHeight != size.height
+        let layoutHeight = max(1, size.height)
+        let metrics = DanmakuLayoutMetrics.make(mode: layoutMode, layoutHeight: layoutHeight)
+        let sizeChanged = layoutWidth != size.width || self.layoutMetrics != metrics
         let settingsChanged = self.settings != settings
         let itemsChanged = signature != itemsSignature
         self.items = items
         self.enabled = enabled
         self.settings = settings
         layoutWidth = max(1, size.width)
-        layoutHeight = max(1, size.height)
-        self.bottomReserve = bottomReserve
+        layoutMetrics = metrics
         itemsSignature = signature
         if itemsChanged || settingsChanged {
             measureCache.removeAll()
@@ -103,25 +104,31 @@ final class DanmakuTimeline {
         }
     }
 
-    func sync(positionMs: Int64, isPlaying: Bool, playbackSpeed: Float = 1) {
+    func sync(
+        positionMs: Int64,
+        isPlaying: Bool,
+        playbackSpeed: Float = 1,
+        realtimeMs: Int64? = nil
+    ) {
         guard enabled, !items.isEmpty else {
             activeDanmaku.removeAll()
             drawFrames.removeAll(keepingCapacity: true)
             return
         }
 
-        let positionJumped = abs(positionMs - lastObservedPositionMs) > 1_500
+        let positionDelta = positionMs - lastObservedPositionMs
+        let positionJumped = positionDelta > 1_500 || positionDelta < -120
         lastObservedPositionMs = positionMs
         if positionJumped {
             resetTimeline(positionMs: positionMs)
         } else if !isPlaying {
             anchorPositionMs = positionMs
-            anchorRealtimeMs = currentRealtimeMs()
+            anchorRealtimeMs = realtimeMs ?? currentRealtimeMs()
             displayTimeMs = positionMs
         }
 
         if isPlaying {
-            let elapsed = currentRealtimeMs() - anchorRealtimeMs
+            let elapsed = (realtimeMs ?? currentRealtimeMs()) - anchorRealtimeMs
             displayTimeMs = anchorPositionMs + Int64(Double(elapsed) * Double(max(0.1, playbackSpeed)))
         }
 
@@ -134,14 +141,15 @@ final class DanmakuTimeline {
         drawFrames
     }
 
-    func reanchorOnPlayStateChange(isPlaying: Bool, positionMs: Int64) {
+    func reanchorOnPlayStateChange(isPlaying: Bool, positionMs: Int64, realtimeMs: Int64? = nil) {
         if isPlaying {
-            anchorPositionMs = displayTimeMs
-            anchorRealtimeMs = currentRealtimeMs()
+            anchorPositionMs = positionMs
+            displayTimeMs = positionMs
+            anchorRealtimeMs = realtimeMs ?? currentRealtimeMs()
         } else {
             anchorPositionMs = positionMs
             displayTimeMs = positionMs
-            anchorRealtimeMs = currentRealtimeMs()
+            anchorRealtimeMs = realtimeMs ?? currentRealtimeMs()
         }
     }
 
@@ -149,10 +157,10 @@ final class DanmakuTimeline {
         activeDanmaku.removeAll(keepingCapacity: true)
         spawnedIDs.removeAll(keepingCapacity: true)
         drawFrames.removeAll(keepingCapacity: true)
-        trackReleaseTimes = [Float](repeating: 0, count: danmakuTrackCount)
+        trackReleaseTimes = [Float](repeating: 0, count: maxDanmakuTrackCapacity)
         topFixedReleaseTimes = [Float](repeating: 0, count: fixedDanmakuRowCount)
         bottomFixedReleaseTimes = [Float](repeating: 0, count: fixedDanmakuRowCount)
-        nextIndex = spawnIndexForPosition(items: items, positionMs: positionMs)
+        nextIndex = spawnIndexForPosition(items: items, positionMs: max(0, positionMs - spawnBacklogSkipMs))
         anchorPositionMs = positionMs
         displayTimeMs = positionMs
         anchorRealtimeMs = currentRealtimeMs()
@@ -185,8 +193,8 @@ final class DanmakuTimeline {
         let currentTimeSec = Float(animStartDisplayTimeMs) / 1000
         let scrollAreaHeight = scrollAreaHeightPx()
         let screenWidth = layoutWidth
-        let gapPx = scrollDanmakuGap
-        let trackLineHeight = danmakuTrackLineHeight
+        let gapPx = layoutMetrics.scrollGap
+        let trackLineHeight = layoutMetrics.trackLineHeight
 
         let active: ActiveDanmaku?
         switch mode {
@@ -220,7 +228,7 @@ final class DanmakuTimeline {
             }
         case .scroll, .reverseScroll:
             let durationSec = Float(danmakuScrollDurationMs(item: item, speedMultiplier: speedMultiplier)) / 1000
-            let maxTracks = min(danmakuTrackCount, max(1, Int(scrollAreaHeight / trackLineHeight)))
+            let maxTracks = min(layoutMetrics.maxTrackCount, max(1, Int(scrollAreaHeight / trackLineHeight)))
             let reverse = mode == .reverseScroll
             let durationMs = danmakuScrollDurationMs(item: item, speedMultiplier: speedMultiplier)
             if let track = assignDanmakuTrack(
@@ -260,15 +268,16 @@ final class DanmakuTimeline {
     private func measureDanmaku(item: BiliDanmakuItem) -> DanmakuMeasuredText? {
         let fontSize = danmakuFontSize(
             itemFontSize: item.fontSize,
-            videoHeight: layoutHeight,
-            fontSizePercent: settings.fontSizePercent
+            settings: settings,
+            metrics: layoutMetrics
         )
         let opacity = Double(settings.opacityPercent.clamped(to: 10...100)) / 100
         let key = DanmakuMeasureKey(
             content: item.content,
             colorArgb: item.colorArgb,
             fontSize: fontSize,
-            opacityPercent: settings.opacityPercent
+            opacityPercent: settings.opacityPercent,
+            layoutMode: layoutMetrics.mode
         )
         if let cached = measureCache[key] {
             return cached
@@ -315,9 +324,9 @@ final class DanmakuTimeline {
     }
 
     private func rebuildDrawFrames() {
-        let trackLineHeight = danmakuTrackLineHeight
-        let bottomReservePx = bottomReserve
-        let heightPx = layoutHeight
+        let trackLineHeight = layoutMetrics.trackLineHeight
+        let bottomReservePx = layoutMetrics.bottomReserve
+        let heightPx = layoutMetrics.layoutHeight
         let widthPx = layoutWidth
         let fixedPadding: CGFloat = 4
 
@@ -366,13 +375,15 @@ final class DanmakuTimeline {
     }
 
     private func scrollAreaHeightPx() -> CGFloat {
-        let full = max(1, layoutHeight - bottomReserve)
-        let percent = CGFloat(settings.displayAreaPercent.clamped(to: 10...100)) / 100
+        let full = max(1, layoutMetrics.layoutHeight - layoutMetrics.bottomReserve)
+        let percent = CGFloat(
+            layoutMetrics.effectiveDisplayAreaPercent(from: settings).clamped(to: 10...100)
+        ) / 100
         return full * percent
     }
 
     private func currentRealtimeMs() -> Int64 {
-        Int64(Date().timeIntervalSince1970 * 1000)
+        Int64(CACurrentMediaTime() * 1000)
     }
 }
 
@@ -398,6 +409,7 @@ private struct DanmakuMeasureKey: Hashable {
     let colorArgb: Int
     let fontSize: CGFloat
     let opacityPercent: Int
+    let layoutMode: DanmakuLayoutMode
 }
 
 private struct DanmakuItemsSignature: Equatable {
@@ -554,7 +566,7 @@ private func scrollTrackEntryBlockSec(
 }
 
 private extension Int {
-    func clamped(to range: ClosedRange<Int>) -> Int {
+    nonisolated func clamped(to range: ClosedRange<Int>) -> Int {
         Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
     }
 }

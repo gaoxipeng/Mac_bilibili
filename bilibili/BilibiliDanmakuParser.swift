@@ -51,9 +51,44 @@ enum BilibiliDanmakuParser: Sendable {
 
     nonisolated static func parseXml(_ xml: String) -> [BiliDanmakuItem] {
         guard !xml.isEmpty else { return [] }
-        let parser = DanmakuXMLParser()
-        parser.parse(xml)
-        return parser.items
+
+        var items: [BiliDanmakuItem] = []
+        let pattern = #"<d p="([^"]*)"[^>]*>([^<]*)</d>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(xml.startIndex..., in: xml)
+
+        regex.enumerateMatches(in: xml, options: [], range: range) { match, _, _ in
+            guard let match,
+                  match.numberOfRanges >= 3,
+                  let paramsRange = Range(match.range(at: 1), in: xml),
+                  let contentRange = Range(match.range(at: 2), in: xml) else {
+                return
+            }
+
+            let params = String(xml[paramsRange])
+            let content = String(xml[contentRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let parts = params.split(separator: ",").map(String.init)
+            guard parts.count >= 4,
+                  let timeSec = Float(parts[0]),
+                  let mode = Int(parts[1]),
+                  let fontSize = Int(parts[2]),
+                  let color = Int(parts[3]),
+                  !content.isEmpty else {
+                return
+            }
+
+            items.append(
+                BiliDanmakuItem(
+                    timeMs: max(0, Int64(timeSec * 1000)),
+                    mode: mode,
+                    fontSize: max(18, fontSize),
+                    colorArgb: color,
+                    content: content
+                )
+            )
+        }
+
+        return items
     }
 
     private nonisolated static func parseLegacyBinary(_ bytes: Data) -> [BiliDanmakuItem] {
@@ -165,62 +200,5 @@ enum BilibiliDanmakuParser: Sendable {
             shift += 7
         }
         return nil
-    }
-}
-
-private final class DanmakuXMLParser: NSObject, XMLParserDelegate {
-    var items: [BiliDanmakuItem] = []
-    private var pendingParams: (Float, Int, Int, Int)?
-    private var currentText = ""
-
-    func parse(_ xml: String) {
-        let parser = XMLParser(data: Data(xml.utf8))
-        parser.delegate = self
-        parser.parse()
-    }
-
-    func parser(
-        _ parser: XMLParser,
-        didStartElement elementName: String,
-        namespaceURI: String?,
-        qualifiedName qName: String?,
-        attributes attributeDict: [String: String] = [:]
-    ) {
-        guard elementName == "d" else { return }
-        let params = attributeDict["p"] ?? ""
-        let parts = params.split(separator: ",").map(String.init)
-        guard parts.count >= 4,
-              let timeSec = Float(parts[0]),
-              let mode = Int(parts[1]),
-              let fontSize = Int(parts[2]),
-              let color = Int(parts[3]) else { return }
-        currentText = ""
-        pendingParams = (timeSec, mode, fontSize, color)
-    }
-
-    func parser(_ parser: XMLParser, foundCharacters string: String) {
-        currentText += string
-    }
-
-    func parser(
-        _ parser: XMLParser,
-        didEndElement elementName: String,
-        namespaceURI: String?,
-        qualifiedName qName: String?
-    ) {
-        guard elementName == "d", let pending = pendingParams else { return }
-        let content = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
-        pendingParams = nil
-        currentText = ""
-        guard !content.isEmpty else { return }
-        items.append(
-            BiliDanmakuItem(
-                timeMs: max(0, Int64(pending.0 * 1000)),
-                mode: pending.1,
-                fontSize: max(18, pending.2),
-                colorArgb: pending.3,
-                content: content
-            )
-        )
     }
 }

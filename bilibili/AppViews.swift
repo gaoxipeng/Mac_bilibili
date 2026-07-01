@@ -1,15 +1,77 @@
 import SwiftUI
 
-private enum VideoCardLayout {
-    static let minWidth: CGFloat = 272
-    static let gridSpacing: CGFloat = 22
+enum VideoCardLayout {
+    static let minWidth: CGFloat = 288
+    static let gridSpacing: CGFloat = 14
     static let coverAspect: CGFloat = 16.0 / 9.0
     static let cornerRadius: CGFloat = 10
-    static let coverHoverScale: CGFloat = 1.05
+    static let cardBorderColor = Color(red: 232 / 255, green: 232 / 255, blue: 232 / 255)
+    static let coverHoverScale: CGFloat = 1.035
+    static let coverHoverAnimation = Animation.interactiveSpring(response: 0.18, dampingFraction: 0.82, blendDuration: 0.04)
+    static let coverHoverExitAnimation = Animation.easeOut(duration: 0.14)
+    static let metadataSpacing: CGFloat = 8
+    static let metadataPadding = EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
+    /// Feed 封面解码目标像素，避免滚动时为每个 cell 做 GeometryReader 测量。
+    static func feedCoverPixelLength(displayScale: CGFloat) -> Int {
+        Int((minWidth * max(1, displayScale) * 1.05).rounded(.up))
+    }
 
     static let gridColumns = [
         GridItem(.adaptive(minimum: minWidth), spacing: gridSpacing, alignment: .top)
     ]
+}
+
+struct VideoFeedGrid<Trailing: View>: View {
+    let videos: [BiliVideo]
+    var largeTypography = false
+    var onVideoAppear: ((BiliVideo) -> Void)? = nil
+    @ViewBuilder var trailing: () -> Trailing
+
+    init(
+        videos: [BiliVideo],
+        largeTypography: Bool = false,
+        onVideoAppear: ((BiliVideo) -> Void)? = nil,
+        @ViewBuilder trailing: @escaping () -> Trailing = { EmptyView() }
+    ) {
+        self.videos = videos
+        self.largeTypography = largeTypography
+        self.onVideoAppear = onVideoAppear
+        self.trailing = trailing
+    }
+
+    var body: some View {
+        LazyVGrid(
+            columns: VideoCardLayout.gridColumns,
+            alignment: .leading,
+            spacing: VideoCardLayout.gridSpacing
+        ) {
+            videoItems
+            trailing()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var videoItems: some View {
+        ForEach(videos) { video in
+            FeedVideoCard(video: video, largeTypography: largeTypography)
+                .frame(
+                    maxWidth: .infinity,
+                    maxHeight: nil,
+                    alignment: .top
+                )
+                .onAppear { onVideoAppear?(video) }
+        }
+    }
+}
+
+private struct FeedVideoCard: View {
+    let video: BiliVideo
+    let largeTypography: Bool
+
+    var body: some View {
+        VideoCard(video: video, largeTypography: largeTypography)
+    }
 }
 
 struct FollowingView: View {
@@ -21,10 +83,8 @@ struct FollowingView: View {
     let loggedIn: Bool
     let onLoadMore: () -> Void
 
-    private let columns = VideoCardLayout.gridColumns
-
     var body: some View {
-        ScrollView {
+        AppScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
                 PageHeader(
                     title: "关注",
@@ -49,18 +109,25 @@ struct FollowingView: View {
                         emptyTitle: "暂无关注视频，先去关注几个 UP 主吧"
                     )
 
-                    LazyVGrid(columns: columns, alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
-                        ForEach(videos) { video in
-                            VideoCard(video: video, largeTypography: true)
+                    VideoFeedGrid(
+                        videos: videos,
+                        largeTypography: true,
+                        onVideoAppear: { video in
+                            guard hasMore,
+                                  !loadingMore,
+                                  shouldPrefetchMore(afterAppearing: video, in: videos) else {
+                                return
+                            }
+                            onLoadMore()
+                        },
+                        trailing: {
+                            if hasMore {
+                                loadMoreFooter
+                            }
                         }
-                    }
-
-                    if hasMore {
-                        loadMoreFooter
-                    }
+                    )
                 }
             }
-            .padding(28)
         }
     }
 
@@ -77,7 +144,83 @@ struct FollowingView: View {
             } else {
                 Color.clear
                     .frame(height: 1)
-                    .onAppear(perform: onLoadMore)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+    }
+}
+
+struct FavoritesView: View {
+    let videos: [BiliVideo]
+    let loading: Bool
+    let loadingMore: Bool
+    let hasMore: Bool
+    let error: String?
+    let loggedIn: Bool
+    let onLoadMore: () -> Void
+
+    var body: some View {
+        AppScrollView {
+            LazyVStack(alignment: .leading, spacing: 20) {
+                PageHeader(
+                    title: "收藏",
+                    subtitle: loggedIn ? "默认收藏夹" : "登录后查看收藏视频",
+                    largeTypography: true
+                )
+
+                if !loggedIn {
+                    ContentUnavailableView(
+                        "登录后查看收藏",
+                        systemImage: "star",
+                        description: Text("在「我的」页面完成登录，即可同步收藏内容")
+                    )
+                    .padding(.vertical, 40)
+                    .frame(maxWidth: .infinity)
+                    .materialPanel()
+                } else {
+                    StateBanner(
+                        loading: loading,
+                        error: error,
+                        isEmpty: videos.isEmpty,
+                        emptyTitle: "暂无收藏视频"
+                    )
+
+                    VideoFeedGrid(
+                        videos: videos,
+                        largeTypography: true,
+                        onVideoAppear: { video in
+                            guard hasMore,
+                                  !loadingMore,
+                                  shouldPrefetchMore(afterAppearing: video, in: videos) else {
+                                return
+                            }
+                            onLoadMore()
+                        },
+                        trailing: {
+                            if hasMore {
+                                loadMoreFooter
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var loadMoreFooter: some View {
+        Group {
+            if loadingMore {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在加载更多")
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Color.clear
+                    .frame(height: 1)
             }
         }
         .frame(maxWidth: .infinity)
@@ -86,30 +229,82 @@ struct FollowingView: View {
 }
 
 struct VideoGridView: View {
-    let title: String
-    let subtitle: String
+    var title: String? = nil
+    var subtitle: String? = nil
     let videos: [BiliVideo]
     let loading: Bool
     let error: String?
     let emptyTitle: String
+    var compactHeader = false
+    var showsPageHeader = true
+    var loadingMore = false
+    var hasMore = false
+    var onLoadMore: (() -> Void)? = nil
 
-    private let columns = VideoCardLayout.gridColumns
+    @State private var loadMoreTask: Task<Void, Never>?
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 20) {
-                PageHeader(title: title, subtitle: subtitle)
+        AppScrollView {
+            LazyVStack(alignment: .leading, spacing: compactHeader ? 10 : 20) {
+                if showsPageHeader, let title, !title.isEmpty {
+                    PageHeader(title: title, subtitle: subtitle, compact: compactHeader)
+                }
                 StateBanner(loading: loading, error: error, isEmpty: videos.isEmpty, emptyTitle: emptyTitle)
 
-                LazyVGrid(columns: columns, alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
-                    ForEach(videos) { video in
-                        VideoCard(video: video)
+                VideoFeedGrid(
+                    videos: videos,
+                    onVideoAppear: scheduleLoadMoreIfNeeded,
+                    trailing: {
+                        if hasMore {
+                            loadMoreFooter
+                        }
                     }
-                }
+                )
             }
-            .padding(28)
+        }
+        .onDisappear {
+            loadMoreTask?.cancel()
+            loadMoreTask = nil
         }
     }
+
+    private func scheduleLoadMoreIfNeeded(_ video: BiliVideo) {
+        guard hasMore,
+              !loadingMore,
+              shouldPrefetchMore(afterAppearing: video, in: videos) else {
+            return
+        }
+        loadMoreTask?.cancel()
+        loadMoreTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            onLoadMore?()
+        }
+    }
+
+    @ViewBuilder
+    private var loadMoreFooter: some View {
+        Group {
+            if loadingMore {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在加载更多")
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                Color.clear
+                    .frame(height: 1)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+    }
+}
+
+private func shouldPrefetchMore(afterAppearing video: BiliVideo, in videos: [BiliVideo]) -> Bool {
+    guard videos.count > 8 else { return false }
+    return videos.suffix(4).contains { $0.bvid == video.bvid }
 }
 
 struct LiveRoomGridView: View {
@@ -120,7 +315,7 @@ struct LiveRoomGridView: View {
     private let columns = VideoCardLayout.gridColumns
 
     var body: some View {
-        ScrollView {
+        AppScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
                 PageHeader(title: "直播", subtitle: "热门直播间")
                 StateBanner(loading: loading, error: error, isEmpty: rooms.isEmpty, emptyTitle: "暂时没有直播内容")
@@ -131,65 +326,6 @@ struct LiveRoomGridView: View {
                     }
                 }
             }
-            .padding(28)
-        }
-    }
-}
-
-struct SearchDashboard: View {
-    @ObservedObject var model: AppModel
-
-    var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 22) {
-                PageHeader(title: "搜索", subtitle: "查找视频、UP 主和当前热词")
-
-                VStack(alignment: .leading, spacing: 14) {
-                    HStack(spacing: 12) {
-                        SearchField(text: $model.searchQuery) {
-                            Task { await model.search() }
-                        }
-                        Button {
-                            Task { await model.search() }
-                        } label: {
-                            Label("搜索", systemImage: "magnifyingglass")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.pink)
-                    }
-
-                    if !model.hotWords.isEmpty {
-                        FlowLayout(spacing: 8) {
-                            ForEach(model.hotWords) { word in
-                                Button {
-                                    Task { await model.search(keyword: word.keyword) }
-                                } label: {
-                                    Text(word.keyword)
-                                        .lineLimit(1)
-                                }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                            }
-                        }
-                    }
-                }
-                .padding(18)
-                .materialPanel()
-
-                StateBanner(
-                    loading: model.isLoading,
-                    error: model.errorMessage,
-                    isEmpty: model.searchResults.isEmpty && !model.searchQuery.isEmpty,
-                    emptyTitle: "没有找到相关视频"
-                )
-
-                LazyVGrid(columns: VideoCardLayout.gridColumns, spacing: VideoCardLayout.gridSpacing) {
-                    ForEach(model.searchResults) { video in
-                        VideoCard(video: video)
-                    }
-                }
-            }
-            .padding(28)
         }
     }
 }
@@ -201,7 +337,7 @@ struct HistoryView: View {
     let loggedIn: Bool
 
     var body: some View {
-        ScrollView {
+        AppScrollView {
             LazyVStack(alignment: .leading, spacing: 20) {
                 PageHeader(title: "历史", subtitle: "观看记录")
                 StateBanner(
@@ -215,7 +351,6 @@ struct HistoryView: View {
                     HistoryRow(item: item)
                 }
             }
-            .padding(28)
         }
     }
 }
@@ -226,11 +361,24 @@ struct MineView: View {
     @StateObject private var webSession = BilibiliWebSession()
 
     var body: some View {
-        ScrollView {
+        AppScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 PageHeader(title: "我的", subtitle: model.account == nil ? "登录后同步个人资料、关注和历史" : "账号与资料")
                 if let account = model.account {
-                    ProfileCard(account: account, profile: model.profile)
+                    if let mid = Int64(account.uid), mid > 0 {
+                        NavigationLink(
+                            value: UserProfileRequest(
+                                mid: mid,
+                                seedName: account.name,
+                                seedFaceURL: account.faceURL
+                            )
+                        ) {
+                            ProfileCard(account: account, profile: model.profile)
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        ProfileCard(account: account, profile: model.profile)
+                    }
                 } else {
                     LoginCard {
                         showLogin = true
@@ -252,8 +400,8 @@ struct MineView: View {
                     onHome: { model.selectedSection = .home },
                     onLogout: { model.logout() }
                 )
+
             }
-            .padding(28)
         }
         .sheet(isPresented: $showLogin) {
             WebLoginSheet(session: webSession) {
@@ -271,20 +419,24 @@ struct MineView: View {
 
 struct PageHeader: View {
     let title: String
-    let subtitle: String
+    var subtitle: String? = nil
     var largeTypography = false
+    var compact = false
 
     var body: some View {
         HStack(alignment: .lastTextBaseline) {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: compact ? 0 : 6) {
                 Text(title)
                     .font(largeTypography ? .system(size: 40, weight: .bold) : .largeTitle.weight(.bold))
-                Text(subtitle)
-                    .font(largeTypography ? .body : .callout)
-                    .foregroundStyle(.secondary)
+                if let subtitle, !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(largeTypography ? .body : .callout)
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer()
         }
+        .padding(.bottom, compact ? -4 : 0)
     }
 }
 
@@ -324,91 +476,175 @@ struct VideoCard: View {
     var largeTypography = false
     @State private var isCoverHovered = false
 
+    private var titleFont: Font {
+        return largeTypography ? .title2.weight(.semibold) : .title3.weight(.medium)
+    }
+
+    private var authorFont: Font {
+        largeTypography ? .body : .subheadline
+    }
+
+    private var statsFont: Font {
+        largeTypography ? .body : .subheadline
+    }
+
+    private var avatarSize: CGFloat {
+        largeTypography ? 30 : 26
+    }
+
+    private var statIconSize: CGFloat {
+        largeTypography ? 20 : 18
+    }
+
+    private var likeStatIconSize: CGFloat {
+        statIconSize - 3
+    }
+
+    private var cornerRadius: CGFloat {
+        VideoCardLayout.cornerRadius
+    }
+
     var body: some View {
-        NavigationLink(value: video) {
-            VStack(alignment: .leading, spacing: 0) {
+        mosaicCard
+        .frame(
+            maxWidth: .infinity,
+            maxHeight: nil,
+            alignment: .top
+        )
+    }
+
+    private var mosaicCard: some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        return VStack(alignment: .leading, spacing: 0) {
+            coverSection
+            metadataSection
+        }
+        .background {
+            ZStack {
+                shape.fill(Color.white)
+                shape.stroke(VideoCardLayout.cardBorderColor, lineWidth: 0.5)
+            }
+        }
+        .shadow(color: .black.opacity(isCoverHovered ? 0.07 : 0), radius: isCoverHovered ? 8 : 0, x: 0, y: isCoverHovered ? 4 : 0)
+        .zIndex(isCoverHovered ? 2 : 0)
+    }
+
+    private var coverHoverAnimation: Animation {
+        isCoverHovered ? VideoCardLayout.coverHoverAnimation : VideoCardLayout.coverHoverExitAnimation
+    }
+
+    private var coverSection: some View {
+        let coverShape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        return NavigationLink(value: VideoPlaybackRequest(video)) {
+            ZStack(alignment: .bottomTrailing) {
                 RemoteCover(
                     url: video.coverURL,
                     aspectRatio: VideoCardLayout.coverAspect,
-                    appliesCornerClip: false
+                    appliesCornerClip: false,
+                    allowsOverflow: true
                 )
                 .frame(maxWidth: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: VideoCardLayout.cornerRadius, style: .continuous))
-                .overlay(alignment: .bottomTrailing) {
-                    if video.duration > 0 {
-                        Text(video.durationText)
-                            .font(.caption.monospacedDigit().weight(.semibold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(.black.opacity(0.64), in: Capsule())
-                            .foregroundStyle(.white)
-                            .padding(8)
-                    }
-                }
+                .clipShape(coverShape)
                 .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
-                .animation(.easeOut(duration: 0.22), value: isCoverHovered)
-                .onHover { hovering in
-                    isCoverHovered = hovering
+                .animation(coverHoverAnimation, value: isCoverHovered)
+
+                if video.duration > 0 {
+                    Text(video.durationText)
+                        .font(.caption.monospacedDigit().weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.black.opacity(0.68), in: Capsule())
+                        .padding(8)
                 }
-                .zIndex(1)
-
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(video.title)
-                        .font(largeTypography ? .title2.weight(.semibold) : .title2.weight(.medium))
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-
-                    HStack(spacing: 10) {
-                        AsyncImage(url: video.authorFaceURL) { phase in
-                            switch phase {
-                            case .success(let image):
-                                image.resizable().scaledToFill()
-                            default:
-                                Image(systemName: "person.fill")
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .frame(width: largeTypography ? 30 : 28, height: largeTypography ? 30 : 28)
-                        .clipShape(Circle())
-
-                        Text(video.authorName.ifEmpty("未知 UP 主"))
-                            .font(.body)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-
-                    HStack(spacing: 14) {
-                        BiliStatLabel(
-                            icon: .play,
-                            value: video.viewCount.compactCount,
-                            iconSize: largeTypography ? 20 : 18,
-                            font: largeTypography ? .body : .subheadline
-                        )
-                        BiliStatLabel(
-                            icon: .danmaku,
-                            value: video.danmakuCount.compactCount,
-                            iconSize: largeTypography ? 20 : 18,
-                            font: largeTypography ? .body : .subheadline
-                        )
-                        if video.likeCount > 0 {
-                            BiliStatLabel(
-                                icon: .like,
-                                value: video.likeCount.compactCount,
-                                iconSize: largeTypography ? 20 : 18,
-                                font: largeTypography ? .body : .subheadline
-                            )
-                        }
-                    }
-                    .foregroundStyle(.secondary)
-                }
-                .padding(.top, 14)
-                .padding([.horizontal, .bottom], 16)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(RoundedRectangle(cornerRadius: VideoCardLayout.cornerRadius, style: .continuous))
+            .contentShape(coverShape)
         }
         .buttonStyle(.plain)
-        .videoCardChrome()
+        .videoCoverHover(isHovered: $isCoverHovered)
+    }
+
+    private var metadataSection: some View {
+        VStack(alignment: .leading, spacing: VideoCardLayout.metadataSpacing) {
+            NavigationLink(value: VideoPlaybackRequest(video)) {
+                VStack(alignment: .leading, spacing: VideoCardLayout.metadataSpacing) {
+                    Text(video.title)
+                        .font(titleFont)
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    statsRow
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+
+            authorRow
+        }
+        .padding(VideoCardLayout.metadataPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var authorRow: some View {
+        if video.authorMid > 0 {
+            NavigationLink(
+                value: UserProfileRequest(
+                    mid: video.authorMid,
+                    seedName: video.authorName,
+                    seedFaceURL: video.authorFaceURL
+                )
+            ) {
+                authorRowContent
+            }
+            .buttonStyle(.plain)
+        } else {
+            authorRowContent
+        }
+    }
+
+    private var authorRowContent: some View {
+        HStack(spacing: 8) {
+            RemoteAvatar(
+                url: video.authorFaceURL,
+                size: avatarSize,
+                foreground: .secondary,
+                background: Color.secondary.opacity(0.11),
+                border: Color.black.opacity(0.05)
+            )
+
+            Text(video.authorName.ifEmpty("未知 UP 主"))
+                .font(authorFont)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private var statsRow: some View {
+        HStack(spacing: 12) {
+            BiliStatLabel(
+                icon: .play,
+                value: video.viewCount.compactCount,
+                iconSize: statIconSize,
+                font: statsFont
+            )
+            BiliStatLabel(
+                icon: .danmaku,
+                value: video.danmakuCount.compactCount,
+                iconSize: statIconSize,
+                font: statsFont
+            )
+            BiliStatLabel(
+                icon: .like,
+                value: video.likeCount.compactCount,
+                iconSize: likeStatIconSize,
+                font: statsFont
+            )
+        }
+        .foregroundStyle(.secondary)
     }
 }
 
@@ -416,10 +652,26 @@ struct HistoryRow: View {
     let item: BiliHistoryItem
 
     var body: some View {
-        NavigationLink(value: item.video) {
+        NavigationLink(value: VideoPlaybackRequest(item.video, progressSeconds: item.progressSeconds)) {
             HStack(spacing: 14) {
-                RemoteCover(url: item.video.coverURL, aspectRatio: 16.0 / 9.0)
-                    .frame(width: 156)
+                ZStack(alignment: .bottomTrailing) {
+                    RemoteCover(url: item.video.coverURL, aspectRatio: 16.0 / 9.0)
+                        .frame(width: 156)
+                    if item.progressSeconds > 0,
+                       item.durationSeconds > 0,
+                       item.progressSeconds < item.durationSeconds {
+                        Text(historyProgressLabel(
+                            progressSeconds: item.progressSeconds,
+                            durationSeconds: item.durationSeconds
+                        ))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .padding(6)
+                    }
+                }
                 VStack(alignment: .leading, spacing: 8) {
                     Text(item.video.title)
                         .font(.headline)
@@ -444,25 +696,34 @@ struct HistoryRow: View {
     }
 }
 
+private func historyProgressLabel(progressSeconds: Int, durationSeconds: Int) -> String {
+    "\(formatClockDuration(progressSeconds)) / \(formatClockDuration(durationSeconds))"
+}
+
+private func formatClockDuration(_ seconds: Int) -> String {
+    let safe = max(0, seconds)
+    let hours = safe / 3600
+    let minutes = (safe % 3600) / 60
+    let remaining = safe % 60
+    if hours > 0 {
+        return String(format: "%d:%02d:%02d", hours, minutes, remaining)
+    }
+    return String(format: "%d:%02d", minutes, remaining)
+}
+
 struct ProfileCard: View {
     let account: BiliAccount
     let profile: BiliUserProfile?
 
     var body: some View {
         HStack(alignment: .center, spacing: 18) {
-            AsyncImage(url: profile?.faceURL ?? account.faceURL) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFill()
-                default:
-                    Image(systemName: "person.fill")
-                        .font(.system(size: 34, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(width: 86, height: 86)
-            .background(Color.secondary.opacity(0.14), in: Circle())
-            .clipShape(Circle())
+            RemoteAvatar(
+                url: profile?.faceURL ?? account.faceURL,
+                size: 86,
+                foreground: .secondary,
+                background: Color.secondary.opacity(0.14),
+                border: Color.black.opacity(0.06)
+            )
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
@@ -696,50 +957,132 @@ struct RemoteCover: View {
     var width: CGFloat?
     var height: CGFloat?
     var appliesCornerClip = true
+    var allowsOverflow = false
+    @StateObject private var imageLoader = RemoteCoverImageLoader()
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         Group {
             if let width, let height {
-                coverImage
+                coverImageLayer
                     .frame(width: width, height: height)
-                    .clipped()
+                    .modifier(RemoteCoverOverflowClip(enabled: !allowsOverflow))
             } else {
                 Color.clear
                     .aspectRatio(aspectRatio, contentMode: .fit)
                     .frame(maxWidth: .infinity)
                     .overlay {
-                        coverImage
+                        coverImageLayer
                     }
-                    .clipped()
+                    .modifier(RemoteCoverOverflowClip(enabled: !allowsOverflow))
             }
         }
-        .background(Color.secondary.opacity(0.12))
+        .background(Color.white)
         .modifier(RemoteCoverCornerClip(enabled: appliesCornerClip))
+        .task(id: loadTaskID) {
+            if let width, let height {
+                imageLoader.load(url: url, targetSize: CGSize(width: width, height: height), scale: displayScale)
+            } else {
+                imageLoader.load(url: url, maxPixelLength: VideoCardLayout.feedCoverPixelLength(displayScale: displayScale))
+            }
+        }
+        .onDisappear {
+            imageLoader.cancel()
+        }
     }
 
     @ViewBuilder
-    private var coverImage: some View {
-        AsyncImage(url: url) { phase in
-            switch phase {
-            case .success(let image):
-                image
+    private var coverImageLayer: some View {
+        ZStack {
+            if let image = imageLoader.image ?? cachedImage {
+                Image(nsImage: image)
                     .resizable()
                     .scaledToFill()
-            case .failure:
+            } else if imageLoader.failed {
                 placeholder(systemImage: "photo")
-            default:
+            } else {
                 placeholder(systemImage: "play.rectangle")
             }
         }
     }
 
+    private var loadTaskID: String {
+        if let width, let height {
+            return "\(url?.absoluteString ?? "")#\(Int(width))x\(Int(height))#\(displayScale)"
+        }
+        let pixel = VideoCardLayout.feedCoverPixelLength(displayScale: displayScale)
+        return "\(url?.absoluteString ?? "")#feed#\(pixel)"
+    }
+
+    private var coverPixelLength: Int {
+        if let width, let height {
+            let displayMax = max(width, height)
+            return Int((displayMax * max(1, displayScale)).rounded(.up))
+        }
+        return VideoCardLayout.feedCoverPixelLength(displayScale: displayScale)
+    }
+
+    private var cachedImage: NSImage? {
+        RemoteCoverImageLoader.cachedImage(url: url, maxPixelLength: coverPixelLength)
+    }
+
     private func placeholder(systemImage: String) -> some View {
         ZStack {
-            LinearGradient(colors: [.pink.opacity(0.18), .cyan.opacity(0.16)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            Color.white
             Image(systemName: systemImage)
                 .font(.title2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color.secondary.opacity(0.42))
         }
+    }
+}
+
+struct RemoteAvatar: View {
+    let url: URL?
+    let size: CGFloat
+    var foreground: Color = .secondary
+    var background: Color = Color.secondary.opacity(0.12)
+    var border: Color = Color.black.opacity(0.06)
+
+    @StateObject private var imageLoader = RemoteCoverImageLoader()
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        ZStack {
+            if let image = imageLoader.image ?? cachedImage {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: "person.fill")
+                    .font(.system(size: size * 0.54, weight: .semibold))
+                    .foregroundStyle(foreground)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(width: size, height: size)
+        .background(background, in: Circle())
+        .overlay {
+            Circle().stroke(border, lineWidth: 0.5)
+        }
+        .clipShape(Circle())
+        .task(id: loadTaskID) {
+            imageLoader.load(url: url, maxPixelLength: avatarPixelLength)
+        }
+        .onDisappear {
+            imageLoader.cancel()
+        }
+    }
+
+    private var avatarPixelLength: Int {
+        max(48, Int((size * max(1, displayScale) * 1.25).rounded(.up)))
+    }
+
+    private var loadTaskID: String {
+        "\(url?.absoluteString ?? "")#avatar#\(avatarPixelLength)"
+    }
+
+    private var cachedImage: NSImage? {
+        RemoteCoverImageLoader.cachedImage(url: url, maxPixelLength: avatarPixelLength)
     }
 }
 
@@ -755,16 +1098,14 @@ private struct RemoteCoverCornerClip: ViewModifier {
     }
 }
 
-private extension View {
-    func videoCardChrome(cornerRadius: CGFloat = VideoCardLayout.cornerRadius) -> some View {
-        background {
-            ZStack {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(.ultraThinMaterial)
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(.white.opacity(0.22), lineWidth: 0.6)
-            }
-            .shadow(color: .black.opacity(0.08), radius: 14, x: 0, y: 8)
+private struct RemoteCoverOverflowClip: ViewModifier {
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.clipped()
+        } else {
+            content
         }
     }
 }
@@ -776,37 +1117,6 @@ struct MetricLabel: View {
     var body: some View {
         Label(value, systemImage: systemImage)
             .labelStyle(.titleAndIcon)
-    }
-}
-
-struct SearchField: View {
-    @Binding var text: String
-    let onSubmit: () -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            TextField("搜索 B 站", text: $text)
-                .textFieldStyle(.plain)
-                .onSubmit(onSubmit)
-            if !text.isEmpty {
-                Button {
-                    text = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 11)
-        .padding(.vertical, 8)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(.secondary.opacity(0.28), lineWidth: 0.5)
-        }
     }
 }
 

@@ -1,14 +1,8 @@
 {
   "images": [
     {
-      "filename": "ic_bili_play.png",
-      "idiom": "mac",
-      "scale": "1x"
-    },
-    {
-      "filename": "ic_bili_play@2x.png",
-      "idiom": "mac",
-      "scale": "2x"
+      "filename": "ic_bili_play.svg",
+      "idiom": "universal"
     }
   ],
   "info": {

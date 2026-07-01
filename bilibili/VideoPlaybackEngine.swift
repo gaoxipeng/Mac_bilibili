@@ -25,6 +25,13 @@ final class VideoPlaybackEngine: ObservableObject {
 
     var avPlayer: AVPlayer? { player }
 
+    var preciseCurrentTime: Double {
+        guard let seconds = player?.currentTime().seconds, seconds.isFinite else {
+            return currentTime
+        }
+        return seconds
+    }
+
     var displayAspectRatio: CGFloat {
         guard videoAspectRatio.isFinite, videoAspectRatio > 0 else { return 16.0 / 9.0 }
         return videoAspectRatio
@@ -210,8 +217,10 @@ final class VideoPlaybackEngine: ObservableObject {
     private func observePresentationSize(_ item: AVPlayerItem) {
         presentationSizeObservation?.invalidate()
         presentationSizeObservation = item.observe(\.presentationSize, options: [.new, .initial]) { [weak self] item, _ in
-            Task { @MainActor in
-                self?.updateVideoAspectRatio(from: item.presentationSize)
+            let size = item.presentationSize
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                updateVideoAspectRatio(from: size)
             }
         }
         Task {

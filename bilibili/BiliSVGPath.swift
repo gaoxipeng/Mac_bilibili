@@ -1,32 +1,46 @@
 import CoreGraphics
 import SwiftUI
 
-struct BiliSVGPathShape: Shape {
+nonisolated struct BiliSVGPathShape: Shape {
     let pathData: String
     var viewBox: CGFloat = 1024
+    var viewBoxRect: CGRect?
 
-    func path(in rect: CGRect) -> Path {
-        BiliSVGPathParser.makePath(pathData, in: rect, viewBox: viewBox)
+    nonisolated func path(in rect: CGRect) -> Path {
+        if let viewBoxRect {
+            BiliSVGPathParser.makePath(pathData, in: rect, viewBoxRect: viewBoxRect)
+        } else {
+            BiliSVGPathParser.makePath(pathData, in: rect, viewBox: viewBox)
+        }
     }
 }
 
-enum BiliSVGPathParser {
-    static func makePath(_ data: String, in rect: CGRect, viewBox: CGFloat = 1024) -> Path {
+nonisolated enum BiliSVGPathParser {
+    nonisolated static func makePath(_ data: String, in rect: CGRect, viewBox: CGFloat = 1024) -> Path {
+        makePath(
+            data,
+            in: rect,
+            viewBoxRect: CGRect(x: 0, y: 0, width: viewBox, height: viewBox)
+        )
+    }
+
+    nonisolated static func makePath(_ data: String, in rect: CGRect, viewBoxRect: CGRect) -> Path {
         let cgPath = parse(data)
-        let scale = min(rect.width / viewBox, rect.height / viewBox)
-        let fittedWidth = viewBox * scale
-        let fittedHeight = viewBox * scale
+        let scale = min(rect.width / viewBoxRect.width, rect.height / viewBoxRect.height)
+        let fittedWidth = viewBoxRect.width * scale
+        let fittedHeight = viewBoxRect.height * scale
         let originX = rect.minX + (rect.width - fittedWidth) / 2
         let originY = rect.minY + (rect.height - fittedHeight) / 2
         var transform = CGAffineTransform(translationX: originX, y: originY)
             .scaledBy(x: scale, y: scale)
+            .translatedBy(x: -viewBoxRect.minX, y: -viewBoxRect.minY)
         guard let scaled = cgPath.copy(using: &transform) else {
             return Path(cgPath)
         }
         return Path(scaled)
     }
 
-    private static func parse(_ data: String) -> CGPath {
+    private nonisolated static func parse(_ data: String) -> CGPath {
         let path = CGMutablePath()
         let tokens = tokenize(data)
         var index = 0
@@ -204,7 +218,7 @@ enum BiliSVGPathParser {
         return path
     }
 
-    private static func addArc(
+    private nonisolated static func addArc(
         to path: CGMutablePath,
         from start: CGPoint,
         rx: CGFloat,
@@ -258,22 +272,22 @@ enum BiliSVGPathParser {
         func angle(u: CGPoint, v: CGPoint) -> CGFloat {
             let dot = u.x * v.x + u.y * v.y
             let len = sqrt((u.x * u.x + u.y * u.y) * (v.x * v.x + v.y * v.y))
-            var ang = acos(min(1, max(-1, dot / max(len, .leastNonzeroMagnitude))))
-            if u.x * v.y - u.y * v.x < 0 {
-                ang = -ang
-            }
-            return ang
+            let base = acos(min(1, max(-1, dot / max(len, .leastNonzeroMagnitude))))
+            return u.x * v.y - u.y * v.x < 0 ? -base : base
         }
 
         let v1 = CGPoint(x: (x1p - cxp) / rx, y: (y1p - cyp) / ry)
         let v2 = CGPoint(x: (-x1p - cxp) / rx, y: (-y1p - cyp) / ry)
-        var theta = angle(u: CGPoint(x: 1, y: 0), v: v1)
-        var delta = angle(u: v1, v: v2)
-        if !sweep, delta > 0 {
-            delta -= 2 * .pi
-        } else if sweep, delta < 0 {
-            delta += 2 * .pi
-        }
+        let theta = angle(u: CGPoint(x: 1, y: 0), v: v1)
+        let delta: CGFloat = {
+            var value = angle(u: v1, v: v2)
+            if !sweep, value > 0 {
+                value -= 2 * .pi
+            } else if sweep, value < 0 {
+                value += 2 * .pi
+            }
+            return value
+        }()
 
         let segments = max(1, Int(ceil(abs(delta) / (.pi / 2))))
         let deltaPerSegment = delta / CGFloat(segments)
@@ -325,7 +339,7 @@ enum BiliSVGPathParser {
         return end
     }
 
-    private static func tokenize(_ data: String) -> [String] {
+    private nonisolated static func tokenize(_ data: String) -> [String] {
         var tokens: [String] = []
         var current = ""
 

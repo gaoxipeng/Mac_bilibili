@@ -5,21 +5,27 @@ import Foundation
 final class AppModel: ObservableObject {
     @Published var selectedSection: AppSection = .home
     @Published var homeVideos: [BiliVideo] = []
+    @Published var homeHasMore = false
+    @Published var homeLoadingMore = false
     @Published var followingVideos: [BiliVideo] = []
     @Published var followingHasMore = false
     @Published var followingLoadingMore = false
     @Published var hotVideos: [BiliVideo] = []
     @Published var historyItems: [BiliHistoryItem] = []
-    @Published var searchResults: [BiliVideo] = []
-    @Published var hotWords: [BiliHotWord] = []
+    @Published var favoriteVideos: [BiliVideo] = []
+    @Published var favoriteHasMore = false
+    @Published var favoriteLoadingMore = false
     @Published var account: BiliAccount?
     @Published var profile: BiliUserProfile?
-    @Published var searchQuery = ""
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published var loginMessage: String?
 
     private var followingOffset: String?
+    private var homeFreshIdx = 1
+    private var homeFetchRow = 1
+    private var homeLastShowList = ""
+    private var favoritePage = 1
 
     private let api = BilibiliAPI()
     private let accountStore = AccountStore()
@@ -29,17 +35,11 @@ final class AppModel: ObservableObject {
         guard !didLoadInitialData else { return }
         didLoadInitialData = true
         account = accountStore.load()
-        if let account {
-            await loadProfile(account: account)
-        }
         await reloadSelected()
-        await loadHotWords()
     }
 
     func reloadSelectedIfNeeded() async {
         switch selectedSection {
-        case .search where hotWords.isEmpty:
-            await loadHotWords()
         case .home where homeVideos.isEmpty:
             await reloadSelected()
         case .following where followingVideos.isEmpty:
@@ -47,6 +47,8 @@ final class AppModel: ObservableObject {
         case .hot where hotVideos.isEmpty:
             await reloadSelected()
         case .history where historyItems.isEmpty:
+            await reloadSelected()
+        case .favorites where favoriteVideos.isEmpty:
             await reloadSelected()
         case .mine where profile == nil && account != nil:
             await reloadSelected()
@@ -57,19 +59,30 @@ final class AppModel: ObservableObject {
 
     func reloadSelected() async {
         errorMessage = nil
-        isLoading = true
-        defer { isLoading = false }
+        let showLoading = shouldShowLoadingIndicator
+        if showLoading {
+            isLoading = true
+        }
+        defer {
+            if showLoading {
+                isLoading = false
+            }
+        }
 
         do {
             switch selectedSection {
             case .search:
-                if searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    await loadHotWords()
-                } else {
-                    searchResults = try await api.searchVideos(keyword: searchQuery, credential: account?.credential)
-                }
+                break
             case .home:
-                homeVideos = try await api.homeRecommend(credential: account?.credential)
+                homeFreshIdx = 1
+                homeFetchRow = 1
+                homeLastShowList = ""
+                let page = try await api.homeRecommend(credential: account?.credential)
+                homeVideos = page.videos
+                homeFreshIdx = page.nextFreshIdx
+                homeFetchRow = page.nextFetchRow
+                homeLastShowList = page.lastShowList
+                homeHasMore = page.hasMore
             case .following:
                 guard let credential = account?.credential else {
                     followingVideos = []
@@ -88,11 +101,98 @@ final class AppModel: ObservableObject {
                     throw APIError.message("登录后查看观看历史")
                 }
                 historyItems = try await api.history(credential: credential)
+            case .favorites:
+                guard let credential = account?.credential else {
+                    favoritePage = 1
+                    favoriteHasMore = false
+                    throw APIError.message("登录后查看收藏")
+                }
+                favoritePage = 1
+                let page = try await api.favoriteVideos(page: 1, credential: credential)
+                favoriteVideos = page.videos
+                favoritePage = page.page
+                favoriteHasMore = page.hasMore
             case .mine:
                 if let account {
                     await loadProfile(account: account)
                 }
             }
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func refreshSectionAfterReturningFromDetail() async {
+        switch selectedSection {
+        case .favorites:
+            await refreshFavoritesQuietly()
+        case .history:
+            await refreshHistoryQuietly()
+        default:
+            break
+        }
+    }
+
+    private var shouldShowLoadingIndicator: Bool {
+        switch selectedSection {
+        case .home: homeVideos.isEmpty
+        case .following: followingVideos.isEmpty
+        case .hot: hotVideos.isEmpty
+        case .history: historyItems.isEmpty
+        case .favorites: favoriteVideos.isEmpty
+        case .search, .mine: false
+        }
+    }
+
+    private func refreshFavoritesQuietly() async {
+        guard let credential = account?.credential else { return }
+        do {
+            let page = try await api.favoriteVideos(page: 1, credential: credential)
+            favoriteVideos = page.videos
+            favoritePage = page.page
+            favoriteHasMore = page.hasMore
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func refreshHistoryQuietly() async {
+        guard let credential = account?.credential else { return }
+        do {
+            historyItems = try await api.history(credential: credential)
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func loadMoreHome() async {
+        guard selectedSection == .home,
+              homeHasMore,
+              !isLoading,
+              !homeLoadingMore else {
+            return
+        }
+
+        homeLoadingMore = true
+        errorMessage = nil
+        defer { homeLoadingMore = false }
+
+        do {
+            let page = try await api.homeRecommend(
+                credential: account?.credential,
+                freshIdx: homeFreshIdx,
+                fetchRow: homeFetchRow,
+                lastShowList: homeLastShowList
+            )
+            var seen = Set(homeVideos.map(\.bvid))
+            let newVideos = page.videos.filter { seen.insert($0.bvid).inserted }
+            homeVideos.append(contentsOf: newVideos)
+            homeFreshIdx = page.nextFreshIdx
+            homeFetchRow = page.nextFetchRow
+            homeLastShowList = page.lastShowList
+            homeHasMore = page.hasMore
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -123,23 +223,26 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func search(keyword: String? = nil) async {
-        if let keyword {
-            searchQuery = keyword
-        }
-        let trimmed = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            searchResults = []
+    func loadMoreFavorites() async {
+        guard selectedSection == .favorites,
+              let credential = account?.credential,
+              favoriteHasMore,
+              !isLoading,
+              !favoriteLoadingMore else {
             return
         }
 
-        selectedSection = .search
+        favoriteLoadingMore = true
         errorMessage = nil
-        isLoading = true
-        defer { isLoading = false }
+        defer { favoriteLoadingMore = false }
 
         do {
-            searchResults = try await api.searchVideos(keyword: trimmed, credential: account?.credential)
+            let nextPage = favoritePage + 1
+            let page = try await api.favoriteVideos(page: nextPage, credential: credential)
+            var seen = Set(favoriteVideos.map(\.bvid))
+            favoriteVideos.append(contentsOf: page.videos.filter { seen.insert($0.bvid).inserted })
+            favoritePage = page.page
+            favoriteHasMore = page.hasMore
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -173,18 +276,12 @@ final class AppModel: ObservableObject {
         followingHasMore = false
         followingLoadingMore = false
         historyItems = []
+        favoriteVideos = []
+        favoritePage = 1
+        favoriteHasMore = false
+        favoriteLoadingMore = false
         accountStore.clear()
         loginMessage = "已退出登录"
-    }
-
-    private func loadHotWords() async {
-        do {
-            hotWords = try await api.hotWords()
-        } catch {
-            if selectedSection == .search {
-                errorMessage = error.localizedDescription
-            }
-        }
     }
 
     private func loadProfile(account: BiliAccount) async {
@@ -204,10 +301,11 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
     case following
     case hot
     case history
+    case favorites
     case mine
 
     static var primaryCases: [AppSection] {
-        [.search, .home, .following, .hot, .history]
+        [.search, .home, .following, .hot, .history, .favorites]
     }
 
     var id: String { rawValue }
@@ -219,6 +317,7 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
         case .following: "关注"
         case .hot: "排行"
         case .history: "历史"
+        case .favorites: "收藏"
         case .mine: "我的"
         }
     }
@@ -230,6 +329,7 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
         case .following: "person.2"
         case .hot: "chart.bar"
         case .history: "clock.arrow.circlepath"
+        case .favorites: "star"
         case .mine: "person.crop.circle"
         }
     }

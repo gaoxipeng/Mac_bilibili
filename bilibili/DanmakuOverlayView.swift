@@ -2,19 +2,35 @@ import AppKit
 import QuartzCore
 import SwiftUI
 
-struct DanmakuOverlayView: NSViewRepresentable {
+struct DanmakuOverlayView: NSViewRepresentable, Equatable {
     let items: [BiliDanmakuItem]
     let positionMs: Int64
     let isPlaying: Bool
     let enabled: Bool
     let settings: DanmakuSettings
-    var bottomReserve: CGFloat = 46
+    var layoutMode: DanmakuLayoutMode = .inline
+    var isActive: Bool = true
+
+    nonisolated static func == (lhs: DanmakuOverlayView, rhs: DanmakuOverlayView) -> Bool {
+        if lhs.items.count != rhs.items.count { return false }
+        if lhs.items.first?.timeMs != rhs.items.first?.timeMs { return false }
+        if lhs.items.first?.content != rhs.items.first?.content { return false }
+        if lhs.items.last?.timeMs != rhs.items.last?.timeMs { return false }
+        if lhs.items.last?.content != rhs.items.last?.content { return false }
+        if lhs.isPlaying != rhs.isPlaying { return false }
+        if lhs.enabled != rhs.enabled { return false }
+        if lhs.isActive != rhs.isActive { return false }
+        if lhs.settings != rhs.settings { return false }
+        if lhs.layoutMode != rhs.layoutMode { return false }
+        if !lhs.isPlaying, lhs.positionMs != rhs.positionMs { return false }
+        return true
+    }
 
     func makeNSView(context: Context) -> DanmakuRenderNSView {
         let view = DanmakuRenderNSView()
         view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.clear.cgColor
         view.layerContentsRedrawPolicy = .onSetNeedsDisplay
+        view.layer?.backgroundColor = NSColor.clear.cgColor
         return view
     }
 
@@ -24,8 +40,9 @@ struct DanmakuOverlayView: NSViewRepresentable {
             positionMs: positionMs,
             isPlaying: isPlaying,
             enabled: enabled,
+            isActive: isActive,
             settings: settings,
-            bottomReserve: bottomReserve
+            layoutMode: layoutMode
         )
     }
 
@@ -36,37 +53,52 @@ struct DanmakuOverlayView: NSViewRepresentable {
 
 final class DanmakuRenderNSView: NSView {
     private let timeline = DanmakuTimeline()
-    private var displayLink: CVDisplayLink?
-    private var isDisplayLinkRunning = false
+    private var displayLink: CADisplayLink?
 
     private var items: [BiliDanmakuItem] = []
     private var positionMs: Int64 = 0
     private var isPlaying = false
     private var enabled = false
+    private var isActive = true
     private var settings = DanmakuSettings()
-    private var bottomReserve: CGFloat = 46
+    private var layoutMode: DanmakuLayoutMode = .inline
     private var wasPlaying = false
+
+    private var configuredSize = CGSize.zero
+    private var configuredLayoutMode: DanmakuLayoutMode = .inline
+    private var configuredSettings = DanmakuSettings()
+    private var configuredItemsSignature = DanmakuItemsSignature.empty
+    private var configuredEnabled = false
+    private var configuredActive = true
+
+    private var renderContext: CGContext?
+    private var renderContextPixelSize = CGSize.zero
+
+    private static let layerRenderPixelAreaThreshold: CGFloat = 960 * 540 * 4
 
     override var isOpaque: Bool { false }
 
+    override var wantsUpdateLayer: Bool {
+        layoutMode == .inline && renderPixelArea <= Self.layerRenderPixelAreaThreshold
+    }
+
+    private var renderPixelArea: CGFloat {
+        let scale = window?.backingScaleFactor ?? 2
+        return bounds.width * bounds.height * scale * scale
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil {
-            startDisplayLinkIfNeeded()
-        } else {
-            stopDisplayLink()
-        }
+        reconfigureTimelineIfNeeded(force: true)
+        syncCurrentFrameAndRender()
+        refreshDisplayLink()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        timeline.configure(
-            items: items,
-            enabled: enabled,
-            settings: settings,
-            size: CGSize(width: max(1, newSize.width), height: max(1, newSize.height)),
-            bottomReserve: bottomReserve
-        )
+        invalidateRenderContext()
+        reconfigureTimelineIfNeeded(force: true)
+        syncCurrentFrameAndRender()
     }
 
     func apply(
@@ -74,79 +106,156 @@ final class DanmakuRenderNSView: NSView {
         positionMs: Int64,
         isPlaying: Bool,
         enabled: Bool,
+        isActive: Bool,
         settings: DanmakuSettings,
-        bottomReserve: CGFloat
+        layoutMode: DanmakuLayoutMode
     ) {
         self.items = items
         self.positionMs = positionMs
         self.isPlaying = isPlaying
         self.enabled = enabled
+        self.isActive = isActive
         self.settings = settings
-        self.bottomReserve = bottomReserve
+        self.layoutMode = layoutMode
 
-        if isPlaying != wasPlaying {
-            timeline.reanchorOnPlayStateChange(isPlaying: isPlaying, positionMs: positionMs)
+        let playStateChanged = isPlaying != wasPlaying
+        if playStateChanged {
+            timeline.reanchorOnPlayStateChange(
+                isPlaying: isPlaying,
+                positionMs: positionMs,
+                realtimeMs: currentDisplayLinkTimeMs()
+            )
             wasPlaying = isPlaying
         }
 
+        let timelineChanged = reconfigureTimelineIfNeeded(force: false)
+
+        if timelineChanged || playStateChanged || !isPlaying || !enabled || !isActive {
+            syncCurrentFrameAndRender()
+        }
+
+        if timelineChanged || playStateChanged {
+            refreshDisplayLink()
+        } else {
+            refreshDisplayLinkIfNeeded()
+        }
+    }
+
+    @discardableResult
+    private func reconfigureTimelineIfNeeded(force: Bool) -> Bool {
+        let size = CGSize(width: max(1, bounds.width), height: max(1, bounds.height))
+        let signature = DanmakuItemsSignature(items: items)
+        let changed = force
+            || size != configuredSize
+            || layoutMode != configuredLayoutMode
+            || settings != configuredSettings
+            || signature != configuredItemsSignature
+            || enabled != configuredEnabled
+            || isActive != configuredActive
+
+        guard changed else { return false }
+
+        configuredSize = size
+        configuredLayoutMode = layoutMode
+        configuredSettings = settings
+        configuredItemsSignature = signature
+        configuredEnabled = enabled
+        configuredActive = isActive
+
         timeline.configure(
             items: items,
-            enabled: enabled,
+            enabled: enabled && isActive,
             settings: settings,
-            size: CGSize(width: max(1, bounds.width), height: max(1, bounds.height)),
-            bottomReserve: bottomReserve
+            size: size,
+            layoutMode: layoutMode
         )
-
-        if !isPlaying || !enabled {
-            timeline.sync(positionMs: positionMs, isPlaying: isPlaying)
-            needsDisplay = true
-        }
-
-        if window != nil {
-            startDisplayLinkIfNeeded()
-        }
+        return true
     }
 
     func startDisplayLinkIfNeeded() {
-        guard isPlaying, enabled, !items.isEmpty else {
-            stopDisplayLink()
-            return
-        }
-        guard !isDisplayLinkRunning else { return }
-        var link: CVDisplayLink?
-        guard CVDisplayLinkCreateWithActiveCGDisplays(&link) == kCVReturnSuccess, let link else { return }
+        guard isActive, isPlaying, enabled, !items.isEmpty, window != nil else { return }
+        guard displayLink == nil else { return }
+
+        let link = displayLink(target: self, selector: #selector(displayLinkFired(_:)))
+
+        let maxFPS = window?.screen?.maximumFramesPerSecond ?? 60
+        let preferredFPS = min(maxFPS, 90)
+        link.preferredFrameRateRange = CAFrameRateRange(
+            minimum: min(60, Float(preferredFPS)),
+            maximum: Float(maxFPS),
+            preferred: Float(preferredFPS)
+        )
+        link.add(to: .main, forMode: .common)
         displayLink = link
-
-        let callback: CVDisplayLinkOutputCallback = { _, _, _, _, _, userInfo in
-            guard let userInfo else { return kCVReturnSuccess }
-            let view = Unmanaged<DanmakuRenderNSView>.fromOpaque(userInfo).takeUnretainedValue()
-            DispatchQueue.main.async {
-                view.displayTick()
-            }
-            return kCVReturnSuccess
-        }
-
-        CVDisplayLinkSetOutputCallback(link, callback, Unmanaged.passUnretained(self).toOpaque())
-        if CVDisplayLinkStart(link) == kCVReturnSuccess {
-            isDisplayLinkRunning = true
-        }
     }
 
     func stopDisplayLink() {
-        guard let displayLink, isDisplayLinkRunning else { return }
-        CVDisplayLinkStop(displayLink)
-        isDisplayLinkRunning = false
-        self.displayLink = nil
+        displayLink?.invalidate()
+        displayLink = nil
     }
 
-    private func displayTick() {
-        guard enabled, isPlaying, !items.isEmpty else { return }
-        timeline.sync(positionMs: positionMs, isPlaying: true)
+    private func refreshDisplayLinkIfNeeded() {
+        let shouldRun = isActive && isPlaying && enabled && !items.isEmpty && window != nil
+        if shouldRun {
+            startDisplayLinkIfNeeded()
+        } else {
+            stopDisplayLink()
+        }
+    }
+
+    private func refreshDisplayLink() {
+        stopDisplayLink()
+        startDisplayLinkIfNeeded()
+    }
+
+    @objc private func displayLinkFired(_ link: CADisplayLink) {
+        guard isActive, enabled, isPlaying, !items.isEmpty else { return }
+        timeline.sync(
+            positionMs: positionMs,
+            isPlaying: true,
+            realtimeMs: displayLinkTimeMs(link)
+        )
+        markNeedsRender()
+    }
+
+    private func syncCurrentFrameAndRender() {
+        timeline.sync(
+            positionMs: positionMs,
+            isPlaying: isPlaying,
+            realtimeMs: currentDisplayLinkTimeMs()
+        )
+        markNeedsRender()
+    }
+
+    private func markNeedsRender() {
+        if wantsUpdateLayer {
+            layer?.setNeedsDisplay()
+            displayIfNeeded()
+            return
+        }
         needsDisplay = true
+        layer?.setNeedsDisplay()
+        displayIfNeeded()
+    }
+
+    override func updateLayer() {
+        guard enabled, isActive else {
+            layer?.contents = nil
+            return
+        }
+
+        let frames = timeline.currentDrawFrames()
+        guard !frames.isEmpty, bounds.width > 0, bounds.height > 0 else {
+            layer?.contents = nil
+            return
+        }
+
+        layer?.contents = renderFramesToImage(frames)
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard enabled else { return }
+        guard enabled, isActive else { return }
+
         let frames = timeline.currentDrawFrames()
         guard !frames.isEmpty else { return }
 
@@ -156,7 +265,93 @@ final class DanmakuRenderNSView: NSView {
         }
     }
 
+    private func renderFramesToImage(_ frames: [DanmakuDrawFrame]) -> CGImage? {
+        let scale = window?.backingScaleFactor ?? 2
+        let pixelWidth = Int(bounds.width * scale)
+        let pixelHeight = Int(bounds.height * scale)
+        guard pixelWidth > 0, pixelHeight > 0 else { return nil }
+
+        let pixelSize = CGSize(width: pixelWidth, height: pixelHeight)
+        let context: CGContext
+        if pixelSize == renderContextPixelSize, let renderContext {
+            context = renderContext
+        } else if let created = makeRenderContext(pixelWidth: pixelWidth, pixelHeight: pixelHeight) {
+            renderContext = created
+            renderContextPixelSize = pixelSize
+            context = created
+        } else {
+            return nil
+        }
+
+        context.clear(CGRect(x: 0, y: 0, width: pixelWidth, height: pixelHeight))
+
+        NSGraphicsContext.saveGraphicsState()
+        let graphicsContext = NSGraphicsContext(cgContext: context, flipped: false)
+        NSGraphicsContext.current = graphicsContext
+
+        for frame in frames {
+            let drawY = bounds.height - frame.y - frame.textHeight
+            frame.mainText.draw(at: CGPoint(x: frame.x, y: drawY))
+        }
+
+        NSGraphicsContext.restoreGraphicsState()
+        return context.makeImage()
+    }
+
+    private func makeRenderContext(pixelWidth: Int, pixelHeight: Int) -> CGContext? {
+        let scale = window?.backingScaleFactor ?? 2
+        guard let context = CGContext(
+            data: nil,
+            width: pixelWidth,
+            height: pixelHeight,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            return nil
+        }
+        context.scaleBy(x: scale, y: scale)
+        return context
+    }
+
+    private func invalidateRenderContext() {
+        renderContext = nil
+        renderContextPixelSize = .zero
+    }
+
+    private func currentDisplayLinkTimeMs() -> Int64 {
+        if let displayLink {
+            return displayLinkTimeMs(displayLink)
+        }
+        return Int64(CACurrentMediaTime() * 1000)
+    }
+
+    private func displayLinkTimeMs(_ link: CADisplayLink) -> Int64 {
+        Int64(link.timestamp * 1000)
+    }
+
     deinit {
-        stopDisplayLink()
+        MainActor.assumeIsolated {
+            stopDisplayLink()
+        }
+    }
+}
+
+private nonisolated struct DanmakuItemsSignature: Equatable {
+    let count: Int
+    let firstTimeMs: Int64?
+    let firstContentHash: Int?
+    let lastTimeMs: Int64?
+    let lastContentHash: Int?
+
+    static let empty = DanmakuItemsSignature(items: [])
+
+    init(items: [BiliDanmakuItem]) {
+        count = items.count
+        firstTimeMs = items.first?.timeMs
+        firstContentHash = items.first?.content.stableHashValue
+        lastTimeMs = items.last?.timeMs
+        lastContentHash = items.last?.content.stableHashValue
     }
 }

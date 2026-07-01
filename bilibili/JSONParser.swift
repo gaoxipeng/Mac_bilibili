@@ -24,13 +24,78 @@ enum JSONParser {
         return BiliFollowingFeedPage(videos: videos, nextOffset: nextOffset, hasMore: hasMore)
     }
 
-    nonisolated static func parseHotWords(from object: Any) -> [BiliHotWord] {
-        let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
-        let list = (data["list"] as? [[String: Any]]) ?? findFirstArray(in: data)
-        return list.compactMap { item in
-            let keyword = string(item, "keyword", "show_name", "word", "name")
+    nonisolated static func parseHomeRecommendPage(
+        from object: Any,
+        freshIdx: Int,
+        fetchRow: Int
+    ) -> BiliHomeRecommendPage {
+        let videos = parseVideos(from: object, preferredArrayKeys: ["item"])
+        return BiliHomeRecommendPage(
+            videos: videos,
+            nextFreshIdx: freshIdx + 1,
+            nextFetchRow: videos.isEmpty ? fetchRow : fetchRow + videos.count,
+            lastShowList: homeRecommendShowList(from: videos),
+            hasMore: !videos.isEmpty
+        )
+    }
+
+    private nonisolated static func homeRecommendShowList(from videos: [BiliVideo]) -> String {
+        videos.compactMap { video in
+            video.aid > 0 ? "\(video.aid)" : nil
+        }.joined(separator: "_")
+    }
+
+    nonisolated static func parseHotSearchItems(from object: Any) -> [BiliHotSearchItem] {
+        let root = dictionary(object)
+        let list = (root["list"] as? [[String: Any]])
+            ?? (root["data"] as? [String: Any]).flatMap { $0["list"] as? [[String: Any]] }
+            ?? findFirstArray(in: root)
+        return list.enumerated().compactMap { index, item in
+            let keyword = string(item, "keyword").ifEmpty(string(item, "show_name", "word", "name"))
             guard !keyword.isEmpty else { return nil }
-            return BiliHotWord(keyword: keyword, icon: optionalString(item, "icon"))
+            let showName = string(item, "show_name").ifEmpty(keyword).htmlStripped
+            let rankRaw = Int(int64(item, "pos", "rank"))
+            let rank = rankRaw == 0 ? index + 1 : rankRaw
+            return BiliHotSearchItem(keyword: keyword, showName: showName, rank: rank)
+        }
+    }
+
+    nonisolated static func parseSearchVideoPage(from object: Any) -> BiliSearchPage<BiliVideo> {
+        let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
+        let page = max(1, Int(int64(data, "page")))
+        let numPages = max(page, Int(int64(data, "numPages", "numpages")))
+        let items = parseVideos(from: object, preferredArrayKeys: ["result"])
+        return BiliSearchPage(items: items, page: page, hasMore: page < numPages)
+    }
+
+    nonisolated static func parseSearchUserPage(from object: Any) -> BiliSearchPage<BiliSearchUser> {
+        let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
+        let page = max(1, Int(int64(data, "page")))
+        let numPages = max(page, Int(int64(data, "numPages", "numpages")))
+        let list = (data["result"] as? [[String: Any]]) ?? []
+        let items = list.compactMap { item -> BiliSearchUser? in
+            let mid = int64(item, "mid")
+            guard mid > 0 else { return nil }
+            return BiliSearchUser(
+                mid: mid,
+                name: string(item, "uname", "name").htmlStripped.ifEmpty("UP主"),
+                faceURL: normalizedURL(string(item, "upic", "face")),
+                sign: string(item, "usign", "sign"),
+                fans: int64(item, "fans"),
+                level: Int(int64(item, "level"))
+            )
+        }
+        return BiliSearchPage(items: items, page: page, hasMore: page < numPages)
+    }
+
+    nonisolated static func parseSearchSuggest(from object: Any) -> [String] {
+        let root = dictionary(object)
+        let tags = (root["result"] as? [String: Any])?["tag"] as? [[String: Any]] ?? []
+        var seen = Set<String>()
+        return tags.compactMap { item -> String? in
+            let term = string(item, "term", "value").htmlStripped
+            guard !term.isEmpty, seen.insert(term).inserted else { return nil }
+            return term
         }
     }
 
@@ -91,7 +156,10 @@ enum JSONParser {
             follower: int64(data, "follower"),
             likes: int64(data, "likes"),
             coinCount: int64(data, "money"),
-            bcoinBalance: double(wallet ?? data, "bcoin_balance")
+            bcoinBalance: double(wallet ?? data, "bcoin_balance"),
+            videoCount: 0,
+            topPhotoURLs: [],
+            ipLocation: nil
         )
     }
 
@@ -109,8 +177,149 @@ enum JSONParser {
             follower: profile.follower,
             likes: profile.likes,
             coinCount: int64(data, "money").ifZero(profile.coinCount),
-            bcoinBalance: double(wallet ?? data, "bcoin_balance")
+            bcoinBalance: double(wallet ?? data, "bcoin_balance"),
+            videoCount: profile.videoCount,
+            topPhotoURLs: profile.topPhotoURLs,
+            ipLocation: profile.ipLocation
         )
+    }
+
+    nonisolated static func parseUserAccInfo(from object: Any) -> BiliUserProfile? {
+        let data = dictionary(object)["data"] as? [String: Any] ?? [:]
+        let mid = int64(data, "mid")
+        guard mid > 0 else { return nil }
+        let levelInfo = data["level_info"] as? [String: Any]
+        let relation = data["relation"] as? [String: Any]
+        let relationStat = relation?["stat"] as? [String: Any]
+        let likesInfo = data["likes"] as? [String: Any]
+        let follower: Int64 = [int64(data, "follower"), int64(data, "fans"), int64(relationStat ?? [:], "follower")]
+            .first(where: { $0 > 0 }) ?? 0
+        let following: Int64 = [int64(data, "following"), int64(data, "attention"), int64(data, "friend")]
+            .first(where: { $0 > 0 }) ?? 0
+        let likes: Int64 = [int64(likesInfo ?? [:], "total_liked"), int64(data, "like_num")]
+            .first(where: { $0 > 0 }) ?? 0
+        let level = Int(int64(data, "level")).ifZero(Int(int64(levelInfo ?? [:], "current_level")))
+        return BiliUserProfile(
+            mid: mid,
+            name: string(data, "name"),
+            faceURL: normalizedURL(string(data, "face")),
+            sign: string(data, "sign"),
+            level: level,
+            following: following,
+            follower: follower,
+            likes: likes,
+            coinCount: 0,
+            bcoinBalance: 0,
+            videoCount: 0,
+            topPhotoURLs: parseUserTopPhotoURLs(from: data),
+            ipLocation: normalizeIpLocation(string(data, "location", "ip_location"))
+        )
+    }
+
+    nonisolated static func parseUserCardProfile(from object: Any) -> BiliUserProfile? {
+        let data = dictionary(object)["data"] as? [String: Any] ?? [:]
+        let card = data["card"] as? [String: Any] ?? [:]
+        let mid = int64(card, "mid")
+        guard mid > 0 else { return nil }
+        let levelInfo = card["level_info"] as? [String: Any]
+        return BiliUserProfile(
+            mid: mid,
+            name: string(card, "name"),
+            faceURL: normalizedURL(string(card, "face")),
+            sign: string(card, "sign", "Sign"),
+            level: Int(int64(levelInfo ?? [:], "current_level")),
+            following: int64(card, "attention"),
+            follower: int64(card, "fans"),
+            likes: 0,
+            coinCount: 0,
+            bcoinBalance: 0,
+            videoCount: 0,
+            topPhotoURLs: parseUserTopPhotoURLs(from: card),
+            ipLocation: normalizeIpLocation(string(card, "location"))
+        )
+    }
+
+    nonisolated static func parseUserUpstatLikes(from object: Any) -> Int64 {
+        let data = dictionary(object)["data"] as? [String: Any] ?? [:]
+        return int64(data, "likes")
+    }
+
+    nonisolated static func parseUserNavnum(from object: Any) -> Int64 {
+        let data = dictionary(object)["data"] as? [String: Any] ?? [:]
+        let archive = data["archive"] as? [String: Any]
+        return [int64(data, "video"), int64(archive ?? [:], "count")].first(where: { $0 > 0 }) ?? 0
+    }
+
+    nonisolated static func parseUserRelation(from object: Any) -> BiliAuthorRelation {
+        let data = dictionary(object)["data"] as? [String: Any] ?? [:]
+        return relationFromAttribute(Int(int64(data, "attribute")))
+    }
+
+    nonisolated static func relationFromAttribute(_ attribute: Int) -> BiliAuthorRelation {
+        BiliAuthorRelation(
+            following: attribute == 2 || attribute == 6,
+            followerMe: attribute == 6
+        )
+    }
+
+    nonisolated static func mergeSpaceProfile(
+        acc: BiliUserProfile?,
+        card: BiliUserProfile?,
+        mid: Int64,
+        likes: Int64,
+        videoCount: Int64,
+        extraTopPhotoURLs: [URL] = []
+    ) -> BiliUserProfile? {
+        guard let base = acc ?? card else { return nil }
+        let enriched = card
+        return BiliUserProfile(
+            mid: mid,
+            name: base.name.ifEmpty(enriched?.name ?? ""),
+            faceURL: base.faceURL ?? enriched?.faceURL,
+            sign: base.sign.ifEmpty(enriched?.sign ?? ""),
+            level: base.level > 0 ? base.level : (enriched?.level ?? 0),
+            following: base.following > 0 ? base.following : (enriched?.following ?? 0),
+            follower: base.follower > 0 ? base.follower : (enriched?.follower ?? 0),
+            likes: base.likes > 0 ? base.likes : likes,
+            coinCount: 0,
+            bcoinBalance: 0,
+            videoCount: videoCount > 0 ? videoCount : base.videoCount,
+            topPhotoURLs: mergeTopPhotoURLs(
+                base.topPhotoURLs,
+                enriched?.topPhotoURLs ?? [],
+                extraTopPhotoURLs
+            ),
+            ipLocation: base.ipLocation ?? enriched?.ipLocation
+        )
+    }
+
+    nonisolated static func parseUserTopPhotoList(from object: Any) -> [URL] {
+        let root = dictionary(object)
+        guard (root["status"] as? Bool) == true || (root["status"] as? NSNumber)?.boolValue == true else {
+            return []
+        }
+        let items = root["data"] as? [[String: Any]] ?? []
+        var owned: [(url: URL, sort: Int)] = []
+        for item in items {
+            if Int(int64(item, "is_disable")) == 1 { continue }
+            guard let url = normalizedURL(normalizeSpaceImageURL(string(item, "l_img"))) else { continue }
+            let had = Int(int64(item, "had"))
+            let sort = Int(int64(item, "sort_num"))
+            if had == 1 {
+                owned.append((url, sort))
+            }
+        }
+        return owned
+            .sorted { $0.sort > $1.sort }
+            .map(\.url)
+    }
+
+    nonisolated static func parseUserVideoPage(from object: Any) -> BiliUserVideoPage {
+        let data = dictionary(object)["data"] as? [String: Any] ?? [:]
+        let list = data["list"] as? [String: Any] ?? [:]
+        let vlist = list["vlist"] as? [[String: Any]] ?? []
+        let videos = vlist.compactMap(parseVideo)
+        return BiliUserVideoPage(videos: videos, hasMore: videos.count >= 30)
     }
 
     nonisolated static func parseHistory(from object: Any) -> [BiliHistoryItem] {
@@ -120,6 +329,7 @@ enum JSONParser {
             let history = item["history"] as? [String: Any]
             let bvid = string(item, "bvid").ifEmpty(history.map { string($0, "bvid") } ?? "")
             guard !bvid.isEmpty else { return nil }
+            let historyCid = history.map { int64($0, "cid") } ?? 0
             let video = BiliVideo(
                 id: bvid,
                 bvid: bvid,
@@ -134,13 +344,17 @@ enum JSONParser {
                 likeCount: 0,
                 duration: duration(from: item),
                 description: string(item, "desc"),
-                cid: int64(item, "cid")
+                cid: int64(item, "cid").ifZero(historyCid)
             )
             let viewedAtSeconds = int64(item, "view_at")
+            let progressSeconds = max(0, Int(int64(item, "progress")))
+            let durationSeconds = max(0, duration(from: item))
             return BiliHistoryItem(
                 id: "\(bvid)-\(viewedAtSeconds)",
                 video: video,
-                viewedAt: viewedAtSeconds > 0 ? Date(timeIntervalSince1970: TimeInterval(viewedAtSeconds)) : nil
+                viewedAt: viewedAtSeconds > 0 ? Date(timeIntervalSince1970: TimeInterval(viewedAtSeconds)) : nil,
+                progressSeconds: progressSeconds,
+                durationSeconds: durationSeconds
             )
         }
     }
@@ -182,6 +396,158 @@ enum JSONParser {
             shareCount: int64(stat, "share"),
             pages: pages
         )
+    }
+
+    nonisolated static func parseVideoReqUser(from data: [String: Any]) -> BiliVideoRelation {
+        guard let reqUser = data["req_user"] as? [String: Any] else { return BiliVideoRelation() }
+        return BiliVideoRelation(
+            liked: boolish(reqUser["like"]),
+            favorited: boolish(reqUser["favorite"]),
+            coinCount: max(0, Int(int64(reqUser, "coin")))
+        )
+    }
+
+    nonisolated static func parseVideoArchiveRelation(from object: Any) -> BiliVideoRelation {
+        let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
+        return BiliVideoRelation(
+            liked: boolish(data["like"]),
+            favorited: boolish(data["favorite"]),
+            coinCount: max(0, Int(int64(data, "coin")))
+        )
+    }
+
+    nonisolated static func parseHasLike(from object: Any) -> Bool {
+        let data = dictionary(object)["data"]
+        switch data {
+        case let number as NSNumber:
+            return number.intValue == 1
+        case let flag as Bool:
+            return flag
+        case let dict as [String: Any]:
+            return boolish(dict["like"])
+        default:
+            return false
+        }
+    }
+
+    nonisolated static func parseVideoFavoured(from object: Any) -> Bool {
+        guard let data = dictionary(object)["data"] as? [String: Any] else { return false }
+        return boolish(data["favoured"])
+    }
+
+    nonisolated static func mergeVideoRelations(_ relations: [BiliVideoRelation]) -> BiliVideoRelation {
+        guard !relations.isEmpty else { return BiliVideoRelation() }
+        return BiliVideoRelation(
+            liked: relations.contains(where: \.liked),
+            favorited: relations.contains(where: \.favorited),
+            coinCount: relations.map(\.coinCount).max() ?? 0
+        )
+    }
+
+    nonisolated static func parseVideoTripleResult(from object: Any) -> BiliVideoTripleResult {
+        guard let data = dictionary(object)["data"] as? [String: Any] else { return BiliVideoTripleResult() }
+        return BiliVideoTripleResult(
+            liked: boolish(data["like"]),
+            coined: boolish(data["coin"]),
+            favorited: boolish(data["fav"])
+        )
+    }
+
+    nonisolated static func parseDefaultFavoriteFolderId(from object: Any) -> Int64? {
+        guard let data = dictionary(object)["data"] as? [String: Any],
+              let folders = data["list"] as? [[String: Any]],
+              !folders.isEmpty else { return nil }
+
+        struct FolderItem {
+            let title: String
+            let id: Int64
+            let mediaCount: Int
+        }
+
+        let parsed: [FolderItem] = folders.compactMap { item in
+            let id = int64(item, "id").ifZero(int64(item, "media_id"))
+            guard id > 0 else { return nil }
+            return FolderItem(
+                title: string(item, "title"),
+                id: id,
+                mediaCount: Int(int64(item, "media_count"))
+            )
+        }
+        guard !parsed.isEmpty else { return nil }
+        return parsed.first(where: { $0.title == "默认收藏夹" })?.id
+            ?? parsed.max(by: { $0.mediaCount < $1.mediaCount })?.id
+            ?? parsed.first?.id
+    }
+
+    nonisolated static func parseFavoriteVideoPage(
+        from object: Any,
+        page: Int,
+        pageSize: Int
+    ) -> BiliFavoriteVideoPage {
+        guard let data = dictionary(object)["data"] as? [String: Any] else {
+            return BiliFavoriteVideoPage(videos: [], page: page, hasMore: false)
+        }
+
+        let medias = data["medias"] as? [[String: Any]] ?? []
+        let videos = medias.compactMap(parseFavoriteMedia)
+        let totalCount = Int(int64(data["info"] as? [String: Any] ?? [:], "media_count"))
+        let hasMore = boolish(data["has_more"])
+            || (totalCount > 0 && page * pageSize < totalCount)
+
+        return BiliFavoriteVideoPage(
+            videos: videos,
+            page: page,
+            hasMore: hasMore
+        )
+    }
+
+    private nonisolated static func parseFavoriteMedia(_ item: [String: Any]) -> BiliVideo? {
+        let mediaType = Int(int64(item, "type"))
+        guard mediaType == 0 || mediaType == 2 else { return nil }
+
+        var bvid = string(item, "bvid", "bv_id")
+        if bvid.isEmpty {
+            bvid = extractBvidFromURL(string(item, "link"))
+        }
+        guard !bvid.isEmpty else { return nil }
+
+        let upper = item["upper"] as? [String: Any] ?? [:]
+        let cntInfo = item["cnt_info"] as? [String: Any] ?? [:]
+
+        return BiliVideo(
+            id: bvid,
+            bvid: bvid,
+            aid: int64(item, "id"),
+            title: string(item, "title").htmlStripped,
+            coverURL: normalizedURL(string(item, "cover")),
+            authorName: string(upper, "name"),
+            authorFaceURL: normalizedURL(string(upper, "face")),
+            authorMid: int64(upper, "mid"),
+            viewCount: int64(cntInfo, "play"),
+            danmakuCount: int64(cntInfo, "danmaku"),
+            likeCount: 0,
+            duration: Int(int64(item, "duration")),
+            description: "",
+            cid: 0
+        )
+    }
+
+    private nonisolated static func extractBvidFromURL(_ raw: String) -> String {
+        guard let range = raw.range(of: #"BV[0-9A-Za-z]+"#, options: .regularExpression) else {
+            return ""
+        }
+        return String(raw[range])
+    }
+
+    nonisolated static func boolish(_ value: Any?) -> Bool {
+        switch value {
+        case let number as NSNumber:
+            return number.intValue == 1
+        case let flag as Bool:
+            return flag
+        default:
+            return false
+        }
     }
 
     nonisolated static func parsePlayStream(from object: Any) -> BiliPlayStream? {
@@ -524,6 +890,9 @@ enum JSONParser {
         if let text = dictionary["duration"] as? String {
             return parseDurationText(text)
         }
+        if let text = dictionary["length"] as? String {
+            return parseDurationText(text)
+        }
         return 0
     }
 
@@ -557,6 +926,71 @@ enum JSONParser {
             return URL(string: raw.replacingOccurrences(of: "http://", with: "https://"))
         }
         return URL(string: raw)
+    }
+
+    private nonisolated static func parseUserTopPhotoURLs(from data: [String: Any]) -> [URL] {
+        var values: [String] = []
+        values.append(contentsOf: parseDelimitedTopPhotos(string(data, "top_photo")))
+        if let array = data["top_photos"] as? [Any] {
+            for entry in array {
+                let raw = (entry as? String) ?? "\(entry)"
+                let normalized = normalizeSpaceImageURL(raw)
+                if !normalized.isEmpty {
+                    values.append(normalized)
+                }
+            }
+        }
+        if let space = data["space"] as? [String: Any] {
+            let large = normalizeSpaceImageURL(string(space, "l_img"))
+            if !large.isEmpty { values.append(large) }
+            let small = normalizeSpaceImageURL(string(space, "s_img"))
+            if !small.isEmpty { values.append(small) }
+        }
+        return mergeTopPhotoURLs(values.compactMap(normalizedURL))
+    }
+
+    private nonisolated static func parseDelimitedTopPhotos(_ raw: String) -> [String] {
+        raw.split { $0 == "," || $0 == ";" }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .map(normalizeSpaceImageURL)
+            .filter { !$0.isEmpty }
+    }
+
+    private nonisolated static func mergeTopPhotoURLs(_ groups: [URL]...) -> [URL] {
+        var seen = Set<String>()
+        var merged: [URL] = []
+        for group in groups {
+            for url in group {
+                let key = url.absoluteString
+                if seen.insert(key).inserted {
+                    merged.append(url)
+                }
+            }
+        }
+        return merged
+    }
+
+    private nonisolated static func normalizeSpaceImageURL(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.hasPrefix("bfs/") {
+            return "https://i0.hdslb.com/\(trimmed)"
+        }
+        if trimmed.hasPrefix("//") {
+            return "https:\(trimmed)"
+        }
+        return trimmed
+    }
+
+    private nonisolated static func normalizeIpLocation(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("IP属地：") {
+            let value = String(trimmed.dropFirst("IP属地：".count))
+            return value.isEmpty ? nil : value
+        }
+        return trimmed
     }
 }
 

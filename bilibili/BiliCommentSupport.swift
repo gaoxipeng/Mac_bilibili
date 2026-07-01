@@ -46,16 +46,87 @@ enum BiliCommentSegmentBuilder {
 
         return segments
     }
+
+    /// Groups segments so reply prefixes like `回复 @user:` stay on one line.
+    static func layoutUnits(from segments: [BiliCommentSegment]) -> [[BiliCommentSegment]] {
+        var units: [[BiliCommentSegment]] = []
+        var index = 0
+
+        while index < segments.count {
+            if let replyUnit = takeReplyPrefixUnit(from: segments, at: index) {
+                units.append(replyUnit.segments)
+                index = replyUnit.nextIndex
+                continue
+            }
+            if let mentionUnit = takeMentionColonUnit(from: segments, at: index) {
+                units.append(mentionUnit.segments)
+                index = mentionUnit.nextIndex
+                continue
+            }
+            units.append([segments[index]])
+            index += 1
+        }
+
+        return units
+    }
+
+    private static func takeReplyPrefixUnit(
+        from segments: [BiliCommentSegment],
+        at index: Int
+    ) -> (segments: [BiliCommentSegment], nextIndex: Int)? {
+        guard index + 2 < segments.count,
+              case .text(let prefix) = segments[index],
+              prefix == "回复 ",
+              case .mention(let mention) = segments[index + 1],
+              case .text(let tail) = segments[index + 2],
+              let first = tail.first,
+              first == ":" || first == "："
+        else { return nil }
+
+        let colon = String(first)
+        let rest = String(tail.dropFirst())
+        var unit: [BiliCommentSegment] = [.text(prefix), .mention(mention), .text(colon)]
+        if !rest.isEmpty {
+            unit.append(.text(rest))
+        }
+        return (unit, index + 3)
+    }
+
+    private static func takeMentionColonUnit(
+        from segments: [BiliCommentSegment],
+        at index: Int
+    ) -> (segments: [BiliCommentSegment], nextIndex: Int)? {
+        guard index + 1 < segments.count,
+              case .mention(let mention) = segments[index],
+              case .text(let tail) = segments[index + 1],
+              let first = tail.first,
+              first == ":" || first == "："
+        else { return nil }
+
+        let colon = String(first)
+        let rest = String(tail.dropFirst())
+        var unit: [BiliCommentSegment] = [.mention(mention), .text(colon)]
+        if !rest.isEmpty {
+            unit.append(.text(rest))
+        }
+        return (unit, index + 2)
+    }
 }
 
 struct BiliCommentText: View {
     let text: String
     let emoticons: [String: String]
+    var fontSize: CGFloat = 15
 
-    private let emoteSize: CGFloat = 17
+    private var font: Font { .system(size: fontSize) }
+    private var emoteSize: CGFloat { fontSize + 2 }
 
     private var segments: [BiliCommentSegment] {
         BiliCommentSegmentBuilder.build(text: text, emoticons: emoticons)
+    }
+
+    private var layoutUnits: [[BiliCommentSegment]] {
+        BiliCommentSegmentBuilder.layoutUnits(from: segments)
     }
 
     var body: some View {
@@ -64,33 +135,49 @@ struct BiliCommentText: View {
             return false
         }) {
             Text(text)
-                .font(.body)
+                .font(font)
+                .lineSpacing(3)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
         } else {
             FlowLayout(spacing: 0) {
-                ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                    switch segment {
-                    case .text(let value):
-                        Text(value)
-                            .font(.body)
-                            .textSelection(.enabled)
-                    case .emote(let url, _):
-                        AsyncImage(url: url) { phase in
-                            switch phase {
-                            case .success(let image):
-                                image.resizable().scaledToFit()
-                            default:
-                                Color.clear
-                            }
+                ForEach(Array(layoutUnits.enumerated()), id: \.offset) { _, unit in
+                    HStack(spacing: 0) {
+                        ForEach(Array(unit.enumerated()), id: \.offset) { _, segment in
+                            segmentView(segment)
                         }
-                        .frame(width: emoteSize, height: emoteSize)
-                    case .mention(let value):
-                        Text(value)
-                            .font(.body)
-                            .foregroundStyle(.secondary.opacity(0.55))
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private func segmentView(_ segment: BiliCommentSegment) -> some View {
+        switch segment {
+        case .text(let value):
+            Text(value)
+                .font(font)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        case .emote(let url, _):
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFit()
+                default:
+                    Color.clear
+                }
+            }
+            .frame(width: emoteSize, height: emoteSize)
+        case .mention(let value):
+            Text(value)
+                .font(font)
+                .foregroundStyle(.secondary.opacity(0.55))
         }
     }
 }
@@ -116,5 +203,54 @@ enum BiliCommentFormats {
         }
         parts.append("赞 \(likeCount.compactCount)")
         return parts.filter { !$0.isEmpty }.joined(separator: "  ")
+    }
+}
+
+struct BiliCommentSortToggle: View {
+    let sort: BiliCommentSort
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    private let labelColor = Color.primary.opacity(0.52)
+    private var backgroundFill: Color {
+        Color.primary.opacity(isHovered ? 0.11 : 0.05)
+    }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                BiliCommentSortLinesIcon(color: labelColor)
+                Text(sort.title)
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(labelColor)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background {
+                Capsule()
+                    .fill(backgroundFill)
+            }
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.16)) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
+private struct BiliCommentSortLinesIcon: View {
+    let color: Color
+
+    var body: some View {
+        VStack(spacing: 2) {
+            ForEach(0..<3, id: \.self) { _ in
+                Capsule()
+                    .fill(color)
+                    .frame(width: 10, height: 1.2)
+            }
+        }
     }
 }

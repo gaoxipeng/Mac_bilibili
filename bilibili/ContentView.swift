@@ -4,13 +4,15 @@ struct ContentView: View {
     @StateObject private var model = AppModel()
     @State private var sidebarSelection: AppSection? = .home
     @State private var navigationPath = NavigationPath()
+    @State private var detailChrome: VideoDetailChromeInfo?
 
     var body: some View {
-        ZStack(alignment: .leading) {
-            mainPane
+        HStack(spacing: 0) {
             sidebarPane
+            mainPane
         }
         .background(Color.white)
+        .configureTransparentWindow()
         .ignoresSafeArea(edges: .top)
         .task {
             await model.loadInitialData()
@@ -20,10 +22,12 @@ struct ContentView: View {
                 sidebarSelection = model.selectedSection
                 return
             }
+            guard newValue != model.selectedSection else { return }
             model.selectedSection = newValue
         }
-        .onChange(of: model.selectedSection) { _, _ in
-            sidebarSelection = model.selectedSection
+        .onChange(of: model.selectedSection) { oldValue, newValue in
+            guard oldValue != newValue else { return }
+            sidebarSelection = newValue
             navigationPath = NavigationPath()
             Task { await model.reloadSelectedIfNeeded() }
         }
@@ -38,42 +42,69 @@ struct ContentView: View {
             NavigationStack(path: $navigationPath) {
                 content
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .navigationDestination(for: BiliVideo.self) { video in
-                        VideoDetailView(video: video, credential: model.account?.credential)
+                    .navigationDestination(for: VideoPlaybackRequest.self) { request in
+                        VideoDetailView(
+                            video: request.video,
+                            credential: model.account?.credential,
+                            initialProgressSeconds: request.progressSeconds
+                        )
+                    }
+                    .navigationDestination(for: UserProfileRequest.self) { request in
+                        UserProfileView(
+                            mid: request.mid,
+                            seedName: request.seedName,
+                            seedFaceURL: request.seedFaceURL,
+                            credential: model.account?.credential,
+                            viewerMid: model.account.flatMap { Int64($0.uid) }
+                        )
                     }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.leading, AppLayout.sidebarWidth)
+            .onPreferenceChange(VideoDetailChromePreferenceKey.self) { detailChrome = $0 }
 
             DetailFloatingChrome(
                 model: model,
                 navigationPath: $navigationPath,
-                canGoBack: !navigationPath.isEmpty
+                canGoBack: !navigationPath.isEmpty,
+                detailChrome: detailChrome
             )
-            .padding(.leading, AppLayout.sidebarWidth)
+        }
+        .onChange(of: navigationPath.count) { _, count in
+            if count == 0 {
+                detailChrome = nil
+                VideoFullscreenPresenter.restoreMainWindowAppearance()
+                Task { await model.refreshSectionAfterReturningFromDetail() }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.white)
     }
 
     private var sidebarPane: some View {
         GlassSidebar(model: model, selection: $sidebarSelection)
             .frame(width: AppLayout.sidebarWidth)
             .frame(maxHeight: .infinity)
+            .background(AppLayout.sidebarBackground)
     }
 
     @ViewBuilder
     private var content: some View {
         switch model.selectedSection {
         case .search:
-            SearchDashboard(model: model)
+            SearchDashboard(model: model, navigationPath: $navigationPath)
         case .home:
             VideoGridView(
-                title: "首页",
-                subtitle: "来自 B 站首页推荐接口",
                 videos: model.homeVideos,
                 loading: model.isLoading,
                 error: model.errorMessage,
-                emptyTitle: "暂无推荐内容"
+                emptyTitle: "暂无推荐内容",
+                compactHeader: true,
+                showsPageHeader: false,
+                loadingMore: model.homeLoadingMore,
+                hasMore: model.homeHasMore,
+                onLoadMore: {
+                    Task { await model.loadMoreHome() }
+                }
             )
         case .following:
             FollowingView(
@@ -103,6 +134,18 @@ struct ContentView: View {
                 error: model.errorMessage,
                 loggedIn: model.account != nil
             )
+        case .favorites:
+            FavoritesView(
+                videos: model.favoriteVideos,
+                loading: model.isLoading,
+                loadingMore: model.favoriteLoadingMore,
+                hasMore: model.favoriteHasMore,
+                error: model.errorMessage,
+                loggedIn: model.account != nil,
+                onLoadMore: {
+                    Task { await model.loadMoreFavorites() }
+                }
+            )
         case .mine:
             MineView(model: model)
         }
@@ -116,7 +159,7 @@ private struct GlassSidebar: View {
     var body: some View {
         Sidebar(model: model, selection: $selection)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .background(Color(white: 0.955))
+            .desktopBlurSidebarBackground()
     }
 }
 
@@ -124,9 +167,10 @@ private struct DetailFloatingChrome: View {
     @ObservedObject var model: AppModel
     @Binding var navigationPath: NavigationPath
     let canGoBack: Bool
+    let detailChrome: VideoDetailChromeInfo?
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .top, spacing: 12) {
             if canGoBack {
                 GlassBackButton {
                     if !navigationPath.isEmpty {
@@ -135,7 +179,11 @@ private struct DetailFloatingChrome: View {
                 }
             }
 
-            Spacer()
+            if let detailChrome {
+                VideoDetailChromeHeaderView(info: detailChrome)
+            } else if !canGoBack {
+                Spacer()
+            }
 
             if !canGoBack {
                 GlassRefreshButton {
@@ -147,14 +195,30 @@ private struct DetailFloatingChrome: View {
         }
         .padding(.horizontal, AppLayout.floatingChromeInset)
         .padding(.top, AppLayout.floatingChromeInset)
-        .frame(maxWidth: .infinity, alignment: .top)
-        .animation(.smooth(duration: 0.32), value: canGoBack)
+        .padding(.trailing, AppLayout.floatingChromeInset)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .animation(.easeOut(duration: 0.26), value: canGoBack)
     }
 }
 
 private struct Sidebar: View {
     @ObservedObject var model: AppModel
     @Binding var selection: AppSection?
+    @State private var isMineHovered = false
+
+    private var isMineSelected: Bool {
+        selection == .mine
+    }
+
+    private var mineBackgroundFill: Color {
+        if isMineSelected {
+            return AppLayout.sidebarSelectionFill
+        }
+        if isMineHovered {
+            return AppLayout.sidebarHoverFill
+        }
+        return .clear
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -169,42 +233,40 @@ private struct Sidebar: View {
                 }
             }
             .padding(.top, AppLayout.sidebarNavTopInset)
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 10)
 
             Spacer()
 
             Button {
                 selection = .mine
             } label: {
-                HStack(spacing: 8) {
-                    AsyncImage(url: model.account?.faceURL) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFill()
-                        default:
-                            Image(systemName: "person.fill")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .frame(width: 30, height: 30)
-                    .background(Color.white.opacity(0.55), in: Circle())
-                    .clipShape(Circle())
+                HStack(spacing: 10) {
+                    RemoteAvatar(
+                        url: model.account?.faceURL,
+                        size: 30,
+                        foreground: Color(red: 0.45, green: 0.45, blue: 0.48),
+                        background: Color.white.opacity(0.72),
+                        border: Color.black.opacity(0.06)
+                    )
 
                     Text(model.account?.name ?? "我的")
-                        .font(.title3.weight(.semibold))
+                        .font(.system(size: 14, weight: isMineSelected ? .semibold : .regular))
                         .lineLimit(1)
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(isMineSelected ? BiliTheme.pink : Color(red: 0.22, green: 0.22, blue: 0.24))
 
                     Spacer(minLength: 0)
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 10)
-                .background(selection == .mine ? Color.white.opacity(0.65) : Color.clear, in: RoundedRectangle(cornerRadius: 10))
+                .padding(.horizontal, 12)
+                .frame(height: AppLayout.sidebarNavItemHeight)
+                .background(
+                    mineBackgroundFill,
+                    in: RoundedRectangle(cornerRadius: AppLayout.sidebarSelectionCornerRadius, style: .continuous)
+                )
             }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 8)
-            .padding(.bottom, 12)
+            .buttonStyle(SidebarPressButtonStyle())
+            .onHover { isMineHovered = $0 }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 16)
         }
     }
 }
@@ -214,33 +276,50 @@ private struct SidebarButton: View {
     let selected: Bool
     let action: () -> Void
 
+    @State private var isHovered = false
+
     private var iconColor: Color {
         selected ? BiliTheme.pink : BiliTheme.actionInactive
     }
 
+    private var backgroundFill: Color {
+        if selected {
+            return AppLayout.sidebarSelectionFill
+        }
+        if isHovered {
+            return AppLayout.sidebarHoverFill
+        }
+        return .clear
+    }
+
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 12) {
-                BiliSidebarIcon(section: section, color: iconColor, size: 20)
+            HStack(spacing: 10) {
+                BiliSidebarIcon(section: section, color: iconColor, size: 18)
                 Text(section.title)
-                    .font(.title3.weight(.semibold))
+                    .font(.system(size: 14, weight: selected ? .semibold : .regular))
                     .foregroundStyle(iconColor)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .frame(height: AppLayout.sidebarNavItemHeight)
             .background(
-                selected ? Color.white.opacity(0.65) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                backgroundFill,
+                in: RoundedRectangle(cornerRadius: AppLayout.sidebarSelectionCornerRadius, style: .continuous)
             )
-            .overlay {
-                if selected {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color.white.opacity(0.5), lineWidth: 0.5)
-                }
-            }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SidebarPressButtonStyle())
+        .onHover { hovering in
+            isHovered = hovering
+        }
+    }
+}
+
+private struct SidebarPressButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.72 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 

@@ -6,6 +6,20 @@ struct BiliFollowingFeedPage: Sendable {
     let hasMore: Bool
 }
 
+struct BiliHomeRecommendPage: Sendable {
+    let videos: [BiliVideo]
+    let nextFreshIdx: Int
+    let nextFetchRow: Int
+    let lastShowList: String
+    let hasMore: Bool
+}
+
+struct BiliFavoriteVideoPage: Sendable {
+    let videos: [BiliVideo]
+    let page: Int
+    let hasMore: Bool
+}
+
 struct BiliVideo: Identifiable, Hashable, Sendable {
     let id: String
     let bvid: String
@@ -41,10 +55,29 @@ struct BiliLiveRoom: Identifiable, Hashable, Sendable {
     }
 }
 
-struct BiliHotWord: Identifiable, Hashable, Sendable {
-    let id = UUID()
+struct BiliHotSearchItem: Identifiable, Hashable, Sendable {
     let keyword: String
-    let icon: String?
+    let showName: String
+    let rank: Int
+
+    var id: String { "\(rank)-\(keyword)" }
+}
+
+struct BiliSearchUser: Identifiable, Hashable, Sendable {
+    let mid: Int64
+    let name: String
+    let faceURL: URL?
+    let sign: String
+    let fans: Int64
+    let level: Int
+
+    var id: Int64 { mid }
+}
+
+struct BiliSearchPage<Item: Sendable>: Sendable {
+    let items: [Item]
+    let page: Int
+    let hasMore: Bool
 }
 
 struct BilibiliCredential: Codable, Hashable, Sendable {
@@ -89,12 +122,72 @@ struct BiliUserProfile: Hashable, Sendable {
     let likes: Int64
     let coinCount: Int64
     let bcoinBalance: Double
+    let videoCount: Int64
+    let topPhotoURLs: [URL]
+    let ipLocation: String?
+
+    var displayTopPhotoURLs: [URL] {
+        topPhotoURLs
+    }
+}
+
+struct BiliAuthorRelation: Hashable, Sendable {
+    var following = false
+    var followerMe = false
+}
+
+enum BiliUserVideoSort: String, CaseIterable, Sendable {
+    case latestPublish
+    case mostPlayed
+
+    nonisolated var orderValue: String {
+        switch self {
+        case .latestPublish: "pubdate"
+        case .mostPlayed: "click"
+        }
+    }
+
+    nonisolated var title: String {
+        switch self {
+        case .latestPublish: "最新发布"
+        case .mostPlayed: "播放最多"
+        }
+    }
+}
+
+struct BiliUserVideoPage: Sendable {
+    let videos: [BiliVideo]
+    let hasMore: Bool
+}
+
+struct UserProfileRequest: Hashable, Sendable {
+    let mid: Int64
+    let seedName: String
+    let seedFaceURL: URL?
+
+    init(mid: Int64, seedName: String = "", seedFaceURL: URL? = nil) {
+        self.mid = mid
+        self.seedName = seedName
+        self.seedFaceURL = seedFaceURL
+    }
 }
 
 struct BiliHistoryItem: Identifiable, Hashable, Sendable {
     let id: String
     let video: BiliVideo
     let viewedAt: Date?
+    let progressSeconds: Int
+    let durationSeconds: Int
+}
+
+struct VideoPlaybackRequest: Hashable, Sendable {
+    let video: BiliVideo
+    let progressSeconds: Int
+
+    init(_ video: BiliVideo, progressSeconds: Int = 0) {
+        self.video = video
+        self.progressSeconds = max(0, progressSeconds)
+    }
 }
 
 struct BiliVideoPage: Identifiable, Hashable, Sendable {
@@ -114,6 +207,18 @@ struct BiliVideoDetail: Hashable, Sendable {
     let favoriteCount: Int64
     let shareCount: Int64
     let pages: [BiliVideoPage]
+}
+
+nonisolated struct BiliVideoRelation: Sendable, Equatable {
+    var liked = false
+    var favorited = false
+    var coinCount = 0
+}
+
+nonisolated struct BiliVideoTripleResult: Sendable, Equatable {
+    var liked = false
+    var coined = false
+    var favorited = false
 }
 
 struct BiliPlayStream: Hashable, Sendable {
@@ -220,15 +325,15 @@ struct BiliCommentReplyPage: Sendable {
     let isEnd: Bool
 }
 
-struct BiliDanmakuItem: Hashable, Sendable {
+nonisolated struct BiliDanmakuItem: Hashable, Sendable {
     let timeMs: Int64
     let mode: Int
     let fontSize: Int
     let colorArgb: Int
     let content: String
 
-    var id: Int {
-        Int(timeMs ^ Int64(content.hashValue) ^ Int64(mode))
+    nonisolated var id: Int {
+        Int(timeMs ^ Int64(content.stableHashValue) ^ Int64(mode))
     }
 }
 
@@ -243,7 +348,7 @@ enum BiliDanmakuMode: Int, Sendable {
     }
 }
 
-enum DanmakuSpeedLevel: Int, CaseIterable, Sendable {
+nonisolated enum DanmakuSpeedLevel: Int, CaseIterable, Sendable {
     case verySlow
     case slow
     case medium
@@ -276,7 +381,7 @@ enum DanmakuSpeedLevel: Int, CaseIterable, Sendable {
     }
 }
 
-struct DanmakuSettings: Equatable, Sendable {
+nonisolated struct DanmakuSettings: Equatable, Sendable {
     var displayAreaPercent: Int
     var opacityPercent: Int
     var fontSizePercent: Int
@@ -313,7 +418,31 @@ struct DanmakuSettings: Equatable, Sendable {
 }
 
 private extension Int {
-    func clamped(to range: ClosedRange<Int>) -> Int {
+    nonisolated func clamped(to range: ClosedRange<Int>) -> Int {
         Swift.min(Swift.max(self, range.lowerBound), range.upperBound)
+    }
+}
+
+extension Int64 {
+    nonisolated var compactCount: String {
+        if self >= 100_000_000 {
+            return String(format: "%.1f亿", Double(self) / 100_000_000)
+        }
+        if self >= 10_000 {
+            return String(format: "%.1f万", Double(self) / 10_000)
+        }
+        return "\(self)"
+    }
+}
+
+extension String {
+    nonisolated var stableHashValue: Int {
+        var hasher = Hasher()
+        hasher.combine(self)
+        return hasher.finalize()
+    }
+
+    nonisolated func ifEmpty(_ fallback: String) -> String {
+        isEmpty ? fallback : self
     }
 }

@@ -20,6 +20,26 @@ struct BiliFavoriteVideoPage: Sendable {
     let hasMore: Bool
 }
 
+struct BiliHistoryCursor: Sendable {
+    let max: Int64
+    let viewAt: Int64
+    let business: String
+    let ps: Int
+
+    var hasMore: Bool {
+        ps > 0 && max > 0
+    }
+}
+
+struct BiliHistoryPage: Sendable {
+    let items: [BiliHistoryItem]
+    let cursor: BiliHistoryCursor?
+
+    var hasMore: Bool {
+        cursor?.hasMore ?? false
+    }
+}
+
 struct BiliVideo: Identifiable, Hashable, Sendable {
     let id: String
     let bvid: String
@@ -174,6 +194,7 @@ struct UserProfileRequest: Hashable, Sendable {
 
 struct BiliHistoryItem: Identifiable, Hashable, Sendable {
     let id: String
+    let kid: String
     let video: BiliVideo
     let viewedAt: Date?
     let progressSeconds: Int

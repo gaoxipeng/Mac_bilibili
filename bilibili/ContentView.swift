@@ -152,8 +152,16 @@ struct ContentView: View {
             HistoryView(
                 items: model.historyItems,
                 loading: model.isLoading,
+                loadingMore: model.historyLoadingMore,
+                hasMore: model.historyHasMore,
                 error: model.errorMessage,
-                loggedIn: model.account != nil
+                loggedIn: model.account != nil,
+                onLoadMore: {
+                    Task { await model.loadMoreHistory() }
+                },
+                onDelete: { item in
+                    Task { await model.deleteHistoryItem(item) }
+                }
             )
         case .favorites:
             FavoritesView(
@@ -192,13 +200,14 @@ private struct DetailFloatingChrome: View {
     let detailChrome: VideoDetailChromeInfo?
     let onExitSearchResults: () -> Void
 
-    private var showsBackButton: Bool {
-        canGoBack || canExitSearchResults
+    /// UP 主等页面在 banner 内嵌返回；此处仅负责视频详情与搜索退出。
+    private var showsFloatingBackButton: Bool {
+        canExitSearchResults || (canGoBack && detailChrome != nil)
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            if showsBackButton {
+            if showsFloatingBackButton {
                 GlassBackButton {
                     if canGoBack {
                         if !navigationPath.isEmpty {
@@ -218,11 +227,11 @@ private struct DetailFloatingChrome: View {
                     GlassMoreButton(webURL: webURL)
                 }
             } else {
-                if !showsBackButton {
+                if !showsFloatingBackButton {
                     Spacer()
                 }
 
-                if !showsBackButton {
+                if !showsFloatingBackButton {
                     GlassRefreshButton {
                         Task { await model.reloadSelected() }
                     }
@@ -242,7 +251,7 @@ private struct DetailFloatingChrome: View {
                 )
             }
         }
-        .animation(.easeOut(duration: 0.26), value: showsBackButton)
+        .animation(.easeOut(duration: 0.26), value: showsFloatingBackButton)
         .animation(.easeOut(duration: 0.26), value: canGoBack)
         .animation(.easeOut(duration: 0.26), value: detailChrome?.title)
     }

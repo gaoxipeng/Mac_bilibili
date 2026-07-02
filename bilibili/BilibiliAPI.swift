@@ -343,20 +343,40 @@ actor BilibiliAPI {
         return true
     }
 
-    func history(credential: BilibiliCredential) async throws -> [BiliHistoryItem] {
+    func history(
+        credential: BilibiliCredential,
+        cursorMax: Int64 = 0,
+        viewAt: Int64 = 0,
+        business: String = "",
+        pageSize: Int = 30
+    ) async throws -> BiliHistoryPage {
         let json = try await json(
             url: "https://api.bilibili.com/x/web-interface/history/cursor",
             params: [
-                "max": "0",
-                "view_at": "0",
-                "business": "",
+                "max": "\(cursorMax)",
+                "view_at": "\(viewAt)",
+                "business": business,
                 "type": "archive",
-                "ps": "30"
+                "ps": "\(min(max(pageSize, 1), 30))"
             ],
             credential: credential,
             referer: "https://www.bilibili.com/account/history"
         )
-        return JSONParser.parseHistory(from: json)
+        return JSONParser.parseHistoryPage(from: json)
+    }
+
+    func deleteWatchHistory(kid: String, credential: BilibiliCredential) async throws -> Bool {
+        guard !kid.isEmpty, !credential.biliJct.isEmpty else { return false }
+        _ = try await postForm(
+            url: BilibiliEndpoints.historyDelete,
+            form: [
+                "kid": kid,
+                "csrf": credential.biliJct
+            ],
+            credential: credential,
+            referer: "https://www.bilibili.com/account/history"
+        )
+        return true
     }
 
     func videoDetail(bvid: String, credential: BilibiliCredential? = nil) async throws -> BiliVideoDetail {

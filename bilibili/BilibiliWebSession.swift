@@ -10,6 +10,7 @@ enum BilibiliEndpoints: Sendable {
     nonisolated static let danmakuSeg = "https://api.bilibili.com/x/v2/dm/web/seg.so"
     nonisolated static let danmakuXML = "https://comment.bilibili.com"
     nonisolated static let historyReport = "https://api.bilibili.com/x/v2/history/report"
+    nonisolated static let historyDelete = "https://api.bilibili.com/x/v2/history/delete"
     nonisolated static let passportLogin = URL(string: "https://passport.bilibili.com/login")!
     nonisolated static let userAgent =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"

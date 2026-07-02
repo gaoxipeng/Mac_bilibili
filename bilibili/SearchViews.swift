@@ -273,12 +273,14 @@ final class SearchViewModel: ObservableObject {
             if reset {
                 var seen = Set<String>()
                 videos = result.items.filter { seen.insert($0.bvid).inserted }
+                videoHasMore = result.hasMore
             } else {
                 var seen = Set(videos.map(\.bvid))
-                videos.append(contentsOf: result.items.filter { seen.insert($0.bvid).inserted })
+                let newVideos = result.items.filter { seen.insert($0.bvid).inserted }
+                videos.append(contentsOf: newVideos)
+                videoHasMore = result.hasMore && !newVideos.isEmpty
             }
             videoPage = result.page
-            videoHasMore = result.hasMore
         } catch {
             guard currentGeneration == searchGeneration, reset else { return }
             errorMessage = error.localizedDescription
@@ -309,12 +311,14 @@ final class SearchViewModel: ObservableObject {
             guard currentGeneration == searchGeneration else { return }
             if reset {
                 users = result.items
+                userHasMore = result.hasMore
             } else {
                 var seen = Set(users.map(\.mid))
-                users.append(contentsOf: result.items.filter { seen.insert($0.mid).inserted })
+                let newUsers = result.items.filter { seen.insert($0.mid).inserted }
+                users.append(contentsOf: newUsers)
+                userHasMore = result.hasMore && !newUsers.isEmpty
             }
             userPage = result.page
-            userHasMore = result.hasMore
         } catch {
             guard currentGeneration == searchGeneration, reset else { return }
             if errorMessage == nil {
@@ -617,19 +621,20 @@ struct SearchDashboard: View {
                 ContentUnavailableView("没有找到相关视频", systemImage: "film")
                     .padding(.vertical, 40)
             } else {
-                VideoFeedGrid(
-                    videos: searchModel.videos,
-                    trailing: {
-                        if searchModel.videoHasMore {
-                            searchLoadMoreFooter(
-                                loading: searchModel.videoLoadingMore,
-                                onLoadMore: {
-                                    Task { await searchModel.loadVideos(reset: false) }
-                                }
-                            )
-                        }
+                VStack(alignment: .leading, spacing: 0) {
+                    VideoFeedGrid(videos: searchModel.videos)
+
+                    if searchModel.videoHasMore {
+                        FeedLoadMoreFooter(
+                            anchorID: searchModel.videos.count,
+                            hasMore: searchModel.videoHasMore,
+                            loadingMore: searchModel.videoLoadingMore,
+                            onLoadMore: {
+                                Task { await searchModel.loadVideos(reset: false) }
+                            }
+                        )
                     }
-                )
+                }
             }
         }
     }
@@ -657,8 +662,10 @@ struct SearchDashboard: View {
                 }
 
                 if searchModel.userHasMore {
-                    searchLoadMoreFooter(
-                        loading: searchModel.userLoadingMore,
+                    FeedLoadMoreFooter(
+                        anchorID: searchModel.users.count,
+                        hasMore: searchModel.userHasMore,
+                        loadingMore: searchModel.userLoadingMore,
                         onLoadMore: {
                             Task { await searchModel.loadUsers(reset: false) }
                         }
@@ -670,25 +677,6 @@ struct SearchDashboard: View {
         .frame(width: layout.gridWidth)
         .frame(maxWidth: .infinity)
         .padding(.horizontal, AppLayout.searchUserResultsHorizontalInset)
-    }
-
-    @ViewBuilder
-    private func searchLoadMoreFooter(loading: Bool, onLoadMore: @escaping () -> Void) -> some View {
-        Group {
-            if loading {
-                HStack(spacing: 10) {
-                    ProgressView().controlSize(.small)
-                    Text("正在加载更多")
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                Color.clear
-                    .frame(height: 1)
-                    .onAppear(perform: onLoadMore)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 12)
     }
 }
 

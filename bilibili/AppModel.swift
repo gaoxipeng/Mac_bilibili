@@ -12,6 +12,8 @@ final class AppModel: ObservableObject {
     @Published var followingLoadingMore = false
     @Published var hotVideos: [BiliVideo] = []
     @Published var historyItems: [BiliHistoryItem] = []
+    @Published var historyHasMore = false
+    @Published var historyLoadingMore = false
     @Published var favoriteVideos: [BiliVideo] = []
     @Published var favoriteHasMore = false
     @Published var favoriteLoadingMore = false
@@ -30,6 +32,7 @@ final class AppModel: ObservableObject {
     private var homeFetchRow = 1
     private var homeLastShowList = ""
     private var favoritePage = 1
+    private var historyCursor: BiliHistoryCursor?
 
     private let api = BilibiliAPI()
     private let accountStore = AccountStore()
@@ -121,9 +124,15 @@ final class AppModel: ObservableObject {
                 hotVideos = try await api.ranking(credential: account?.credential)
             case .history:
                 guard let credential = account?.credential else {
+                    historyCursor = nil
+                    historyHasMore = false
                     throw APIError.message("登录后查看观看历史")
                 }
-                historyItems = try await api.history(credential: credential)
+                historyCursor = nil
+                let page = try await api.history(credential: credential)
+                historyItems = page.items
+                historyCursor = page.cursor
+                historyHasMore = page.hasMore
             case .favorites:
                 guard let credential = account?.credential else {
                     favoritePage = 1
@@ -183,8 +192,54 @@ final class AppModel: ObservableObject {
     private func refreshHistoryQuietly() async {
         guard let credential = account?.credential else { return }
         do {
-            historyItems = try await api.history(credential: credential)
+            let page = try await api.history(credential: credential)
+            historyItems = page.items
+            historyCursor = page.cursor
+            historyHasMore = page.hasMore
             errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func deleteHistoryItem(_ item: BiliHistoryItem) async {
+        guard let credential = account?.credential, !item.kid.isEmpty else { return }
+        do {
+            let deleted = try await api.deleteWatchHistory(kid: item.kid, credential: credential)
+            guard deleted else { return }
+            historyItems.removeAll { $0.id == item.id }
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func loadMoreHistory() async {
+        guard selectedSection == .history,
+              let credential = account?.credential,
+              let cursor = historyCursor,
+              historyHasMore,
+              !isLoading,
+              !historyLoadingMore else {
+            return
+        }
+
+        historyLoadingMore = true
+        errorMessage = nil
+        defer { historyLoadingMore = false }
+
+        do {
+            let page = try await api.history(
+                credential: credential,
+                cursorMax: cursor.max,
+                viewAt: cursor.viewAt,
+                business: cursor.business
+            )
+            var seen = Set(historyItems.map(\.id))
+            let newItems = page.items.filter { seen.insert($0.id).inserted }
+            historyItems.append(contentsOf: newItems)
+            historyCursor = page.cursor
+            historyHasMore = page.hasMore && !newItems.isEmpty
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -215,7 +270,7 @@ final class AppModel: ObservableObject {
             homeFreshIdx = page.nextFreshIdx
             homeFetchRow = page.nextFetchRow
             homeLastShowList = page.lastShowList
-            homeHasMore = page.hasMore
+            homeHasMore = page.hasMore && !newVideos.isEmpty
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -240,7 +295,7 @@ final class AppModel: ObservableObject {
             let newVideos = page.videos.filter { seen.insert($0.bvid).inserted }
             followingVideos.append(contentsOf: newVideos)
             followingOffset = page.nextOffset
-            followingHasMore = page.hasMore
+            followingHasMore = page.hasMore && !newVideos.isEmpty
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -263,9 +318,10 @@ final class AppModel: ObservableObject {
             let nextPage = favoritePage + 1
             let page = try await api.favoriteVideos(page: nextPage, credential: credential)
             var seen = Set(favoriteVideos.map(\.bvid))
-            favoriteVideos.append(contentsOf: page.videos.filter { seen.insert($0.bvid).inserted })
+            let newVideos = page.videos.filter { seen.insert($0.bvid).inserted }
+            favoriteVideos.append(contentsOf: newVideos)
             favoritePage = page.page
-            favoriteHasMore = page.hasMore
+            favoriteHasMore = page.hasMore && !newVideos.isEmpty
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -299,6 +355,9 @@ final class AppModel: ObservableObject {
         followingHasMore = false
         followingLoadingMore = false
         historyItems = []
+        historyCursor = nil
+        historyHasMore = false
+        historyLoadingMore = false
         favoriteVideos = []
         favoritePage = 1
         favoriteHasMore = false

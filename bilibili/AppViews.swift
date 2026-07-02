@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 enum VideoCardLayout {
@@ -9,7 +10,7 @@ enum VideoCardLayout {
     static let coverHoverScale: CGFloat = 1.035
     static let coverHoverAnimation = Animation.interactiveSpring(response: 0.18, dampingFraction: 0.82, blendDuration: 0.04)
     static let coverHoverExitAnimation = Animation.easeOut(duration: 0.14)
-    static let metadataSpacing: CGFloat = 8
+    static let statsAuthorSpacing: CGFloat = 4
     static let metadataPadding = EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
     /// Feed 封面解码目标像素，避免滚动时为每个 cell 做 GeometryReader 测量。
     static func feedCoverPixelLength(displayScale: CGFloat) -> Int {
@@ -26,61 +27,132 @@ enum VideoCardLayout {
         return max((totalWidth - spacingTotal) / CGFloat(columnCount), 1)
     }
 
-    static func estimatedCardHeight(
-        for video: BiliVideo,
-        columnWidth: CGFloat,
-        largeTypography: Bool,
-        waterfallStyle: Bool
-    ) -> CGFloat {
-        let coverHeight = columnWidth / coverAspect
-        let horizontalInset = metadataPadding.leading + metadataPadding.trailing
-        let titleWidth = max(columnWidth - horizontalInset, 1)
-        let titleFontSize: CGFloat = largeTypography ? 22 : 18
-        let lineHeight = titleFontSize * 1.28
-        let avgCharWidth = titleFontSize * 0.92
-        let charsPerLine = max(1, Int(titleWidth / avgCharWidth))
-        let maxLines = waterfallStyle ? 6 : 2
-        let lineCount = min(
-            max(1, Int(ceil(Double(video.title.count) / Double(charsPerLine)))),
-            maxLines
-        )
-        let titleHeight = CGFloat(lineCount) * lineHeight
-        let statsHeight: CGFloat = largeTypography ? 24 : 20
-        let authorHeight: CGFloat = largeTypography ? 30 : 26
-        return coverHeight
-            + metadataPadding.top
-            + metadataPadding.bottom
-            + titleHeight
-            + metadataSpacing
-            + statsHeight
-            + metadataSpacing
-            + authorHeight
-    }
+    struct RowLayoutMetrics {
+        let metadataPadding: EdgeInsets
+        let usesLargeTitleFont: Bool
+        let statsHeight: CGFloat
+        let authorRowHeight: CGFloat
+        let includesStats: Bool
+        let statsAuthorSpacing: CGFloat
 
-    static func distribute(
-        _ videos: [BiliVideo],
-        columnCount: Int,
-        columnWidth: CGFloat,
-        largeTypography: Bool,
-        waterfallStyle: Bool
-    ) -> [[BiliVideo]] {
-        guard columnCount > 0 else { return [videos] }
-
-        var columns = Array(repeating: [BiliVideo](), count: columnCount)
-        var columnHeights = Array(repeating: CGFloat(0), count: columnCount)
-
-        for video in videos {
-            let targetColumn = columnHeights.enumerated().min(by: { $0.element < $1.element })?.offset ?? 0
-            columns[targetColumn].append(video)
-            columnHeights[targetColumn] += estimatedCardHeight(
-                for: video,
-                columnWidth: columnWidth,
-                largeTypography: largeTypography,
-                waterfallStyle: waterfallStyle
-            ) + gridSpacing
+        static func feed(largeTypography: Bool) -> RowLayoutMetrics {
+            RowLayoutMetrics(
+                metadataPadding: EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12),
+                usesLargeTitleFont: largeTypography,
+                statsHeight: largeTypography ? 24 : 20,
+                authorRowHeight: largeTypography ? 30 : 26,
+                includesStats: true,
+                statsAuthorSpacing: VideoCardLayout.statsAuthorSpacing
+            )
         }
 
-        return columns
+        static let history = RowLayoutMetrics(
+            metadataPadding: EdgeInsets(top: 8, leading: 12, bottom: 6, trailing: 12),
+            usesLargeTitleFont: false,
+            statsHeight: 0,
+            authorRowHeight: 26,
+            includesStats: false,
+            statsAuthorSpacing: 0
+        )
+
+        func metadataHeight(titleAreaHeight: CGFloat) -> CGFloat {
+            var height = metadataPadding.top + titleAreaHeight + metadataPadding.bottom + authorRowHeight
+            if includesStats {
+                height += statsHeight + statsAuthorSpacing
+            }
+            return height
+        }
+    }
+
+    static func rowChunks<T>(_ items: [T], columnCount: Int) -> [[T]] {
+        guard columnCount > 0 else { return items.isEmpty ? [] : [items] }
+        return stride(from: 0, to: items.count, by: columnCount).map { start in
+            Array(items[start..<min(start + columnCount, items.count)])
+        }
+    }
+
+    static func titleNSFont(for metrics: RowLayoutMetrics) -> NSFont {
+        if metrics.usesLargeTitleFont {
+            let size = NSFont.preferredFont(forTextStyle: .title2).pointSize
+            return NSFont.systemFont(ofSize: size, weight: .semibold)
+        }
+        let size = NSFont.preferredFont(forTextStyle: .title3).pointSize
+        return NSFont.systemFont(ofSize: size, weight: .medium)
+    }
+
+    /// SwiftUI `Text` 实际行高略高于 AppKit `NSLayoutManager` 测量值。
+    static let titleLineHeightScale: CGFloat = 1.14
+
+    static func titleLineHeight(for metrics: RowLayoutMetrics) -> CGFloat {
+        let font = titleNSFont(for: metrics)
+        let appKitLineHeight = ceil(font.ascender - font.descender + font.leading)
+        return ceil(appKitLineHeight * titleLineHeightScale)
+    }
+
+    static func titleMeasureWidth(columnWidth: CGFloat, metrics: RowLayoutMetrics) -> CGFloat {
+        max(
+            columnWidth - metrics.metadataPadding.leading - metrics.metadataPadding.trailing - 6,
+            1
+        )
+    }
+
+    static func titleLineCount(for title: String, columnWidth: CGFloat, metrics: RowLayoutMetrics) -> Int {
+        let font = titleNSFont(for: metrics)
+        let textWidth = titleMeasureWidth(columnWidth: columnWidth, metrics: metrics)
+        guard !title.isEmpty else { return 1 }
+
+        let storage = NSTextStorage(string: title, attributes: [.font: font])
+        let layoutManager = NSLayoutManager()
+        storage.addLayoutManager(layoutManager)
+
+        let container = NSTextContainer(size: CGSize(width: textWidth, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        container.lineBreakMode = .byWordWrapping
+        layoutManager.addTextContainer(container)
+        layoutManager.ensureLayout(for: container)
+
+        var lineCount = 0
+        var glyphIndex = 0
+        let glyphCount = layoutManager.numberOfGlyphs
+        while glyphIndex < glyphCount {
+            var lineRange = NSRange()
+            _ = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &lineRange)
+            lineCount += 1
+            glyphIndex = NSMaxRange(lineRange)
+        }
+        return max(lineCount, 1)
+    }
+
+    static func titleAreaHeight(
+        for title: String,
+        columnWidth: CGFloat,
+        metrics: RowLayoutMetrics
+    ) -> CGFloat {
+        let lineCount = titleLineCount(for: title, columnWidth: columnWidth, metrics: metrics)
+        return CGFloat(lineCount) * titleLineHeight(for: metrics)
+    }
+
+    static func rowTitleAreaHeight(
+        titles: [String],
+        columnWidth: CGFloat,
+        metrics: RowLayoutMetrics
+    ) -> CGFloat {
+        let fallback = titleLineHeight(for: metrics)
+        return titles
+            .map { titleAreaHeight(for: $0, columnWidth: columnWidth, metrics: metrics) }
+            .max() ?? fallback
+    }
+
+    static func coverHeight(columnWidth: CGFloat) -> CGFloat {
+        columnWidth / coverAspect
+    }
+
+    static func cardHeight(
+        columnWidth: CGFloat,
+        titleAreaHeight: CGFloat,
+        metrics: RowLayoutMetrics
+    ) -> CGFloat {
+        coverHeight(columnWidth: columnWidth) + metrics.metadataHeight(titleAreaHeight: titleAreaHeight)
     }
 
     static let gridColumns = [
@@ -88,52 +160,160 @@ enum VideoCardLayout {
     ]
 }
 
+private enum FeedCardHoverStyle {
+    static let colorAnimation = Animation.easeInOut(duration: 0.2)
+}
+
+private struct FeedCardTitle: View {
+    let title: String
+    let font: Font
+    let areaHeight: CGFloat
+    let destination: VideoPlaybackRequest
+    @State private var isHovered = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(font)
+                .foregroundStyle(isHovered ? BiliTheme.blue : .primary)
+                .contentTransition(.interpolate)
+                .animation(FeedCardHoverStyle.colorAnimation, value: isHovered)
+                .lineLimit(nil)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+
+            Spacer(minLength: 0)
+        }
+        .frame(height: areaHeight, alignment: .top)
+        .background {
+                NavigationLink(value: destination) {
+                    Color.clear
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        .onHover { hovering in
+            withAnimation(FeedCardHoverStyle.colorAnimation) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
+private struct FeedCardAuthorLabel: View {
+    let name: String
+    let font: Font
+    let avatarURL: URL?
+    let avatarSize: CGFloat
+    @State private var isHovered = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            RemoteAvatar(
+                url: avatarURL,
+                size: avatarSize,
+                foreground: .secondary,
+                background: Color.secondary.opacity(0.11),
+                border: Color.black.opacity(0.05)
+            )
+
+            Text(name.ifEmpty("未知 UP 主"))
+                .font(font)
+                .foregroundStyle(isHovered ? BiliTheme.blue : .secondary)
+                .contentTransition(.interpolate)
+                .animation(FeedCardHoverStyle.colorAnimation, value: isHovered)
+                .lineLimit(1)
+        }
+        .onHover { hovering in
+            withAnimation(FeedCardHoverStyle.colorAnimation) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
+struct FeedLoadMoreFooter: View {
+    let anchorID: Int
+    let hasMore: Bool
+    let loadingMore: Bool
+    let onLoadMore: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.clear
+            if loadingMore {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("正在加载更多")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 24)
+        .padding(.vertical, 8)
+        .id("feed-load-more-\(anchorID)")
+        .onAppear {
+            guard hasMore, !loadingMore else { return }
+            onLoadMore()
+        }
+    }
+}
+
 struct VideoFeedGrid<Trailing: View>: View {
     let videos: [BiliVideo]
     var largeTypography = false
-    var onVideoAppear: ((BiliVideo) -> Void)? = nil
+    var showsLikeCount = true
+    var maxColumnCount: Int? = nil
     @ViewBuilder var trailing: () -> Trailing
     @State private var availableWidth: CGFloat = 0
 
     init(
         videos: [BiliVideo],
         largeTypography: Bool = false,
-        onVideoAppear: ((BiliVideo) -> Void)? = nil,
+        showsLikeCount: Bool = true,
+        maxColumnCount: Int? = nil,
         @ViewBuilder trailing: @escaping () -> Trailing = { EmptyView() }
     ) {
         self.videos = videos
         self.largeTypography = largeTypography
-        self.onVideoAppear = onVideoAppear
+        self.showsLikeCount = showsLikeCount
+        self.maxColumnCount = maxColumnCount
         self.trailing = trailing
     }
 
     var body: some View {
         let layoutWidth = resolvedLayoutWidth
-        let columnCount = VideoCardLayout.columnCount(for: layoutWidth)
+        let baseColumnCount = VideoCardLayout.columnCount(for: layoutWidth)
+        let columnCount = maxColumnCount.map { min($0, baseColumnCount) } ?? baseColumnCount
         let columnWidth = VideoCardLayout.columnWidth(for: layoutWidth, columnCount: columnCount)
-        let columns = VideoCardLayout.distribute(
-            videos,
-            columnCount: columnCount,
-            columnWidth: columnWidth,
-            largeTypography: largeTypography,
-            waterfallStyle: true
-        )
+        let metrics = VideoCardLayout.RowLayoutMetrics.feed(largeTypography: largeTypography)
+        let rows = VideoCardLayout.rowChunks(videos, columnCount: columnCount)
 
         VStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
-            HStack(alignment: .top, spacing: VideoCardLayout.gridSpacing) {
-                ForEach(0..<columnCount, id: \.self) { columnIndex in
-                    LazyVStack(spacing: VideoCardLayout.gridSpacing) {
-                        ForEach(columns[columnIndex]) { video in
-                            FeedVideoCard(
-                                video: video,
-                                largeTypography: largeTypography,
-                                waterfallStyle: true
-                            )
-                            .frame(width: columnWidth, alignment: .top)
-                            .onAppear { onVideoAppear?(video) }
-                        }
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                let titleAreaHeight = VideoCardLayout.rowTitleAreaHeight(
+                    titles: row.map(\.title),
+                    columnWidth: columnWidth,
+                    metrics: metrics
+                )
+                let cardHeight = VideoCardLayout.cardHeight(
+                    columnWidth: columnWidth,
+                    titleAreaHeight: titleAreaHeight,
+                    metrics: metrics
+                )
+
+                HStack(alignment: .top, spacing: VideoCardLayout.gridSpacing) {
+                    ForEach(row) { video in
+                        VideoCard(
+                            video: video,
+                            largeTypography: largeTypography,
+                            showsLikeCount: showsLikeCount,
+                            columnWidth: columnWidth,
+                            titleAreaHeight: titleAreaHeight
+                        )
+                        .frame(width: columnWidth, height: cardHeight, alignment: .top)
                     }
-                    .frame(width: columnWidth, alignment: .top)
                 }
             }
 
@@ -168,20 +348,6 @@ private struct FeedAvailableWidthPreferenceKey: PreferenceKey {
     }
 }
 
-private struct FeedVideoCard: View {
-    let video: BiliVideo
-    let largeTypography: Bool
-    var waterfallStyle = false
-
-    var body: some View {
-        VideoCard(
-            video: video,
-            largeTypography: largeTypography,
-            waterfallStyle: waterfallStyle
-        )
-    }
-}
-
 struct FollowingView: View {
     let videos: [BiliVideo]
     let loading: Bool
@@ -211,45 +377,19 @@ struct FollowingView: View {
                         emptyTitle: "暂无关注视频，先去关注几个 UP 主吧"
                     )
 
-                    VideoFeedGrid(
-                        videos: videos,
-                        largeTypography: true,
-                        onVideoAppear: { video in
-                            guard hasMore,
-                                  !loadingMore,
-                                  shouldPrefetchMore(afterAppearing: video, in: videos) else {
-                                return
-                            }
-                            onLoadMore()
-                        },
-                        trailing: {
-                            if hasMore {
-                                loadMoreFooter
-                            }
-                        }
-                    )
-                }
-            }
-        }
-    }
+                    VideoFeedGrid(videos: videos, largeTypography: true)
 
-    @ViewBuilder
-    private var loadMoreFooter: some View {
-        Group {
-            if loadingMore {
-                HStack(spacing: 10) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("正在加载更多")
-                        .foregroundStyle(.secondary)
+                    if hasMore, !videos.isEmpty {
+                        FeedLoadMoreFooter(
+                            anchorID: videos.count,
+                            hasMore: hasMore,
+                            loadingMore: loadingMore,
+                            onLoadMore: onLoadMore
+                        )
+                    }
                 }
-            } else {
-                Color.clear
-                    .frame(height: 1)
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
     }
 }
 
@@ -282,45 +422,19 @@ struct FavoritesView: View {
                         emptyTitle: "暂无收藏视频"
                     )
 
-                    VideoFeedGrid(
-                        videos: videos,
-                        largeTypography: true,
-                        onVideoAppear: { video in
-                            guard hasMore,
-                                  !loadingMore,
-                                  shouldPrefetchMore(afterAppearing: video, in: videos) else {
-                                return
-                            }
-                            onLoadMore()
-                        },
-                        trailing: {
-                            if hasMore {
-                                loadMoreFooter
-                            }
-                        }
-                    )
-                }
-            }
-        }
-    }
+                    VideoFeedGrid(videos: videos, largeTypography: true, showsLikeCount: false)
 
-    @ViewBuilder
-    private var loadMoreFooter: some View {
-        Group {
-            if loadingMore {
-                HStack(spacing: 10) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("正在加载更多")
-                        .foregroundStyle(.secondary)
+                    if hasMore, !videos.isEmpty {
+                        FeedLoadMoreFooter(
+                            anchorID: videos.count,
+                            hasMore: hasMore,
+                            loadingMore: loadingMore,
+                            onLoadMore: onLoadMore
+                        )
+                    }
                 }
-            } else {
-                Color.clear
-                    .frame(height: 1)
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
     }
 }
 
@@ -337,8 +451,6 @@ struct VideoGridView: View {
     var hasMore = false
     var onLoadMore: (() -> Void)? = nil
 
-    @State private var loadMoreTask: Task<Void, Never>?
-
     var body: some View {
         AppScrollView {
             LazyVStack(alignment: .leading, spacing: compactHeader ? 10 : 20) {
@@ -347,60 +459,19 @@ struct VideoGridView: View {
                 }
                 StateBanner(loading: loading, error: error, isEmpty: videos.isEmpty, emptyTitle: emptyTitle)
 
-                VideoFeedGrid(
-                    videos: videos,
-                    onVideoAppear: scheduleLoadMoreIfNeeded,
-                    trailing: {
-                        if hasMore {
-                            loadMoreFooter
-                        }
-                    }
-                )
-            }
-        }
-        .onDisappear {
-            loadMoreTask?.cancel()
-            loadMoreTask = nil
-        }
-    }
+                VideoFeedGrid(videos: videos)
 
-    private func scheduleLoadMoreIfNeeded(_ video: BiliVideo) {
-        guard hasMore,
-              !loadingMore,
-              shouldPrefetchMore(afterAppearing: video, in: videos) else {
-            return
-        }
-        loadMoreTask?.cancel()
-        loadMoreTask = Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard !Task.isCancelled else { return }
-            onLoadMore?()
-        }
-    }
-
-    @ViewBuilder
-    private var loadMoreFooter: some View {
-        Group {
-            if loadingMore {
-                HStack(spacing: 10) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("正在加载更多")
-                        .foregroundStyle(.secondary)
+                if hasMore, !videos.isEmpty {
+                    FeedLoadMoreFooter(
+                        anchorID: videos.count,
+                        hasMore: hasMore,
+                        loadingMore: loadingMore,
+                        onLoadMore: { onLoadMore?() }
+                    )
                 }
-            } else {
-                Color.clear
-                    .frame(height: 1)
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
     }
-}
-
-private func shouldPrefetchMore(afterAppearing video: BiliVideo, in videos: [BiliVideo]) -> Bool {
-    guard videos.count > 8 else { return false }
-    return videos.suffix(4).contains { $0.bvid == video.bvid }
 }
 
 struct LiveRoomGridView: View {
@@ -426,15 +497,51 @@ struct LiveRoomGridView: View {
     }
 }
 
+private enum HistoryCardLayout {
+    static let metrics = VideoCardLayout.RowLayoutMetrics.history
+
+    static func rowTitleAreaHeight(items: [BiliHistoryItem], columnWidth: CGFloat) -> CGFloat {
+        VideoCardLayout.rowTitleAreaHeight(
+            titles: items.map(\.video.title),
+            columnWidth: columnWidth,
+            metrics: metrics
+        )
+    }
+
+    static func cardHeight(columnWidth: CGFloat, titleAreaHeight: CGFloat) -> CGFloat {
+        VideoCardLayout.cardHeight(columnWidth: columnWidth, titleAreaHeight: titleAreaHeight, metrics: metrics)
+    }
+}
+
+private enum HistoryLayout {
+    static let maxColumnCount = 5
+    static let sectionLabelWidth: CGFloat = 88
+    static let sectionSpacing: CGFloat = 28
+}
+
+private struct HistorySection: Identifiable {
+    let id: String
+    let label: String
+    let items: [BiliHistoryItem]
+}
+
 struct HistoryView: View {
     let items: [BiliHistoryItem]
     let loading: Bool
+    let loadingMore: Bool
+    let hasMore: Bool
     let error: String?
     let loggedIn: Bool
+    let onLoadMore: () -> Void
+    let onDelete: (BiliHistoryItem) -> Void
+
+    private var sections: [HistorySection] {
+        buildHistorySections(from: items)
+    }
 
     var body: some View {
         AppScrollView {
-            LazyVStack(alignment: .leading, spacing: 20) {
+            LazyVStack(alignment: .leading, spacing: HistoryLayout.sectionSpacing) {
                 StateBanner(
                     loading: loading,
                     error: error,
@@ -442,11 +549,252 @@ struct HistoryView: View {
                     emptyTitle: loggedIn ? "暂无观看历史" : "登录后查看观看历史"
                 )
 
-                ForEach(items) { item in
-                    HistoryRow(item: item)
+                ForEach(sections) { section in
+                    HistoryDateSection(section: section, onDelete: onDelete)
+                }
+
+                if hasMore, !items.isEmpty {
+                    FeedLoadMoreFooter(
+                        anchorID: items.count,
+                        hasMore: hasMore,
+                        loadingMore: loadingMore,
+                        onLoadMore: onLoadMore
+                    )
                 }
             }
         }
+    }
+}
+
+private struct HistoryDateSection: View {
+    let section: HistorySection
+    let onDelete: (BiliHistoryItem) -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            Text(section.label)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: HistoryLayout.sectionLabelWidth, alignment: .leading)
+                .padding(.top, 4)
+
+            HistoryItemsGrid(items: section.items, onDelete: onDelete)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+private struct HistoryItemsGrid: View {
+    let items: [BiliHistoryItem]
+    let onDelete: (BiliHistoryItem) -> Void
+    @State private var availableWidth: CGFloat = 0
+
+    var body: some View {
+        let layoutWidth = resolvedLayoutWidth
+        let columnCount = min(HistoryLayout.maxColumnCount, VideoCardLayout.columnCount(for: layoutWidth))
+        let columnWidth = VideoCardLayout.columnWidth(for: layoutWidth, columnCount: columnCount)
+        let rows = VideoCardLayout.rowChunks(items, columnCount: columnCount)
+
+        VStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                let titleAreaHeight = HistoryCardLayout.rowTitleAreaHeight(items: row, columnWidth: columnWidth)
+                let cardHeight = HistoryCardLayout.cardHeight(columnWidth: columnWidth, titleAreaHeight: titleAreaHeight)
+
+                HStack(alignment: .top, spacing: VideoCardLayout.gridSpacing) {
+                    ForEach(row) { item in
+                        HistoryVideoCard(
+                            item: item,
+                            columnWidth: columnWidth,
+                            titleAreaHeight: titleAreaHeight,
+                            onDelete: { onDelete(item) }
+                        )
+                            .frame(width: columnWidth, height: cardHeight, alignment: .top)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            GeometryReader { geometry in
+                Color.clear
+                    .preference(key: FeedAvailableWidthPreferenceKey.self, value: geometry.size.width)
+            }
+        }
+        .onPreferenceChange(FeedAvailableWidthPreferenceKey.self) { width in
+            guard width > 0, abs(width - availableWidth) > 0.5 else { return }
+            availableWidth = width
+        }
+    }
+
+    private var resolvedLayoutWidth: CGFloat {
+        if availableWidth > 0 {
+            return availableWidth
+        }
+        return VideoCardLayout.minWidth * 2 + VideoCardLayout.gridSpacing
+    }
+}
+
+private struct HistoryVideoCard: View {
+    let item: BiliHistoryItem
+    let columnWidth: CGFloat
+    let titleAreaHeight: CGFloat
+    let onDelete: () -> Void
+    @State private var isCoverHovered = false
+
+    private var video: BiliVideo { item.video }
+
+    private var coverHeight: CGFloat {
+        VideoCardLayout.coverHeight(columnWidth: columnWidth)
+    }
+
+    private var metadataHeight: CGFloat {
+        HistoryCardLayout.metrics.metadataHeight(titleAreaHeight: titleAreaHeight)
+    }
+
+    private var durationBadgeText: String {
+        historyDurationBadgeText(
+            progressSeconds: item.progressSeconds,
+            durationSeconds: item.durationSeconds > 0 ? item.durationSeconds : video.duration
+        )
+    }
+
+    private var watchProgress: Double {
+        let duration = max(item.durationSeconds, video.duration)
+        guard duration > 0, item.progressSeconds > 0 else { return 0 }
+        return min(1, Double(item.progressSeconds) / Double(duration))
+    }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: VideoCardLayout.cornerRadius, style: .continuous)
+        VStack(alignment: .leading, spacing: 0) {
+            coverSection(shape: shape)
+                .frame(height: coverHeight)
+            metadataSection
+                .frame(height: metadataHeight)
+        }
+        .frame(height: coverHeight + metadataHeight)
+        .background {
+            ZStack {
+                shape.fill(Color.white)
+                shape.stroke(VideoCardLayout.cardBorderColor, lineWidth: 0.5)
+            }
+        }
+        .shadow(color: .black.opacity(isCoverHovered ? 0.07 : 0), radius: isCoverHovered ? 8 : 0, x: 0, y: isCoverHovered ? 4 : 0)
+        .zIndex(isCoverHovered ? 2 : 0)
+    }
+
+    private var coverHoverAnimation: Animation {
+        isCoverHovered ? VideoCardLayout.coverHoverAnimation : VideoCardLayout.coverHoverExitAnimation
+    }
+
+    private func coverSection(shape: RoundedRectangle) -> some View {
+        NavigationLink(value: VideoPlaybackRequest(video, progressSeconds: item.progressSeconds)) {
+            ZStack(alignment: .bottomTrailing) {
+                RemoteCover(
+                    url: video.coverURL,
+                    aspectRatio: VideoCardLayout.coverAspect,
+                    appliesCornerClip: false,
+                    allowsOverflow: true
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipShape(shape)
+                .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
+                .animation(coverHoverAnimation, value: isCoverHovered)
+
+                if watchProgress > 0.001, watchProgress < 0.999 {
+                    GeometryReader { geometry in
+                        VStack(spacing: 0) {
+                            Spacer()
+                            ZStack(alignment: .leading) {
+                                Rectangle()
+                                    .fill(Color.black.opacity(0.35))
+                                Rectangle()
+                                    .fill(Color(red: 0, green: 174 / 255, blue: 236 / 255))
+                                    .frame(width: geometry.size.width * watchProgress)
+                            }
+                            .frame(height: 3)
+                        }
+                    }
+                    .allowsHitTesting(false)
+                }
+
+                if !durationBadgeText.isEmpty {
+                    VideoCoverDurationBadge(text: durationBadgeText)
+                        .padding(8)
+                }
+            }
+            .contentShape(shape)
+        }
+        .buttonStyle(.plain)
+        .videoCoverHover(isHovered: $isCoverHovered)
+    }
+
+    private var metadataSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            FeedCardTitle(
+                title: video.title,
+                font: .title3.weight(.medium),
+                areaHeight: titleAreaHeight,
+                destination: VideoPlaybackRequest(video, progressSeconds: item.progressSeconds)
+            )
+
+            authorRow
+                .frame(height: HistoryCardLayout.metrics.authorRowHeight, alignment: .center)
+        }
+        .padding(HistoryCardLayout.metrics.metadataPadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var authorRow: some View {
+        HStack(spacing: 8) {
+            authorIdentity
+
+            Spacer(minLength: 4)
+
+            if let viewedAt = item.viewedAt {
+                Text(historyViewTimeText(from: viewedAt))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+
+            if !item.kid.isEmpty {
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .help("删除历史")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var authorIdentity: some View {
+        if video.authorMid > 0 {
+            NavigationLink(
+                value: UserProfileRequest(
+                    mid: video.authorMid,
+                    seedName: video.authorName,
+                    seedFaceURL: video.authorFaceURL
+                )
+            ) {
+                authorIdentityContent
+            }
+            .buttonStyle(.plain)
+        } else {
+            authorIdentityContent
+        }
+    }
+
+    private var authorIdentityContent: some View {
+        FeedCardAuthorLabel(
+            name: video.authorName,
+            font: .body,
+            avatarURL: video.authorFaceURL,
+            avatarSize: 26
+        )
     }
 }
 
@@ -569,11 +917,25 @@ struct StateBanner: View {
 struct VideoCard: View {
     let video: BiliVideo
     var largeTypography = false
-    var waterfallStyle = false
+    var showsLikeCount = true
+    let columnWidth: CGFloat
+    let titleAreaHeight: CGFloat
     @State private var isCoverHovered = false
 
+    private var metrics: VideoCardLayout.RowLayoutMetrics {
+        .feed(largeTypography: largeTypography)
+    }
+
+    private var coverHeight: CGFloat {
+        VideoCardLayout.coverHeight(columnWidth: columnWidth)
+    }
+
+    private var metadataHeight: CGFloat {
+        metrics.metadataHeight(titleAreaHeight: titleAreaHeight)
+    }
+
     private var titleFont: Font {
-        return largeTypography ? .title2.weight(.semibold) : .title3.weight(.medium)
+        largeTypography ? .title2.weight(.semibold) : .title3.weight(.medium)
     }
 
     private var authorFont: Font {
@@ -602,18 +964,16 @@ struct VideoCard: View {
 
     var body: some View {
         mosaicCard
-        .frame(
-            maxWidth: .infinity,
-            maxHeight: nil,
-            alignment: .top
-        )
+            .frame(height: coverHeight + metadataHeight)
     }
 
     private var mosaicCard: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         return VStack(alignment: .leading, spacing: 0) {
-            coverSection
+            coverSection(shape: shape)
+                .frame(height: coverHeight)
             metadataSection
+                .frame(height: metadataHeight)
         }
         .background {
             ZStack {
@@ -629,9 +989,8 @@ struct VideoCard: View {
         isCoverHovered ? VideoCardLayout.coverHoverAnimation : VideoCardLayout.coverHoverExitAnimation
     }
 
-    private var coverSection: some View {
-        let coverShape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        return NavigationLink(value: VideoPlaybackRequest(video)) {
+    private func coverSection(shape: RoundedRectangle) -> some View {
+        NavigationLink(value: VideoPlaybackRequest(video)) {
             ZStack(alignment: .bottomTrailing) {
                 RemoteCover(
                     url: video.coverURL,
@@ -639,8 +998,8 @@ struct VideoCard: View {
                     appliesCornerClip: false,
                     allowsOverflow: true
                 )
-                .frame(maxWidth: .infinity)
-                .clipShape(coverShape)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipShape(shape)
                 .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
                 .animation(coverHoverAnimation, value: isCoverHovered)
 
@@ -649,34 +1008,35 @@ struct VideoCard: View {
                         .padding(8)
                 }
             }
-            .contentShape(coverShape)
+            .contentShape(shape)
         }
         .buttonStyle(.plain)
         .videoCoverHover(isHovered: $isCoverHovered)
     }
 
     private var metadataSection: some View {
-        VStack(alignment: .leading, spacing: VideoCardLayout.metadataSpacing) {
-            NavigationLink(value: VideoPlaybackRequest(video)) {
-                VStack(alignment: .leading, spacing: VideoCardLayout.metadataSpacing) {
-                    Text(video.title)
-                        .font(titleFont)
-                        .foregroundStyle(.primary)
-                        .lineLimit(waterfallStyle ? nil : 2)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                        .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 0) {
+            FeedCardTitle(
+                title: video.title,
+                font: titleFont,
+                areaHeight: titleAreaHeight,
+                destination: VideoPlaybackRequest(video)
+            )
 
+            if metrics.includesStats {
+                NavigationLink(value: VideoPlaybackRequest(video)) {
                     statsRow
+                        .frame(height: metrics.statsHeight, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
             authorRow
+                .frame(height: metrics.authorRowHeight, alignment: .center)
+                .padding(.top, metrics.includesStats ? metrics.statsAuthorSpacing : 0)
         }
-        .padding(VideoCardLayout.metadataPadding)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(metrics.metadataPadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     @ViewBuilder
@@ -698,20 +1058,12 @@ struct VideoCard: View {
     }
 
     private var authorRowContent: some View {
-        HStack(spacing: 8) {
-            RemoteAvatar(
-                url: video.authorFaceURL,
-                size: avatarSize,
-                foreground: .secondary,
-                background: Color.secondary.opacity(0.11),
-                border: Color.black.opacity(0.05)
-            )
-
-            Text(video.authorName.ifEmpty("未知 UP 主"))
-                .font(authorFont)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        }
+        FeedCardAuthorLabel(
+            name: video.authorName,
+            font: authorFont,
+            avatarURL: video.authorFaceURL,
+            avatarSize: avatarSize
+        )
     }
 
     private var statsRow: some View {
@@ -728,67 +1080,83 @@ struct VideoCard: View {
                 iconSize: statIconSize,
                 font: statsFont
             )
-            BiliStatLabel(
-                icon: .like,
-                value: video.likeCount.compactCount,
-                iconSize: likeStatIconSize,
-                font: statsFont
-            )
+            if showsLikeCount {
+                BiliStatLabel(
+                    icon: .like,
+                    value: video.likeCount.compactCount,
+                    iconSize: likeStatIconSize,
+                    font: statsFont
+                )
+            }
         }
         .foregroundStyle(.secondary)
     }
 }
 
-struct HistoryRow: View {
-    let item: BiliHistoryItem
+private func buildHistorySections(from items: [BiliHistoryItem]) -> [HistorySection] {
+    var sections: [HistorySection] = []
+    var currentLabel: String?
+    var currentItems: [BiliHistoryItem] = []
 
-    var body: some View {
-        NavigationLink(value: VideoPlaybackRequest(item.video, progressSeconds: item.progressSeconds)) {
-            HStack(spacing: 14) {
-                ZStack(alignment: .bottomTrailing) {
-                    RemoteCover(url: item.video.coverURL, aspectRatio: 16.0 / 9.0)
-                        .frame(width: 156)
-                    if item.progressSeconds > 0,
-                       item.durationSeconds > 0,
-                       item.progressSeconds < item.durationSeconds {
-                        Text(historyProgressLabel(
-                            progressSeconds: item.progressSeconds,
-                            durationSeconds: item.durationSeconds
-                        ))
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-                        .padding(6)
-                    }
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(item.video.title)
-                        .font(.headline)
-                        .lineLimit(2)
-                    Text(item.video.authorName.ifEmpty("未知 UP 主"))
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    if let viewedAt = item.viewedAt {
-                        Text(viewedAt.formatted(date: .abbreviated, time: .shortened))
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .foregroundStyle(.tertiary)
+    for item in items {
+        let label = historySectionLabel(from: item.viewedAt)
+        if label != currentLabel {
+            if let currentLabel, !currentItems.isEmpty {
+                let anchor = currentItems.first?.viewedAt?.timeIntervalSince1970 ?? 0
+                sections.append(HistorySection(id: "\(currentLabel)-\(Int(anchor))", label: currentLabel, items: currentItems))
             }
-            .padding(12)
+            currentLabel = label
+            currentItems = [item]
+        } else {
+            currentItems.append(item)
         }
-        .buttonStyle(.plain)
-        .materialPanel()
     }
+
+    if let currentLabel, !currentItems.isEmpty {
+        let anchor = currentItems.first?.viewedAt?.timeIntervalSince1970 ?? 0
+        sections.append(HistorySection(id: "\(currentLabel)-\(Int(anchor))", label: currentLabel, items: currentItems))
+    }
+
+    return sections
 }
 
-private func historyProgressLabel(progressSeconds: Int, durationSeconds: Int) -> String {
-    "\(formatClockDuration(progressSeconds)) / \(formatClockDuration(durationSeconds))"
+private func historySectionLabel(from date: Date?) -> String {
+    guard let date else { return "更早" }
+    let calendar = Calendar.current
+    let today = calendar.startOfDay(for: Date())
+    let itemDay = calendar.startOfDay(for: date)
+    guard let yesterday = calendar.date(byAdding: .day, value: -1, to: today) else { return "更早" }
+
+    if itemDay == today { return "今天" }
+    if itemDay == yesterday { return "昨天" }
+
+    let year = calendar.component(.year, from: date)
+    let month = calendar.component(.month, from: date)
+    let day = calendar.component(.day, from: date)
+    let currentYear = calendar.component(.year, from: Date())
+
+    if year == currentYear {
+        return "\(month)月\(day)日"
+    }
+    return "\(year)年\(month)月\(day)日"
+}
+
+private func historyViewTimeText(from date: Date) -> String {
+    let calendar = Calendar.current
+    let year = calendar.component(.year, from: date)
+    let month = calendar.component(.month, from: date)
+    let day = calendar.component(.day, from: date)
+    let hour = calendar.component(.hour, from: date)
+    let minute = calendar.component(.minute, from: date)
+    return String(format: "%d年%d月%d日 %02d:%02d", year, month, day, hour, minute)
+}
+
+private func historyDurationBadgeText(progressSeconds: Int, durationSeconds: Int) -> String {
+    if progressSeconds > 0, durationSeconds > 0, progressSeconds < durationSeconds {
+        return "\(formatClockDuration(progressSeconds)) / \(formatClockDuration(durationSeconds))"
+    }
+    guard durationSeconds > 0 else { return "" }
+    return formatClockDuration(durationSeconds)
 }
 
 private func formatClockDuration(_ seconds: Int) -> String {

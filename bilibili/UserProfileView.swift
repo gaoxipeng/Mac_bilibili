@@ -19,8 +19,8 @@ final class UserProfileModel: ObservableObject {
     @Published var videoSort: BiliUserVideoSort = .latestPublish
     @Published var followLoading = false
 
+    @Published private(set) var videosHasMore = true
     private var videoPage = 1
-    private var videosHasMore = true
     private let api = BilibiliAPI()
 
     init(
@@ -97,10 +97,8 @@ final class UserProfileModel: ObservableObject {
         }
     }
 
-    func loadMoreVideosIfNeeded(currentVideo: BiliVideo) async {
+    func loadMoreVideos() async {
         guard videosHasMore, !videosLoadingMore, !videosLoading else { return }
-        guard let index = videos.firstIndex(where: { $0.id == currentVideo.id }) else { return }
-        guard index >= videos.count - 6 else { return }
 
         videosLoadingMore = true
         defer { videosLoadingMore = false }
@@ -114,8 +112,9 @@ final class UserProfileModel: ObservableObject {
                 credential: credential
             )
             var seen = Set(videos.map(\.id))
-            videos.append(contentsOf: page.videos.filter { seen.insert($0.id).inserted })
-            videosHasMore = page.hasMore
+            let newVideos = page.videos.filter { seen.insert($0.id).inserted }
+            videos.append(contentsOf: newVideos)
+            videosHasMore = page.hasMore && !newVideos.isEmpty
             videoPage = nextPage
         } catch {
             videosHasMore = false
@@ -145,6 +144,7 @@ final class UserProfileModel: ObservableObject {
 }
 
 struct UserProfileView: View {
+    @Environment(\.dismiss) private var dismiss
     @StateObject private var model: UserProfileModel
 
     private let coverHeight: CGFloat = 280
@@ -187,6 +187,7 @@ struct UserProfileView: View {
             }
         }
         .background(Color.white)
+        .navigationBarBackButtonHidden(true)
         .task { await model.load() }
         .onAppear {
             MediaPlaybackCoordinator.shared.notifyObscuringPageVisible()
@@ -198,14 +199,18 @@ struct UserProfileView: View {
 
     private var profileHeader: some View {
         VStack(spacing: 0) {
-            ZStack(alignment: .topTrailing) {
+            ZStack(alignment: .top) {
                 ProfileCoverCarousel(urls: model.displayCoverURLs, height: coverHeight)
 
-                if model.showFollowButton {
-                    followButton
-                        .padding(.top, AppLayout.floatingChromeReservedHeight + 10)
-                        .padding(.trailing, 22)
+                HStack {
+                    GlassBackButton { dismiss() }
+                    Spacer()
+                    if model.showFollowButton {
+                        followButton
+                    }
                 }
+                .padding(.top, AppLayout.floatingChromeReservedHeight + 10)
+                .padding(.horizontal, AppLayout.floatingChromeInset)
             }
 
             profileIdentitySection
@@ -392,23 +397,20 @@ struct UserProfileView: View {
                 ContentUnavailableView("暂无投稿", systemImage: "video.slash")
                     .padding(.vertical, 40)
             } else {
-                VideoFeedGrid(
-                    videos: model.videos,
-                    onVideoAppear: { video in
-                        Task { await model.loadMoreVideosIfNeeded(currentVideo: video) }
-                    },
-                    trailing: {
-                        if model.videosLoadingMore {
-                            HStack {
-                                Spacer()
-                                ProgressView()
-                                    .controlSize(.small)
-                                    .padding(.vertical, 16)
-                                Spacer()
+                VStack(alignment: .leading, spacing: 0) {
+                    VideoFeedGrid(videos: model.videos)
+
+                    if model.videosHasMore {
+                        FeedLoadMoreFooter(
+                            anchorID: model.videos.count,
+                            hasMore: model.videosHasMore,
+                            loadingMore: model.videosLoadingMore,
+                            onLoadMore: {
+                                Task { await model.loadMoreVideos() }
                             }
-                        }
+                        )
                     }
-                )
+                }
             }
         }
     }

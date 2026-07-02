@@ -322,41 +322,73 @@ enum JSONParser {
         return BiliUserVideoPage(videos: videos, hasMore: videos.count >= 30)
     }
 
-    nonisolated static func parseHistory(from object: Any) -> [BiliHistoryItem] {
+    nonisolated static func parseHistoryPage(from object: Any) -> BiliHistoryPage {
         let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
         let list = (data["list"] as? [[String: Any]]) ?? findFirstArray(in: data)
-        return list.compactMap { item in
-            let history = item["history"] as? [String: Any]
-            let bvid = string(item, "bvid").ifEmpty(history.map { string($0, "bvid") } ?? "")
-            guard !bvid.isEmpty else { return nil }
-            let historyCid = history.map { int64($0, "cid") } ?? 0
-            let video = BiliVideo(
-                id: bvid,
-                bvid: bvid,
-                aid: int64(item, "aid").ifZero(history.map { int64($0, "oid", "aid") } ?? 0),
-                title: string(item, "title").htmlStripped,
-                coverURL: normalizedURL(string(item, "cover", "pic")),
-                authorName: string(item, "author_name", "name"),
-                authorFaceURL: nil,
-                authorMid: int64(item, "author_mid", "mid"),
-                viewCount: int64(item, "view"),
-                danmakuCount: int64(item, "danmaku"),
-                likeCount: 0,
-                duration: duration(from: item),
-                description: string(item, "desc"),
-                cid: int64(item, "cid").ifZero(historyCid)
-            )
-            let viewedAtSeconds = int64(item, "view_at")
-            let progressSeconds = max(0, Int(int64(item, "progress")))
-            let durationSeconds = max(0, duration(from: item))
-            return BiliHistoryItem(
-                id: "\(bvid)-\(viewedAtSeconds)",
-                video: video,
-                viewedAt: viewedAtSeconds > 0 ? Date(timeIntervalSince1970: TimeInterval(viewedAtSeconds)) : nil,
-                progressSeconds: progressSeconds,
-                durationSeconds: durationSeconds
+        let items = list.compactMap(parseHistoryItem)
+        let cursorData = data["cursor"] as? [String: Any]
+        let cursor = cursorData.map { cursorDict in
+            BiliHistoryCursor(
+                max: int64(cursorDict, "max"),
+                viewAt: int64(cursorDict, "view_at"),
+                business: string(cursorDict, "business"),
+                ps: Int(int64(cursorDict, "ps"))
             )
         }
+        return BiliHistoryPage(items: items, cursor: cursor)
+    }
+
+    nonisolated static func parseHistory(from object: Any) -> [BiliHistoryItem] {
+        parseHistoryPage(from: object).items
+    }
+
+    nonisolated private static func parseHistoryItem(_ item: [String: Any]) -> BiliHistoryItem? {
+        let history = item["history"] as? [String: Any]
+        if let history, string(history, "business") != "archive", !string(history, "business").isEmpty {
+            return nil
+        }
+        let bvid = string(item, "bvid").ifEmpty(history.map { string($0, "bvid") } ?? "")
+        guard !bvid.isEmpty else { return nil }
+        let historyCid = history.map { int64($0, "cid") } ?? 0
+        let author = item["author"] as? [String: Any]
+            ?? item["owner"] as? [String: Any]
+            ?? item["upper"] as? [String: Any]
+        let authorFaceRaw = string(item, "author_face", "author_icon")
+            .ifEmpty(author.map { string($0, "face", "avatar") } ?? "")
+        let authorName = string(item, "author_name", "name")
+            .ifEmpty(author.map { string($0, "name", "uname") } ?? "")
+        let authorMid = int64(item, "author_mid", "mid")
+            .ifZero(author.map { int64($0, "mid") } ?? 0)
+        let coverRaw = string(item, "cover", "pic")
+            .ifEmpty((item["covers"] as? [String])?.first ?? "")
+        let video = BiliVideo(
+            id: bvid,
+            bvid: bvid,
+            aid: int64(item, "aid").ifZero(history.map { int64($0, "oid", "aid") } ?? 0),
+            title: string(item, "title", "show_title").htmlStripped,
+            coverURL: normalizedURL(coverRaw),
+            authorName: authorName,
+            authorFaceURL: normalizedURL(authorFaceRaw),
+            authorMid: authorMid,
+            viewCount: int64(item, "view"),
+            danmakuCount: int64(item, "danmaku"),
+            likeCount: 0,
+            duration: duration(from: item),
+            description: string(item, "desc"),
+            cid: int64(item, "cid").ifZero(historyCid)
+        )
+        let viewedAtSeconds = int64(item, "view_at")
+        let progressSeconds = max(0, Int(int64(item, "progress")))
+        let durationSeconds = max(0, duration(from: item))
+        let aid = video.aid
+        return BiliHistoryItem(
+            id: "\(bvid)-\(viewedAtSeconds)",
+            kid: aid > 0 ? "archive_\(aid)" : "",
+            video: video,
+            viewedAt: viewedAtSeconds > 0 ? Date(timeIntervalSince1970: TimeInterval(viewedAtSeconds)) : nil,
+            progressSeconds: progressSeconds,
+            durationSeconds: durationSeconds
+        )
     }
 
     nonisolated static func parseVideoDetail(from object: Any) -> BiliVideoDetail? {
@@ -542,7 +574,7 @@ enum JSONParser {
             authorMid: int64(upper, "mid"),
             viewCount: int64(cntInfo, "play"),
             danmakuCount: int64(cntInfo, "danmaku"),
-            likeCount: 0,
+            likeCount: int64(cntInfo, "thumb_up", "like"),
             duration: Int(int64(item, "duration")),
             description: "",
             cid: 0
@@ -795,6 +827,7 @@ enum JSONParser {
         guard !bvid.isEmpty else { return nil }
 
         let stat = archive["stat"] as? [String: Any] ?? [:]
+        let like = (modules["module_stat"] as? [String: Any])?["like"] as? [String: Any] ?? [:]
         let aid = int64(archive, "aid")
 
         return BiliVideo(
@@ -808,7 +841,7 @@ enum JSONParser {
             authorMid: author.map { int64($0, "mid") } ?? 0,
             viewCount: looseCount(string(stat, "play")),
             danmakuCount: looseCount(string(stat, "danmaku")),
-            likeCount: 0,
+            likeCount: int64(like, "count"),
             duration: parseDurationText(string(archive, "duration_text")),
             description: string(archive, "desc"),
             cid: 0

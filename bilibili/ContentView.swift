@@ -282,6 +282,10 @@ private struct DetailFloatingChrome: View {
         canExitSearchResults || canGoBack
     }
 
+    private var showsDefaultChrome: Bool {
+        detailChrome == nil && profileChrome == nil && relationChrome == nil
+    }
+
     private var showsActiveChrome: Bool {
         detailChrome != nil || profileChrome != nil || relationChrome != nil
     }
@@ -303,7 +307,7 @@ private struct DetailFloatingChrome: View {
             when: reportsFloatingChromeHeight
         )
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .allowsHitTesting(showsActiveChrome || showsFloatingBackButton)
+        .allowsHitTesting(showsActiveChrome || showsDefaultChrome)
         .animation(.easeOut(duration: 0.26), value: showsFloatingBackButton)
         .animation(.easeOut(duration: 0.26), value: canGoBack)
         .animation(.easeOut(duration: 0.26), value: detailChrome?.title)
@@ -343,24 +347,28 @@ private struct DetailFloatingChrome: View {
 
     @ViewBuilder
     private func profileChromeRow(_ profileChrome: UserProfileChromeInfo) -> some View {
-        UserProfileChromeHeaderView(
-            info: profileChrome,
-            showsBackButton: showsFloatingBackButton,
-            onBack: {
-                if canGoBack {
-                    if !navigationPath.isEmpty {
-                        navigationPath.removeLast()
+        HStack(alignment: .top, spacing: 12) {
+            UserProfileChromeHeaderView(
+                info: profileChrome,
+                showsBackButton: showsFloatingBackButton,
+                onBack: {
+                    if canGoBack {
+                        if !navigationPath.isEmpty {
+                            navigationPath.removeLast()
+                        }
+                    } else {
+                        onExitSearchResults()
                     }
-                } else {
-                    onExitSearchResults()
-                }
-            },
-            onFollow: { model.profilePageHandlers?.follow() },
-            onUnfollow: { model.profilePageHandlers?.unfollow() },
-            onFollowingTap: { model.profilePageHandlers?.openRelationList(.following) },
-            onFollowersTap: { model.profilePageHandlers?.openRelationList(.followers) }
-        )
-        .frame(maxWidth: .infinity, alignment: .leading)
+                },
+                onFollow: { model.profilePageHandlers?.follow() },
+                onUnfollow: { model.profilePageHandlers?.unfollow() },
+                onFollowingTap: { model.profilePageHandlers?.openRelationList(.following) },
+                onFollowersTap: { model.profilePageHandlers?.openRelationList(.followers) }
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            floatingRefreshButton
+        }
     }
 
     @ViewBuilder
@@ -401,17 +409,34 @@ private struct DetailFloatingChrome: View {
             if showsFloatingBackButton {
                 profileBackButton
             } else {
-                Spacer()
+                Spacer(minLength: 0)
             }
 
-            if !showsFloatingBackButton {
-                GlassRefreshButton {
-                    Task { await model.reloadSelected() }
-                }
-                .disabled(model.isSectionLoading(model.selectedSection))
-                .opacity(model.isSectionLoading(model.selectedSection) ? 0.45 : 1)
-            }
+            floatingRefreshButton
         }
+    }
+
+    private var floatingRefreshButton: some View {
+        GlassRefreshButton {
+            performRefresh()
+        }
+        .disabled(isRefreshDisabled)
+        .opacity(isRefreshDisabled ? 0.45 : 1)
+    }
+
+    private var isRefreshDisabled: Bool {
+        if model.profilePageHandlers != nil {
+            return false
+        }
+        return model.isSectionLoading(model.selectedSection)
+    }
+
+    private func performRefresh() {
+        if let reload = model.profilePageHandlers?.reload {
+            reload()
+            return
+        }
+        Task { await model.reloadSelected() }
     }
 
     @ViewBuilder

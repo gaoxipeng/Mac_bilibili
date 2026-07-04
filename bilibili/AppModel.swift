@@ -26,6 +26,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var pendingSearchQuery: String?
     @Published var isSearchShowingResults = false
     @Published private(set) var exitSearchResultsRequest = 0
+    @Published private(set) var searchRefreshRequest = 0
 
     var profilePageHandlers: ProfilePageHandlers?
     @Published var pendingUserRelationListRequest: UserRelationListRequest?
@@ -238,7 +239,8 @@ final class AppModel: ObservableObject {
         do {
             switch section {
             case .search:
-                break
+                searchRefreshRequest += 1
+                return
             case .home:
                 homeFreshIdx = 1
                 homeFetchRow = 1
@@ -605,4 +607,5 @@ struct ProfilePageHandlers {
     let follow: () -> Void
     let unfollow: () -> Void
     let openRelationList: (BiliUserRelationTab) -> Void
+    let reload: () -> Void
 }

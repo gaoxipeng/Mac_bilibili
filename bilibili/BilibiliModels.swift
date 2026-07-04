@@ -61,20 +61,6 @@ nonisolated struct BiliVideo: Identifiable, Hashable, Sendable {
     }
 }
 
-struct BiliLiveRoom: Identifiable, Hashable, Sendable {
-    let id: Int64
-    let title: String
-    let coverURL: URL?
-    let userName: String
-    let userFaceURL: URL?
-    let online: Int64
-    let areaName: String
-
-    var webURL: URL? {
-        URL(string: "https://live.bilibili.com/\(id)")
-    }
-}
-
 struct BiliHotSearchItem: Identifiable, Hashable, Sendable {
     let keyword: String
     let showName: String
@@ -326,17 +312,6 @@ struct BiliRelationUser: Identifiable, Hashable, Sendable {
     let ipLocation: String?
 
     var id: Int64 { mid }
-
-    var searchDisplay: BiliSearchUser {
-        BiliSearchUser(
-            mid: mid,
-            name: name,
-            faceURL: faceURL,
-            sign: sign,
-            fans: fanCount,
-            level: 0
-        )
-    }
 }
 
 struct BiliRelationUserPage: Sendable {

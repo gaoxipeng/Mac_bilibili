@@ -97,6 +97,11 @@ enum VideoCardLayout {
     }
 
     static func titleLineCount(for title: String, columnWidth: CGFloat, metrics: RowLayoutMetrics) -> Int {
+        let cacheKey = titleMeasureCacheKey(title: title, columnWidth: columnWidth, metrics: metrics)
+        if let cached = VideoTitleLayoutCache.shared.lineCount(for: cacheKey) {
+            return cached
+        }
+
         let font = titleNSFont(for: metrics)
         let textWidth = titleMeasureWidth(columnWidth: columnWidth, metrics: metrics)
         guard !title.isEmpty else { return 1 }
@@ -120,7 +125,9 @@ enum VideoCardLayout {
             lineCount += 1
             glyphIndex = NSMaxRange(lineRange)
         }
-        return max(lineCount, 1)
+        let result = max(lineCount, 1)
+        VideoTitleLayoutCache.shared.setLineCount(result, for: cacheKey)
+        return result
     }
 
     static func titleAreaHeight(
@@ -155,9 +162,35 @@ enum VideoCardLayout {
         coverHeight(columnWidth: columnWidth) + metrics.metadataHeight(titleAreaHeight: titleAreaHeight)
     }
 
-    static let gridColumns = [
-        GridItem(.adaptive(minimum: minWidth), spacing: gridSpacing, alignment: .top)
-    ]
+    private static func titleMeasureCacheKey(
+        title: String,
+        columnWidth: CGFloat,
+        metrics: RowLayoutMetrics
+    ) -> String {
+        let widthBucket = Int(titleMeasureWidth(columnWidth: columnWidth, metrics: metrics).rounded(.toNearestOrAwayFromZero))
+        let typography = metrics.usesLargeTitleFont ? "large" : "regular"
+        let stats = metrics.includesStats ? "stats" : "nostats"
+        let author = Int(metrics.authorRowHeight.rounded(.toNearestOrAwayFromZero))
+        return "\(typography)#\(stats)#\(author)#\(widthBucket)#\(title)"
+    }
+}
+
+private final class VideoTitleLayoutCache: @unchecked Sendable {
+    static let shared = VideoTitleLayoutCache()
+
+    private let cache: NSCache<NSString, NSNumber> = {
+        let cache = NSCache<NSString, NSNumber>()
+        cache.countLimit = 2400
+        return cache
+    }()
+
+    func lineCount(for key: String) -> Int? {
+        cache.object(forKey: key as NSString)?.intValue
+    }
+
+    func setLineCount(_ lineCount: Int, for key: String) {
+        cache.setObject(NSNumber(value: lineCount), forKey: key as NSString)
+    }
 }
 
 private enum FeedCardHoverStyle {
@@ -473,29 +506,6 @@ struct VideoGridView: View {
                         loadingMore: loadingMore,
                         onLoadMore: { onLoadMore?() }
                     )
-                }
-            }
-        }
-    }
-}
-
-struct LiveRoomGridView: View {
-    let rooms: [BiliLiveRoom]
-    let loading: Bool
-    let error: String?
-
-    private let columns = VideoCardLayout.gridColumns
-
-    var body: some View {
-        AppScrollView {
-            LazyVStack(alignment: .leading, spacing: 20) {
-                PageHeader(title: "直播", subtitle: "热门直播间")
-                StateBanner(loading: loading, error: error, isEmpty: rooms.isEmpty, emptyTitle: "暂时没有直播内容")
-
-                LazyVGrid(columns: columns, alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
-                    ForEach(rooms) { room in
-                        LiveRoomCard(room: room)
-                    }
                 }
             }
         }
@@ -986,7 +996,6 @@ private struct HistoryVideoCard: View {
     let columnWidth: CGFloat
     let titleAreaHeight: CGFloat
     let onDelete: () -> Void
-    @State private var isCardHovered = false
     @State private var isCoverHovered = false
     @State private var isDeleteHovered = false
 
@@ -1050,9 +1059,8 @@ private struct HistoryVideoCard: View {
                 shape.stroke(VideoCardLayout.cardBorderColor, lineWidth: 0.5)
             }
         }
-        .shadow(color: .black.opacity(isCardHovered ? 0.07 : 0), radius: isCardHovered ? 8 : 0, x: 0, y: isCardHovered ? 4 : 0)
-        .zIndex(isCardHovered ? 2 : 0)
-        .videoCoverHover(isHovered: $isCardHovered)
+        .shadow(color: .black.opacity(isCoverHovered ? 0.055 : 0), radius: isCoverHovered ? 6 : 0, x: 0, y: isCoverHovered ? 3 : 0)
+        .zIndex(isCoverHovered ? 2 : 0)
     }
 
     private var coverHoverAnimation: Animation {
@@ -1283,7 +1291,6 @@ struct VideoCard: View {
     var showsAuthor = true
     let columnWidth: CGFloat
     let titleAreaHeight: CGFloat
-    @State private var isCardHovered = false
     @State private var isCoverHovered = false
 
     private var metrics: VideoCardLayout.RowLayoutMetrics {
@@ -1345,9 +1352,8 @@ struct VideoCard: View {
                 shape.stroke(VideoCardLayout.cardBorderColor, lineWidth: 0.5)
             }
         }
-        .shadow(color: .black.opacity(isCardHovered ? 0.07 : 0), radius: isCardHovered ? 8 : 0, x: 0, y: isCardHovered ? 4 : 0)
-        .zIndex(isCardHovered ? 2 : 0)
-        .videoCoverHover(isHovered: $isCardHovered)
+        .shadow(color: .black.opacity(isCoverHovered ? 0.055 : 0), radius: isCoverHovered ? 6 : 0, x: 0, y: isCoverHovered ? 3 : 0)
+        .zIndex(isCoverHovered ? 2 : 0)
     }
 
     private var coverHoverAnimation: Animation {
@@ -1542,69 +1548,6 @@ private func formatClockDuration(_ seconds: Int) -> String {
     return String(format: "%d:%02d", minutes, remaining)
 }
 
-struct ProfileCard: View {
-    let account: BiliAccount
-    let profile: BiliUserProfile?
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 18) {
-            RemoteAvatar(
-                url: profile?.faceURL ?? account.faceURL,
-                size: 86,
-                foreground: .secondary,
-                background: Color.secondary.opacity(0.14),
-                border: Color.black.opacity(0.06)
-            )
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 8) {
-                    Text(profile?.name ?? account.name)
-                        .font(.title.weight(.bold))
-                    if let level = profile?.level, level > 0 {
-                        Text("Lv.\(level)")
-                            .font(.caption.weight(.bold))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(.pink.opacity(0.14), in: Capsule())
-                            .foregroundStyle(.pink)
-                    }
-                }
-
-                Text(profile?.sign.isEmpty == false ? profile?.sign ?? "" : "这个人还没有写签名")
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-
-                HStack(spacing: 20) {
-                    ProfileMetric(title: "关注", value: profile?.following.compactCount ?? "-")
-                    ProfileMetric(title: "粉丝", value: profile?.follower.compactCount ?? "-")
-                    ProfileMetric(title: "获赞", value: profile?.likes.compactCount ?? "-")
-                    ProfileMetric(title: "硬币", value: profile?.coinCount.compactCount ?? "-")
-                    ProfileMetric(title: "B币", value: profile.map { String(format: "%.1f", $0.bcoinBalance) } ?? "-")
-                }
-                .padding(.top, 4)
-            }
-            Spacer()
-        }
-        .padding(20)
-        .materialPanel()
-    }
-}
-
-struct ProfileMetric: View {
-    let title: String
-    let value: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(value)
-                .font(.headline.monospacedDigit())
-            Text(title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
 struct LoginCard: View {
     let onLogin: () -> Void
 
@@ -1629,54 +1572,6 @@ struct LoginCard: View {
             .controlSize(.large)
         }
         .padding(20)
-        .materialPanel()
-    }
-}
-
-struct AccountActionGrid: View {
-    let loggedIn: Bool
-    let onFollowing: () -> Void
-    let onHistory: () -> Void
-    let onHome: () -> Void
-    let onLogout: () -> Void
-
-    var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 210), spacing: 14)], spacing: 14) {
-            ActionCard(title: "首页推荐", subtitle: "刷新推荐流", symbol: "house", action: onHome)
-            ActionCard(title: "关注", subtitle: loggedIn ? "查看关注更新" : "需要登录", symbol: "person.2", action: onFollowing)
-            ActionCard(title: "历史", subtitle: loggedIn ? "查看观看记录" : "需要登录", symbol: "clock.arrow.circlepath", action: onHistory)
-            if loggedIn {
-                ActionCard(title: "退出登录", subtitle: "清除本地账号", symbol: "rectangle.portrait.and.arrow.right", action: onLogout)
-            }
-        }
-    }
-}
-
-struct ActionCard: View {
-    let title: String
-    let subtitle: String
-    let symbol: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 12) {
-                Image(systemName: symbol)
-                    .font(.title3.weight(.semibold))
-                    .frame(width: 32, height: 32)
-                    .foregroundStyle(.pink)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .font(.headline)
-                    Text(subtitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-            }
-            .padding(16)
-        }
-        .buttonStyle(.plain)
         .materialPanel()
     }
 }
@@ -1732,53 +1627,6 @@ struct WebLoginSheet: View {
         .padding(.horizontal, 22)
         .padding(.vertical, 18)
         .background(.ultraThinMaterial)
-    }
-}
-
-struct LiveRoomCard: View {
-    let room: BiliLiveRoom
-    @Environment(\.openURL) private var openURL
-
-    var body: some View {
-        Button {
-            if let url = room.webURL {
-                openURL(url)
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: 12) {
-                RemoteCover(url: room.coverURL, aspectRatio: 16.0 / 9.0)
-                    .overlay(alignment: .topLeading) {
-                        Text("LIVE")
-                            .font(.caption2.weight(.black))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 4)
-                            .background(.pink, in: Capsule())
-                            .foregroundStyle(.white)
-                            .padding(8)
-                    }
-
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(room.title)
-                        .font(.headline)
-                        .lineLimit(2)
-                    Text(room.userName.ifEmpty("主播"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    HStack(spacing: 12) {
-                        MetricLabel(systemImage: "person.2", value: room.online.compactCount)
-                        if !room.areaName.isEmpty {
-                            MetricLabel(systemImage: "tag", value: room.areaName)
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-                .padding([.horizontal, .bottom], 14)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .buttonStyle(.plain)
-        .materialPanel()
     }
 }
 
@@ -1939,66 +1787,5 @@ private struct RemoteCoverOverflowClip: ViewModifier {
         } else {
             content
         }
-    }
-}
-
-struct MetricLabel: View {
-    let systemImage: String
-    let value: String
-
-    var body: some View {
-        Label(value, systemImage: systemImage)
-            .labelStyle(.titleAndIcon)
-    }
-}
-
-struct FlowLayout: Layout {
-    var spacing: CGFloat = 8
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        arrange(proposal: proposal, subviews: subviews).size
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        for item in arrange(proposal: ProposedViewSize(width: bounds.width, height: bounds.height), subviews: subviews).items {
-            subviews[item.index].place(
-                at: CGPoint(x: bounds.minX + item.frame.minX, y: bounds.minY + item.frame.minY),
-                proposal: ProposedViewSize(width: item.frame.width, height: item.frame.height)
-            )
-        }
-    }
-
-    private func arrange(proposal: ProposedViewSize, subviews: Subviews) -> (items: [(index: Int, frame: CGRect)], size: CGSize) {
-        let maxWidth = max(proposal.width ?? 600, 1)
-        var items: [(Int, CGRect)] = []
-        var x: CGFloat = 0
-        var y: CGFloat = 0
-        var rowHeight: CGFloat = 0
-
-        for index in subviews.indices {
-            var lineWidth = max(maxWidth - x, 1)
-            var size = subviews[index].sizeThatFits(ProposedViewSize(width: lineWidth, height: nil))
-
-            if x > 0, size.width > lineWidth + 0.5 {
-                x = 0
-                y += rowHeight + spacing
-                rowHeight = 0
-                lineWidth = maxWidth
-                size = subviews[index].sizeThatFits(ProposedViewSize(width: lineWidth, height: nil))
-            }
-
-            let placedWidth = min(size.width, lineWidth)
-            items.append((index, CGRect(x: x, y: y, width: placedWidth, height: size.height)))
-            x += placedWidth + spacing
-            rowHeight = max(rowHeight, size.height)
-
-            if x >= maxWidth {
-                x = 0
-                y += rowHeight + spacing
-                rowHeight = 0
-            }
-        }
-
-        return (items, CGSize(width: maxWidth, height: y + rowHeight))
     }
 }

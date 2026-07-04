@@ -278,14 +278,6 @@ struct UserProfileChromeMeasuredHeightKey: PreferenceKey {
     }
 }
 
-struct UserProfileChromePreferenceKey: PreferenceKey {
-    static var defaultValue: UserProfileChromeInfo?
-
-    static func reduce(value: inout UserProfileChromeInfo?, nextValue: () -> UserProfileChromeInfo?) {
-        value = nextValue()
-    }
-}
-
 private enum ProfileChromeCapsuleMetrics {
     static let height: CGFloat = 48
     static let horizontalPadding: CGFloat = 14
@@ -717,7 +709,8 @@ struct UserProfileView: View {
                             initialTab: tab
                         )
                     )
-                }
+                },
+                reload: { Task { await model.load() } }
             )
             MediaPlaybackCoordinator.shared.notifyObscuringPageVisible()
         }

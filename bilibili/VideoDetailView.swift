@@ -981,14 +981,6 @@ struct VideoDetailChromeInfo: Equatable {
     }
 }
 
-struct VideoDetailChromePreferenceKey: PreferenceKey {
-    static var defaultValue: VideoDetailChromeInfo?
-
-    static func reduce(value: inout VideoDetailChromeInfo?, nextValue: () -> VideoDetailChromeInfo?) {
-        value = nextValue()
-    }
-}
-
 struct VideoDetailChromeHeaderView: View {
     let info: VideoDetailChromeInfo
 

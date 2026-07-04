@@ -1,7 +1,6 @@
 import AppKit
 import Foundation
 import QuartzCore
-import SwiftUI
 
 private let fixedDanmakuDurationMs: Int64 = 4_000
 private let scrollBaseDurationMs: Int64 = 7_200
@@ -18,15 +17,6 @@ func danmakuScrollDurationMs(item: BiliDanmakuItem, speedMultiplier: Float) -> I
     let base = scrollBaseDurationMs + Int64(item.content.count) * scrollPerCharDurationMs
     let clamped = min(14_000, max(5_000, base))
     return Int64(Float(clamped) * max(0.1, speedMultiplier))
-}
-
-func danmakuColor(_ argb: Int) -> Color {
-    let value = argb & 0xFFFFFF
-    return Color(
-        red: Double((value >> 16) & 0xFF) / 255,
-        green: Double((value >> 8) & 0xFF) / 255,
-        blue: Double(value & 0xFF) / 255
-    )
 }
 
 func danmakuFontSize(

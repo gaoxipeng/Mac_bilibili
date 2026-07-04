@@ -96,6 +96,17 @@ final class SearchViewModel: ObservableObject {
         errorMessage = nil
     }
 
+    func reload() async {
+        if let activeQuery {
+            performSearch(activeQuery)
+            return
+        }
+
+        hotWords = []
+        errorMessage = nil
+        await loadDiscoveryIfNeeded()
+    }
+
     func handleInputChange(_ text: String) {
         let term = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if let activeQuery, activeQuery != term {
@@ -498,6 +509,9 @@ struct SearchDashboard: View {
         }
         .onChange(of: model.exitSearchResultsRequest) { _, _ in
             exitSearchResultsView()
+        }
+        .onChange(of: model.searchRefreshRequest) { _, _ in
+            Task { await searchModel.reload() }
         }
         .onDisappear {
             model.isSearchShowingResults = false
@@ -1743,7 +1757,6 @@ private struct SearchBangumiCard: View {
     let bangumi: BiliSearchBangumi
     let columnWidth: CGFloat
     let titleAreaHeight: CGFloat
-    @State private var isCardHovered = false
     @State private var isCoverHovered = false
 
     private var metrics: VideoCardLayout.RowLayoutMetrics {
@@ -1776,9 +1789,8 @@ private struct SearchBangumiCard: View {
                 shape.stroke(VideoCardLayout.cardBorderColor, lineWidth: 0.5)
             }
         }
-        .shadow(color: .black.opacity(isCardHovered ? 0.07 : 0), radius: isCardHovered ? 8 : 0, x: 0, y: isCardHovered ? 4 : 0)
-        .zIndex(isCardHovered ? 2 : 0)
-        .videoCoverHover(isHovered: $isCardHovered)
+        .shadow(color: .black.opacity(isCoverHovered ? 0.055 : 0), radius: isCoverHovered ? 6 : 0, x: 0, y: isCoverHovered ? 3 : 0)
+        .zIndex(isCoverHovered ? 2 : 0)
     }
 
     private var coverHoverAnimation: Animation {

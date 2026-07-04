@@ -47,71 +47,6 @@ enum BiliCommentSegmentBuilder {
 
         return segments
     }
-
-    /// Groups segments so reply prefixes like `回复 @user:` stay on one line.
-    static func layoutUnits(from segments: [BiliCommentSegment]) -> [[BiliCommentSegment]] {
-        var units: [[BiliCommentSegment]] = []
-        var index = 0
-
-        while index < segments.count {
-            if let replyUnit = takeReplyPrefixUnit(from: segments, at: index) {
-                units.append(replyUnit.segments)
-                index = replyUnit.nextIndex
-                continue
-            }
-            if let mentionUnit = takeMentionColonUnit(from: segments, at: index) {
-                units.append(mentionUnit.segments)
-                index = mentionUnit.nextIndex
-                continue
-            }
-            units.append([segments[index]])
-            index += 1
-        }
-
-        return units
-    }
-
-    private static func takeReplyPrefixUnit(
-        from segments: [BiliCommentSegment],
-        at index: Int
-    ) -> (segments: [BiliCommentSegment], nextIndex: Int)? {
-        guard index + 2 < segments.count,
-              case .text(let prefix) = segments[index],
-              prefix == "回复 ",
-              case .mention(let mention) = segments[index + 1],
-              case .text(let tail) = segments[index + 2],
-              let first = tail.first,
-              first == ":" || first == "："
-        else { return nil }
-
-        let colon = String(first)
-        let rest = String(tail.dropFirst())
-        var unit: [BiliCommentSegment] = [.text(prefix), .mention(mention), .text(colon)]
-        if !rest.isEmpty {
-            unit.append(.text(rest))
-        }
-        return (unit, index + 3)
-    }
-
-    private static func takeMentionColonUnit(
-        from segments: [BiliCommentSegment],
-        at index: Int
-    ) -> (segments: [BiliCommentSegment], nextIndex: Int)? {
-        guard index + 1 < segments.count,
-              case .mention(let mention) = segments[index],
-              case .text(let tail) = segments[index + 1],
-              let first = tail.first,
-              first == ":" || first == "："
-        else { return nil }
-
-        let colon = String(first)
-        let rest = String(tail.dropFirst())
-        var unit: [BiliCommentSegment] = [.mention(mention), .text(colon)]
-        if !rest.isEmpty {
-            unit.append(.text(rest))
-        }
-        return (unit, index + 2)
-    }
 }
 
 struct BiliCommentText: View {
@@ -427,15 +362,6 @@ enum BiliCommentFormats {
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
         return formatter.string(from: date)
     }
-
-    nonisolated static func metaLine(time: Date?, ipLocation: String?, likeCount: Int64) -> String {
-        var parts: [String] = [formatTime(time)]
-        if let ipLocation, !ipLocation.isEmpty {
-            parts.append("来自\(ipLocation)")
-        }
-        parts.append("赞 \(likeCount.compactCount)")
-        return parts.filter { !$0.isEmpty }.joined(separator: "  ")
-    }
 }
 
 struct BiliUpAuthorBadge: View {
@@ -710,6 +636,50 @@ private final class CommentImageFullscreenEscapeView: NSView {
         if let keyMonitor {
             NSEvent.removeMonitor(keyMonitor)
             self.keyMonitor = nil
+        }
+    }
+}
+
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 8
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var maxLineWidth: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > 0, x + size.width > maxWidth {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            rowHeight = max(rowHeight, size.height)
+            x += size.width + spacing
+            maxLineWidth = max(maxLineWidth, min(x, maxWidth))
+        }
+
+        return CGSize(width: maxLineWidth, height: y + rowHeight)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var x = bounds.minX
+        var y = bounds.minY
+        var rowHeight: CGFloat = 0
+
+        for subview in subviews {
+            let size = subview.sizeThatFits(.unspecified)
+            if x > bounds.minX, x + size.width > bounds.maxX {
+                x = bounds.minX
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
         }
     }
 }

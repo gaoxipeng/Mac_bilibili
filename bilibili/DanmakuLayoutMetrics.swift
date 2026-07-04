@@ -10,6 +10,19 @@ struct DanmakuLayoutMetrics: Sendable, Equatable {
     let mode: DanmakuLayoutMode
     let layoutHeight: CGFloat
 
+    /// 原先滑块 140% 时的实际字号倍率，现作为滑块 100% 的基准。
+    private static let legacyInlineFontBoost: Double = 1.20
+    private static let rebasedDefaultSliderPercent: Double = 1.40
+
+    static func baselineFontSizeMultiplier(for mode: DanmakuLayoutMode) -> Double {
+        switch mode {
+        case .inline:
+            legacyInlineFontBoost * rebasedDefaultSliderPercent
+        case .fullscreen:
+            rebasedDefaultSliderPercent
+        }
+    }
+
     static func make(mode: DanmakuLayoutMode, layoutHeight: CGFloat) -> DanmakuLayoutMetrics {
         DanmakuLayoutMetrics(mode: mode, layoutHeight: max(1, layoutHeight))
     }
@@ -48,12 +61,8 @@ struct DanmakuLayoutMetrics: Sendable, Equatable {
 
     func effectiveFontSizePercent(from settings: DanmakuSettings) -> Int {
         let userPercent = settings.fontSizePercent.clamped(to: 50...170)
-        switch mode {
-        case .inline:
-            return Int((Double(userPercent) * 1.20).rounded()).clamped(to: 50...170)
-        case .fullscreen:
-            return userPercent
-        }
+        let multiplier = Self.baselineFontSizeMultiplier(for: mode)
+        return Int((Double(userPercent) * multiplier).rounded()).clamped(to: 50...170)
     }
 
     func fontSize(itemFontSize: Int, settings: DanmakuSettings) -> CGFloat {

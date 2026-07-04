@@ -109,30 +109,9 @@ final class VideoPlaybackEngine: ObservableObject {
         seek(to: seconds)
     }
 
-    func nudgePlayback(by seconds: Double) {
-        applyWheelScrub(delta: seconds)
-        scheduleWheelScrubEnd(after: .milliseconds(150))
-    }
-
     func seek(by seconds: Double) {
         let target = min(duration, max(0, preciseCurrentTime + seconds))
         seek(to: target, resumeAfter: isPlaying)
-    }
-
-    func adjustVolume(by delta: Float) {
-        if isMuted, delta > 0 {
-            isMuted = false
-        }
-        setVolume(volume + delta)
-    }
-
-    func setVolume(_ value: Float) {
-        let clamped = min(max(value, 0), 1)
-        volume = clamped
-        if !isMuted {
-            volumeBeforeMute = clamped > 0 ? clamped : volumeBeforeMute
-        }
-        applyVolume()
     }
 
     func toggleMute() {

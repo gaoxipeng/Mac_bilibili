@@ -236,30 +236,6 @@ enum JSONParser {
         }
     }
 
-    nonisolated static func parseLiveRooms(from object: Any) -> [BiliLiveRoom] {
-        let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
-        let list = (data["list"] as? [[String: Any]])
-            ?? ((data["data"] as? [String: Any])?["list"] as? [[String: Any]])
-            ?? findFirstArray(in: data)
-
-        return list.compactMap { item in
-            let roomId = int64(item, "roomid", "room_id", "roomId", "uid")
-            guard roomId > 0 else { return nil }
-            let title = string(item, "title")
-            let cover = normalizedURL(string(item, "cover", "cover_from_user", "keyframe", "system_cover"))
-            let face = normalizedURL(string(item, "face", "uface"))
-            return BiliLiveRoom(
-                id: roomId,
-                title: title.isEmpty ? "直播间" : title,
-                coverURL: cover,
-                userName: string(item, "uname", "user_name", "name"),
-                userFaceURL: face,
-                online: int64(item, "online", "watched_show_num", "popularity_count"),
-                areaName: string(item, "area_name", "parent_area_name")
-            )
-        }
-    }
-
     nonisolated static func parseAccount(from object: Any, credential: BilibiliCredential) -> BiliAccount? {
         let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
         let uid = string(data, "mid").ifEmpty(credential.dedeUserId)

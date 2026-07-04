@@ -326,20 +326,6 @@ actor BilibiliAPI {
         return JSONParser.parseSearchSuggest(from: json)
     }
 
-    func liveRooms(credential: BilibiliCredential? = nil) async throws -> [BiliLiveRoom] {
-        let json = try await wbiJSON(
-            url: "https://api.live.bilibili.com/xlive/web-interface/v1/second/getList",
-            params: [
-                "platform": "web",
-                "parent_area_id": "0",
-                "area_id": "0",
-                "page": "1"
-            ],
-            credential: credential
-        )
-        return JSONParser.parseLiveRooms(from: json)
-    }
-
     func validate(credential: BilibiliCredential) async throws -> BiliAccount {
         let nav = try await json(
             url: "https://api.bilibili.com/x/web-interface/nav",
@@ -350,10 +336,6 @@ actor BilibiliAPI {
             throw APIError.message("登录信息无效，请重新登录")
         }
         return account
-    }
-
-    func validate(cookieText: String) async throws -> BiliAccount {
-        try await validate(credential: BilibiliCredential(cookieText: cookieText))
     }
 
     func myProfile(account: BiliAccount) async throws -> BiliUserProfile {
@@ -1663,38 +1645,6 @@ private enum WbiSigner: Sendable {
 
     private nonisolated static func token(from url: String) -> String {
         url.split(separator: "/").last?.split(separator: ".").first.map(String.init) ?? ""
-    }
-}
-
-extension BilibiliCredential {
-    init(cookieText: String) throws {
-        var values: [String: String] = [:]
-        cookieText
-            .replacingOccurrences(of: "\n", with: ";")
-            .split(separator: ";")
-            .forEach { part in
-                let pieces = part.split(separator: "=", maxSplits: 1).map {
-                    String($0).trimmingCharacters(in: .whitespacesAndNewlines)
-                }
-                if pieces.count == 2 {
-                    values[pieces[0]] = pieces[1]
-                }
-            }
-
-        let uid = values["DedeUserID"] ?? values["dedeuserid"] ?? ""
-        let sessdata = values["SESSDATA"] ?? values["sessdata"] ?? ""
-        let biliJct = values["bili_jct"] ?? values["biliJct"] ?? ""
-        guard !uid.isEmpty, !sessdata.isEmpty, !biliJct.isEmpty else {
-            throw APIError.message("Cookie 缺少 SESSDATA、bili_jct 或 DedeUserID")
-        }
-
-        self.init(
-            dedeUserId: uid,
-            sessdata: sessdata,
-            biliJct: biliJct,
-            buvid3: values["buvid3"] ?? "",
-            buvid4: values["buvid4"] ?? ""
-        )
     }
 }
 

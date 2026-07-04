@@ -20,6 +20,14 @@
 
 ## 构建与运行
 
+### 直接下载（推荐）
+
+前往 [Releases](https://github.com/gaoxipeng/Mac_bilibili/releases) 下载最新 `bilibili-v*-macOS.zip`，解压后将 `bilibili.app` 拖入「应用程序」即可。
+
+> 当前安装包未签名/未公证。若 macOS 提示无法打开，请在「系统设置 → 隐私与安全性」中允许运行。
+
+### 从源码构建
+
 1. 克隆仓库：
 
    ```bash

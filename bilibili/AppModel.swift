@@ -247,11 +247,11 @@ final class AppModel: ObservableObject {
                 viewAt: cursor.viewAt,
                 business: cursor.business
             )
-            var seen = Set(historyItems.map(\.id))
-            let newItems = page.items.filter { seen.insert($0.id).inserted }
-            historyItems.append(contentsOf: newItems)
+            let merged = JSONParser.deduplicatedHistoryItems(historyItems + page.items)
+            let addedCount = merged.count - historyItems.count
+            historyItems = merged
             historyCursor = page.cursor
-            historyHasMore = page.hasMore && !newItems.isEmpty
+            historyHasMore = page.hasMore && addedCount > 0
         } catch {
             errorMessage = error.localizedDescription
         }

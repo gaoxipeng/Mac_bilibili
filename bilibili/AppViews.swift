@@ -35,14 +35,14 @@ enum VideoCardLayout {
         let includesStats: Bool
         let statsAuthorSpacing: CGFloat
 
-        static func feed(largeTypography: Bool) -> RowLayoutMetrics {
+        static func feed(largeTypography: Bool, showsAuthor: Bool = true) -> RowLayoutMetrics {
             RowLayoutMetrics(
                 metadataPadding: EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12),
                 usesLargeTitleFont: largeTypography,
                 statsHeight: largeTypography ? 24 : 20,
-                authorRowHeight: largeTypography ? 30 : 26,
+                authorRowHeight: showsAuthor ? (largeTypography ? 30 : 26) : 0,
                 includesStats: true,
-                statsAuthorSpacing: VideoCardLayout.statsAuthorSpacing
+                statsAuthorSpacing: showsAuthor ? VideoCardLayout.statsAuthorSpacing : 0
             )
         }
 
@@ -178,17 +178,18 @@ private struct FeedCardTitle: View {
                 .lineLimit(nil)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
+                .allowsHitTesting(false)
 
             Spacer(minLength: 0)
         }
         .frame(height: areaHeight, alignment: .top)
-        .background {
-                NavigationLink(value: destination) {
-                    Color.clear
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+        .overlay {
+            NavigationLink(value: destination) {
+                Color.clear
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+        }
         .onHover { hovering in
             withAnimation(FeedCardHoverStyle.colorAnimation) {
                 isHovered = hovering
@@ -220,7 +221,10 @@ private struct FeedCardAuthorLabel: View {
                 .contentTransition(.interpolate)
                 .animation(FeedCardHoverStyle.colorAnimation, value: isHovered)
                 .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { hovering in
             withAnimation(FeedCardHoverStyle.colorAnimation) {
                 isHovered = hovering
@@ -261,20 +265,24 @@ struct VideoFeedGrid<Trailing: View>: View {
     let videos: [BiliVideo]
     var largeTypography = false
     var showsLikeCount = true
+    var showsAuthor = true
     var maxColumnCount: Int? = nil
     @ViewBuilder var trailing: () -> Trailing
     @Environment(\.feedViewportWidth) private var feedViewportWidth
+    @Environment(\.feedSymmetricHorizontalInsets) private var feedSymmetricHorizontalInsets
 
     init(
         videos: [BiliVideo],
         largeTypography: Bool = false,
         showsLikeCount: Bool = true,
+        showsAuthor: Bool = true,
         maxColumnCount: Int? = nil,
         @ViewBuilder trailing: @escaping () -> Trailing = { EmptyView() }
     ) {
         self.videos = videos
         self.largeTypography = largeTypography
         self.showsLikeCount = showsLikeCount
+        self.showsAuthor = showsAuthor
         self.maxColumnCount = maxColumnCount
         self.trailing = trailing
     }
@@ -284,7 +292,10 @@ struct VideoFeedGrid<Trailing: View>: View {
         let baseColumnCount = VideoCardLayout.columnCount(for: layoutWidth)
         let columnCount = maxColumnCount.map { min($0, baseColumnCount) } ?? baseColumnCount
         let columnWidth = VideoCardLayout.columnWidth(for: layoutWidth, columnCount: columnCount)
-        let metrics = VideoCardLayout.RowLayoutMetrics.feed(largeTypography: largeTypography)
+        let metrics = VideoCardLayout.RowLayoutMetrics.feed(
+            largeTypography: largeTypography,
+            showsAuthor: showsAuthor
+        )
         let rows = VideoCardLayout.rowChunks(videos, columnCount: columnCount)
 
         LazyVStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
@@ -306,6 +317,7 @@ struct VideoFeedGrid<Trailing: View>: View {
                             video: video,
                             largeTypography: largeTypography,
                             showsLikeCount: showsLikeCount,
+                            showsAuthor: showsAuthor,
                             columnWidth: columnWidth,
                             titleAreaHeight: titleAreaHeight
                         )
@@ -320,7 +332,9 @@ struct VideoFeedGrid<Trailing: View>: View {
     }
 
     private var resolvedLayoutWidth: CGFloat {
-        let width = AppLayout.feedContentWidth(viewportWidth: feedViewportWidth)
+        let width = feedSymmetricHorizontalInsets
+            ? AppLayout.feedContentWidthSymmetric(viewportWidth: feedViewportWidth)
+            : AppLayout.feedContentWidth(viewportWidth: feedViewportWidth)
         if width > 0 {
             return width
         }
@@ -498,8 +512,38 @@ private enum HistoryCardLayout {
 
 private enum HistoryLayout {
     static let maxColumnCount = 5
-    static let sectionLabelWidth: CGFloat = 88
     static let sectionSpacing: CGFloat = 28
+    static let timelineGutterWidth: CGFloat = 68
+    static let timelineTrackColumnWidth: CGFloat = 16
+    static let labelLeadingOverflow: CGFloat = 24
+    static let trackToContentSpacing: CGFloat = 28
+    static let labelFontSize: CGFloat = 16
+    static let dotSize: CGFloat = 12
+    static let dotShrunkSize: CGFloat = 4
+    static let dotBorderWidth: CGFloat = 2
+    static let dotShrunkBorderWidth: CGFloat = 1.5
+    static let lineWidth: CGFloat = 1
+    static let labelToTrackSpacing: CGFloat = 10
+    static let pinnedRowPitch: CGFloat = 36
+    static let labelColor = Color(red: 0.38, green: 0.40, blue: 0.43)
+    static let labelHoverColor = BiliTheme.blue
+    static let lineColor = Color(red: 0.788, green: 0.804, blue: 0.816)
+
+    static var timelineTrackCenterX: CGFloat {
+        timelineGutterWidth - timelineTrackColumnWidth / 2
+    }
+
+    static var labelTrailingX: CGFloat {
+        timelineTrackCenterX - labelToTrackSpacing - dotSize / 2
+    }
+}
+
+private struct HistorySectionViewportKey: PreferenceKey {
+    static var defaultValue: [String: CGFloat] = [:]
+
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
 }
 
 private struct HistorySection: Identifiable {
@@ -518,52 +562,366 @@ struct HistoryView: View {
     let onLoadMore: () -> Void
     let onDelete: (BiliHistoryItem) -> Void
 
+    @State private var sectionHeaderViewportY: [String: CGFloat] = [:]
+    @State private var deepestReachedSectionIndex: Int = -1
+
     private var sections: [HistorySection] {
         buildHistorySections(from: items)
     }
 
+    private var stickyPinLine: CGFloat {
+        AppLayout.feedVerticalInset
+    }
+
+    private func stickySlotY(for index: Int) -> CGFloat {
+        stickyPinLine + CGFloat(index) * HistoryLayout.pinnedRowPitch
+    }
+
+    private func isBottomPinnedSection(at index: Int) -> Bool {
+        isViewingEarlierSections
+            && index == deepestReachedSectionIndex
+            && deepestReachedSectionIndex > 0
+    }
+
+    private func viewingSectionIndexAtTop() -> Int? {
+        sections.indices.compactMap { index in
+            guard let y = sectionHeaderViewportY[sections[index].id] else { return nil }
+            if y >= stickyPinLine - 12 && y < stickyPinLine + HistoryLayout.pinnedRowPitch * 2.5 {
+                return index
+            }
+            return nil
+        }.min()
+    }
+
+    private var isViewingEarlierSections: Bool {
+        guard deepestReachedSectionIndex > 0,
+              let viewingIndex = viewingSectionIndexAtTop() else {
+            return false
+        }
+        return viewingIndex < deepestReachedSectionIndex
+    }
+
+    private func stickyHeaderY(for index: Int, viewportHeight: CGFloat) -> CGFloat {
+        if isBottomPinnedSection(at: index) {
+            return viewportHeight - AppLayout.feedVerticalInset - HistoryLayout.pinnedRowPitch
+        }
+        return stickySlotY(for: index)
+    }
+
+    private func reconcileScrollDepth(with viewportY: [String: CGFloat]) {
+        var deepest = deepestReachedSectionIndex
+        for (index, section) in sections.enumerated() {
+            guard let y = viewportY[section.id] else { continue }
+            if y < stickySlotY(for: index) {
+                deepest = max(deepest, index)
+            }
+        }
+        if deepest != deepestReachedSectionIndex {
+            deepestReachedSectionIndex = deepest
+        }
+    }
+
+    private func isSectionPinned(_ section: HistorySection, index: Int) -> Bool {
+        if isViewingEarlierSections, let viewingIndex = viewingSectionIndexAtTop() {
+            if index == viewingIndex {
+                return false
+            }
+            return index <= deepestReachedSectionIndex
+        }
+
+        let slotY = stickySlotY(for: index)
+        let y = sectionHeaderViewportY[section.id]
+
+        if let y, y < slotY {
+            return true
+        }
+
+        return false
+    }
+
+    private func isActivePinnedSection(at index: Int) -> Bool {
+        if isViewingEarlierSections {
+            return index == deepestReachedSectionIndex
+        }
+
+        guard sections.indices.contains(index),
+              let y = sectionHeaderViewportY[sections[index].id],
+              y < stickySlotY(for: index) else {
+            return false
+        }
+
+        let highestScrolledPastIndex = sections.enumerated().compactMap { candidateIndex, candidate in
+            guard let candidateY = sectionHeaderViewportY[candidate.id],
+                  candidateY < stickySlotY(for: candidateIndex) else {
+                return nil
+            }
+            return candidateIndex
+        }.max() ?? -1
+
+        return index == highestScrolledPastIndex
+    }
+
+    private func timelineDotSpec(at index: Int, isPinned: Bool) -> (size: CGFloat, style: HistoryTimelineDotStyle) {
+        if isPinned {
+            if isActivePinnedSection(at: index) {
+                return (HistoryLayout.dotSize, .hollow)
+            }
+            return (HistoryLayout.dotShrunkSize, .solid)
+        }
+        return (HistoryLayout.dotSize, .hollow)
+    }
+
     var body: some View {
-        AppScrollView {
-            LazyVStack(alignment: .leading, spacing: HistoryLayout.sectionSpacing) {
-                StateBanner(
-                    loading: loading,
-                    error: error,
-                    isEmpty: items.isEmpty,
-                    emptyTitle: loggedIn ? "暂无观看历史" : "登录后查看观看历史"
-                )
+        GeometryReader { geometry in
+            ScrollViewReader { proxy in
+                ZStack(alignment: .topLeading) {
+                    Rectangle()
+                        .fill(HistoryLayout.lineColor)
+                        .frame(width: HistoryLayout.lineWidth)
+                        .frame(maxHeight: .infinity)
+                        .position(
+                            x: AppLayout.feedHorizontalInset + HistoryLayout.timelineTrackCenterX,
+                            y: geometry.size.height / 2
+                        )
+                        .allowsHitTesting(false)
+                        .zIndex(0)
 
-                ForEach(sections) { section in
-                    HistoryDateSection(section: section, onDelete: onDelete)
-                }
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: HistoryLayout.sectionSpacing) {
+                            StateBanner(
+                                loading: loading,
+                                error: error,
+                                isEmpty: items.isEmpty,
+                                emptyTitle: loggedIn ? "暂无观看历史" : "登录后查看观看历史"
+                            )
 
-                if hasMore, !items.isEmpty {
-                    FeedLoadMoreFooter(
-                        anchorID: items.count,
-                        hasMore: hasMore,
-                        loadingMore: loadingMore,
-                        onLoadMore: onLoadMore
-                    )
+                            ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
+                                let isPinned = isSectionPinned(section, index: index)
+                                let dotSpec = timelineDotSpec(at: index, isPinned: isPinned)
+
+                                HistoryDateSection(
+                                    section: section,
+                                    hidesInlineHeader: isPinned,
+                                    dotSize: dotSpec.size,
+                                    dotStyle: dotSpec.style,
+                                    onLabelTap: {
+                                        scrollToSection(section.id, proxy: proxy)
+                                    },
+                                    onDelete: onDelete
+                                )
+                                .id(section.id)
+                            }
+
+                            if hasMore, !items.isEmpty {
+                                FeedLoadMoreFooter(
+                                    anchorID: items.count,
+                                    hasMore: hasMore,
+                                    loadingMore: loadingMore,
+                                    onLoadMore: onLoadMore
+                                )
+                            }
+                        }
+                        .padding(.leading, AppLayout.feedHorizontalInset)
+                        .padding(.trailing, AppLayout.feedTrailingInset)
+                        .padding(.vertical, AppLayout.feedVerticalInset)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .environment(\.feedViewportWidth, geometry.size.width)
+                    }
+                    .scrollClipDisabled()
+                    .zIndex(1)
+                    .onPreferenceChange(HistorySectionViewportKey.self) { updates in
+                        var merged = sectionHeaderViewportY
+                        merged.merge(updates) { _, new in new }
+                        sectionHeaderViewportY = merged
+                        reconcileScrollDepth(with: merged)
+                    }
+                    .onChange(of: sections.map(\.id)) { _, _ in
+                        deepestReachedSectionIndex = -1
+                    }
+
+                    ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
+                        if isSectionPinned(section, index: index) {
+                            let dotSpec = timelineDotSpec(at: index, isPinned: true)
+                            HistoryTimelineStickyHeader(
+                                title: section.label,
+                                dotSize: dotSpec.size,
+                                dotStyle: dotSpec.style,
+                                onTap: {
+                                    scrollToSection(section.id, proxy: proxy)
+                                }
+                            )
+                            .offset(
+                                x: AppLayout.feedHorizontalInset,
+                                y: stickyHeaderY(for: index, viewportHeight: geometry.size.height)
+                            )
+                            .zIndex(2)
+                            .animation(.easeOut(duration: 0.2), value: deepestReachedSectionIndex)
+                        }
+                    }
                 }
             }
         }
+    }
+
+    private func scrollToSection(_ sectionID: String, proxy: ScrollViewProxy) {
+        withAnimation(.easeOut(duration: 0.28)) {
+            proxy.scrollTo(sectionID, anchor: .top)
+        }
+    }
+}
+
+private struct HistoryTimelineStickyHeader: View {
+    let title: String
+    var dotSize: CGFloat = HistoryLayout.dotSize
+    var dotStyle: HistoryTimelineDotStyle = .hollow
+    let onTap: () -> Void
+
+    var body: some View {
+        HistoryTimelineSectionHeader(
+            title: title,
+            dotSize: dotSize,
+            dotStyle: dotStyle,
+            showsLabel: true,
+            onTap: onTap
+        )
+        .frame(width: HistoryLayout.timelineGutterWidth, height: HistoryLayout.pinnedRowPitch, alignment: .leading)
     }
 }
 
 private struct HistoryDateSection: View {
     let section: HistorySection
+    var hidesInlineHeader = false
+    var dotSize: CGFloat
+    var dotStyle: HistoryTimelineDotStyle = .hollow
+    let onLabelTap: () -> Void
     let onDelete: (BiliHistoryItem) -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            Text(section.label)
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.primary)
-                .frame(width: HistoryLayout.sectionLabelWidth, alignment: .leading)
-                .padding(.top, 4)
+        HStack(alignment: .top, spacing: HistoryLayout.trackToContentSpacing) {
+            HistoryTimelineSectionHeader(
+                title: section.label,
+                dotSize: dotSize,
+                dotStyle: dotStyle,
+                showsLabel: true,
+                onTap: onLabelTap
+            )
+            .frame(width: HistoryLayout.timelineGutterWidth, height: HistoryLayout.pinnedRowPitch, alignment: .leading)
+            .opacity(hidesInlineHeader ? 0 : 1)
+            .allowsHitTesting(!hidesInlineHeader)
+            .zIndex(1)
 
             HistoryItemsGrid(items: section.items, onDelete: onDelete)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .background(alignment: .topTrailing) {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: HistorySectionViewportKey.self,
+                    value: [
+                        section.id: geometry.frame(in: .scrollView(axis: .vertical)).minY,
+                    ]
+                )
+            }
+            .frame(width: HistoryLayout.timelineGutterWidth, height: 1)
+        }
+    }
+}
+
+private enum HistoryTimelineDotStyle {
+    case hollow
+    case solid
+}
+
+private struct HistoryTimelineSectionHeader: View {
+    let title: String
+    var dotSize: CGFloat = HistoryLayout.dotSize
+    var dotStyle: HistoryTimelineDotStyle = .hollow
+    var showsLabel: Bool = true
+    var onTap: () -> Void = {}
+
+    @State private var isHovered = false
+
+    private var labelColor: Color {
+        isHovered ? HistoryLayout.labelHoverColor : HistoryLayout.labelColor
+    }
+
+    private var dotBorderWidth: CGFloat {
+        dotSize <= HistoryLayout.dotShrunkSize + 0.5
+            ? HistoryLayout.dotShrunkBorderWidth
+            : HistoryLayout.dotBorderWidth
+    }
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            if showsLabel {
+                Text(title)
+                    .font(.system(size: HistoryLayout.labelFontSize, weight: .medium))
+                    .foregroundStyle(labelColor)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(
+                        width: HistoryLayout.labelTrailingX + HistoryLayout.labelLeadingOverflow,
+                        alignment: .trailing
+                    )
+                    .offset(x: -HistoryLayout.labelLeadingOverflow)
+                    .padding(.vertical, 4)
+                    .background(Color.white)
+            }
+
+            HistoryTimelineDot(
+                size: dotSize,
+                style: dotStyle,
+                borderWidth: dotBorderWidth,
+                color: labelColor
+            )
+            .position(
+                x: HistoryLayout.timelineTrackCenterX,
+                y: HistoryLayout.pinnedRowPitch / 2
+            )
+        }
+        .frame(width: HistoryLayout.timelineGutterWidth, height: HistoryLayout.pinnedRowPitch, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture(perform: onTap)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.18)) {
+                isHovered = hovering
+            }
+        }
+        .animation(.easeOut(duration: 0.24), value: dotSize)
+        .animation(.easeOut(duration: 0.24), value: dotStyle)
+        .animation(.easeOut(duration: 0.18), value: showsLabel)
+    }
+}
+
+private struct HistoryTimelineDot: View {
+    let size: CGFloat
+    var style: HistoryTimelineDotStyle = .hollow
+    let borderWidth: CGFloat
+    let color: Color
+
+    var body: some View {
+        Group {
+            switch style {
+            case .solid:
+                Circle()
+                    .fill(color)
+            case .hollow:
+                ZStack {
+                    Circle()
+                        .fill(Color.white)
+                        .frame(width: size + 4, height: size + 4)
+                    Circle()
+                        .fill(Color.white)
+                        .overlay {
+                            Circle()
+                                .strokeBorder(color, lineWidth: borderWidth)
+                        }
+                        .frame(width: size, height: size)
+                }
+            }
+        }
+        .frame(width: max(size, size + 4), height: max(size, size + 4))
+        .animation(.easeOut(duration: 0.24), value: size)
+        .animation(.easeOut(duration: 0.24), value: style)
     }
 }
 
@@ -601,7 +959,10 @@ private struct HistoryItemsGrid: View {
 
     private var resolvedLayoutWidth: CGFloat {
         let contentWidth = AppLayout.feedContentWidth(viewportWidth: feedViewportWidth)
-        let historyWidth = max(0, contentWidth - HistoryLayout.sectionLabelWidth - 16)
+        let historyWidth = max(
+            0,
+            contentWidth - HistoryLayout.timelineGutterWidth - HistoryLayout.trackToContentSpacing
+        )
         if historyWidth > 0 {
             return historyWidth
         }
@@ -614,7 +975,9 @@ private struct HistoryVideoCard: View {
     let columnWidth: CGFloat
     let titleAreaHeight: CGFloat
     let onDelete: () -> Void
+    @State private var isCardHovered = false
     @State private var isCoverHovered = false
+    @State private var isDeleteHovered = false
 
     private var video: BiliVideo { item.video }
 
@@ -676,8 +1039,9 @@ private struct HistoryVideoCard: View {
                 shape.stroke(VideoCardLayout.cardBorderColor, lineWidth: 0.5)
             }
         }
-        .shadow(color: .black.opacity(isCoverHovered ? 0.07 : 0), radius: isCoverHovered ? 8 : 0, x: 0, y: isCoverHovered ? 4 : 0)
-        .zIndex(isCoverHovered ? 2 : 0)
+        .shadow(color: .black.opacity(isCardHovered ? 0.07 : 0), radius: isCardHovered ? 8 : 0, x: 0, y: isCardHovered ? 4 : 0)
+        .zIndex(isCardHovered ? 2 : 0)
+        .videoCoverHover(isHovered: $isCardHovered)
     }
 
     private var coverHoverAnimation: Animation {
@@ -743,26 +1107,36 @@ private struct HistoryVideoCard: View {
     }
 
     private var authorRow: some View {
-        HStack(spacing: 8) {
+        HStack(alignment: .center, spacing: 8) {
             authorIdentity
-
-            Spacer(minLength: 4)
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 
             if let viewedAt = item.viewedAt {
                 Text(historyViewTimeText(from: viewedAt))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
 
             if !item.kid.isEmpty {
                 Button(action: onDelete) {
                     Image(systemName: "trash")
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(
+                            isDeleteHovered ? AnyShapeStyle(Color.red) : AnyShapeStyle(.tertiary)
+                        )
+                        .contentTransition(.interpolate)
+                        .animation(FeedCardHoverStyle.colorAnimation, value: isDeleteHovered)
                 }
                 .buttonStyle(.plain)
+                .fixedSize()
                 .help("删除历史")
+                .onHover { hovering in
+                    withAnimation(FeedCardHoverStyle.colorAnimation) {
+                        isDeleteHovered = hovering
+                    }
+                }
             }
         }
     }
@@ -771,17 +1145,16 @@ private struct HistoryVideoCard: View {
     private var authorIdentity: some View {
         if video.authorMid > 0 {
             NavigationLink(
-                value: UserProfileRequest(
-                    mid: video.authorMid,
-                    seedName: video.authorName,
-                    seedFaceURL: video.authorFaceURL
-                )
+                value: UserProfileRequest(mid: video.authorMid)
             ) {
                 authorIdentityContent
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             authorIdentityContent
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -807,11 +1180,7 @@ struct MineView: View {
                 if let account = model.account {
                     if let mid = Int64(account.uid), mid > 0 {
                         NavigationLink(
-                            value: UserProfileRequest(
-                                mid: mid,
-                                seedName: account.name,
-                                seedFaceURL: account.faceURL
-                            )
+                            value: UserProfileRequest(mid: mid)
                         ) {
                             ProfileCard(account: account, profile: model.profile)
                         }
@@ -905,12 +1274,14 @@ struct VideoCard: View {
     let video: BiliVideo
     var largeTypography = false
     var showsLikeCount = true
+    var showsAuthor = true
     let columnWidth: CGFloat
     let titleAreaHeight: CGFloat
+    @State private var isCardHovered = false
     @State private var isCoverHovered = false
 
     private var metrics: VideoCardLayout.RowLayoutMetrics {
-        .feed(largeTypography: largeTypography)
+        .feed(largeTypography: largeTypography, showsAuthor: showsAuthor)
     }
 
     private var coverHeight: CGFloat {
@@ -942,7 +1313,7 @@ struct VideoCard: View {
     }
 
     private var likeStatIconSize: CGFloat {
-        statIconSize - 3
+        statIconSize - 2
     }
 
     private var cornerRadius: CGFloat {
@@ -968,8 +1339,9 @@ struct VideoCard: View {
                 shape.stroke(VideoCardLayout.cardBorderColor, lineWidth: 0.5)
             }
         }
-        .shadow(color: .black.opacity(isCoverHovered ? 0.07 : 0), radius: isCoverHovered ? 8 : 0, x: 0, y: isCoverHovered ? 4 : 0)
-        .zIndex(isCoverHovered ? 2 : 0)
+        .shadow(color: .black.opacity(isCardHovered ? 0.07 : 0), radius: isCardHovered ? 8 : 0, x: 0, y: isCardHovered ? 4 : 0)
+        .zIndex(isCardHovered ? 2 : 0)
+        .videoCoverHover(isHovered: $isCardHovered)
     }
 
     private var coverHoverAnimation: Animation {
@@ -1018,9 +1390,11 @@ struct VideoCard: View {
                 .buttonStyle(.plain)
             }
 
-            authorRow
-                .frame(height: metrics.authorRowHeight, alignment: .center)
-                .padding(.top, metrics.includesStats ? metrics.statsAuthorSpacing : 0)
+            if showsAuthor {
+                authorRow
+                    .frame(height: metrics.authorRowHeight, alignment: .center)
+                    .padding(.top, metrics.includesStats ? metrics.statsAuthorSpacing : 0)
+            }
         }
         .padding(metrics.metadataPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1030,11 +1404,7 @@ struct VideoCard: View {
     private var authorRow: some View {
         if video.authorMid > 0 {
             NavigationLink(
-                value: UserProfileRequest(
-                    mid: video.authorMid,
-                    seedName: video.authorName,
-                    seedFaceURL: video.authorFaceURL
-                )
+                value: UserProfileRequest(mid: video.authorMid)
             ) {
                 authorRowContent
             }
@@ -1117,6 +1487,16 @@ private func historySectionLabel(from date: Date?) -> String {
     if itemDay == today { return "今天" }
     if itemDay == yesterday { return "昨天" }
 
+    let daysAgo = calendar.dateComponents([.day], from: itemDay, to: today).day ?? 0
+    if daysAgo < 7 { return "近一周" }
+    if daysAgo < 14 { return "一周前" }
+    if daysAgo < 30 { return "一个月前" }
+
+    return historySectionDateText(from: date)
+}
+
+private func historySectionDateText(from date: Date) -> String {
+    let calendar = Calendar.current
     let year = calendar.component(.year, from: date)
     let month = calendar.component(.month, from: date)
     let day = calendar.component(.day, from: date)

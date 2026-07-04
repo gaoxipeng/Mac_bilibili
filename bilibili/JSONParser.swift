@@ -88,6 +88,143 @@ enum JSONParser {
         return BiliSearchPage(items: items, page: page, hasMore: page < numPages)
     }
 
+    nonisolated static func parseSearchBangumiPage(from object: Any) -> BiliSearchPage<BiliSearchBangumi> {
+        let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
+        let page = max(1, Int(int64(data, "page")))
+        let numPages = max(page, Int(int64(data, "numPages", "numpages")))
+        let list = (data["result"] as? [[String: Any]]) ?? []
+        let items = list.compactMap(parseSearchBangumiItem)
+        return BiliSearchPage(items: items, page: page, hasMore: page < numPages)
+    }
+
+    nonisolated private static func parseSearchBangumiItem(_ item: [String: Any]) -> BiliSearchBangumi? {
+        let itemType = string(item, "type")
+        if !itemType.isEmpty, itemType != "media_bangumi", itemType != "media_ft" {
+            return nil
+        }
+
+        let seasonId = int64(item, "season_id", "pgc_season_id")
+        guard seasonId > 0 else { return nil }
+
+        let title = string(item, "title").htmlStripped
+        guard !title.isEmpty else { return nil }
+
+        let eps = item["eps"] as? [[String: Any]] ?? []
+        var firstEpid = eps.compactMap { ep -> Int64? in
+            let epid = int64(ep, "id", "epid")
+            return epid > 0 ? epid : nil
+        }.first ?? 0
+        if firstEpid == 0, let firstEp = item["first_ep"] as? [String: Any] {
+            firstEpid = int64(firstEp, "id", "ep_id", "epid")
+        }
+        if firstEpid == 0 {
+            firstEpid = epidFromBangumiSearchItem(item, eps: eps)
+        }
+
+        let badge = membershipBadge(from: item)
+        let categoryName = pgcCategoryName(from: item)
+
+        return BiliSearchBangumi(
+            seasonId: seasonId,
+            mediaId: int64(item, "media_id"),
+            title: title,
+            subtitle: string(item, "org_title").htmlStripped,
+            coverURL: normalizedURL(string(item, "cover")),
+            areas: string(item, "areas").htmlStripped,
+            styles: string(item, "styles").htmlStripped,
+            badge: badge,
+            categoryName: categoryName,
+            indexShow: string(item, "index_show", "fix_pubtime_str").htmlStripped,
+            webURL: normalizedURL(string(item, "goto_url", "url")),
+            firstEpid: firstEpid
+        )
+    }
+
+    nonisolated private static func membershipBadge(from item: [String: Any]) -> String {
+        let angleTitle = string(item, "angle_title").htmlStripped
+        if !angleTitle.isEmpty {
+            return angleTitle
+        }
+        let displayInfo = item["display_info"] as? [[String: Any]] ?? []
+        if let text = displayInfo.compactMap({ string($0, "text").htmlStripped }).first(where: { !$0.isEmpty }) {
+            return text
+        }
+        let badges = item["badges"] as? [[String: Any]] ?? []
+        return badges.compactMap { string($0, "text").htmlStripped }.first { !$0.isEmpty } ?? ""
+    }
+
+    nonisolated static func parseSearchAllPGCMedia(from object: Any) -> [BiliSearchBangumi] {
+        let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
+        let groups = data["result"] as? [[String: Any]] ?? []
+        var items: [BiliSearchBangumi] = []
+        for group in groups {
+            let resultType = string(group, "result_type")
+            guard resultType == "media_bangumi" || resultType == "media_ft" else { continue }
+            let list = group["data"] as? [[String: Any]] ?? []
+            items.append(contentsOf: list.compactMap(parseSearchBangumiItem))
+        }
+        return items
+    }
+
+    nonisolated static func parsePGCSeasonFirstEpid(from object: Any) -> Int64 {
+        let result = dictionary(object)["result"] as? [String: Any] ?? dictionary(object)["data"] as? [String: Any] ?? [:]
+        let episodes = result["episodes"] as? [[String: Any]] ?? []
+        for episode in episodes {
+            let epid = int64(episode, "ep_id", "id", "epid")
+            if epid > 0 {
+                return epid
+            }
+        }
+        return 0
+    }
+
+    nonisolated private static func pgcCategoryName(from item: [String: Any]) -> String {
+        let seasonTypeName = string(item, "season_type_name").htmlStripped
+        if !seasonTypeName.isEmpty {
+            return seasonTypeName
+        }
+        let mediaType = Int(int64(item, "media_type", "season_type"))
+        switch mediaType {
+        case 1: return "番剧"
+        case 2: return "电影"
+        case 3: return "纪录片"
+        case 4: return "国创"
+        case 5: return "电视剧"
+        case 7: return "综艺"
+        default: return "影视"
+        }
+    }
+
+    nonisolated private static func epidFromBangumiSearchItem(
+        _ item: [String: Any],
+        eps: [[String: Any]]
+    ) -> Int64 {
+        let hitEpids = string(item, "hit_epids")
+        if let first = hitEpids.split(separator: ",").first {
+            let epid = Int64(first.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+            if epid > 0 { return epid }
+        }
+
+        var urlCandidates = [
+            string(item, "goto_url"),
+            string(item, "url")
+        ]
+        urlCandidates.append(contentsOf: eps.map { string($0, "url") })
+
+        for candidate in urlCandidates where !candidate.isEmpty {
+            if let epid = epidFromBangumiPlayURL(candidate), epid > 0 {
+                return epid
+            }
+        }
+        return 0
+    }
+
+    nonisolated private static func epidFromBangumiPlayURL(_ url: String) -> Int64? {
+        guard let range = url.range(of: #"/ep(\d+)"#, options: .regularExpression) else { return nil }
+        let token = url[range].dropFirst(3)
+        return Int64(token)
+    }
+
     nonisolated static func parseSearchSuggest(from object: Any) -> [String] {
         let root = dictionary(object)
         let tags = (root["result"] as? [String: Any])?["tag"] as? [[String: Any]] ?? []
@@ -158,7 +295,6 @@ enum JSONParser {
             coinCount: int64(data, "money"),
             bcoinBalance: double(wallet ?? data, "bcoin_balance"),
             videoCount: 0,
-            topPhotoURLs: [],
             ipLocation: nil
         )
     }
@@ -179,7 +315,6 @@ enum JSONParser {
             coinCount: int64(data, "money").ifZero(profile.coinCount),
             bcoinBalance: double(wallet ?? data, "bcoin_balance"),
             videoCount: profile.videoCount,
-            topPhotoURLs: profile.topPhotoURLs,
             ipLocation: profile.ipLocation
         )
     }
@@ -211,7 +346,6 @@ enum JSONParser {
             coinCount: 0,
             bcoinBalance: 0,
             videoCount: 0,
-            topPhotoURLs: parseUserTopPhotoURLs(from: data),
             ipLocation: normalizeIpLocation(string(data, "location", "ip_location"))
         )
     }
@@ -234,7 +368,6 @@ enum JSONParser {
             coinCount: 0,
             bcoinBalance: 0,
             videoCount: 0,
-            topPhotoURLs: parseUserTopPhotoURLs(from: card),
             ipLocation: normalizeIpLocation(string(card, "location"))
         )
     }
@@ -279,8 +412,7 @@ enum JSONParser {
         card: BiliUserProfile?,
         mid: Int64,
         likes: Int64,
-        videoCount: Int64,
-        extraTopPhotoURLs: [URL] = []
+        videoCount: Int64
     ) -> BiliUserProfile? {
         guard let base = acc ?? card else { return nil }
         let enriched = card
@@ -296,34 +428,8 @@ enum JSONParser {
             coinCount: 0,
             bcoinBalance: 0,
             videoCount: videoCount > 0 ? videoCount : base.videoCount,
-            topPhotoURLs: mergeTopPhotoURLs(
-                base.topPhotoURLs,
-                enriched?.topPhotoURLs ?? [],
-                extraTopPhotoURLs
-            ),
             ipLocation: base.ipLocation ?? enriched?.ipLocation
         )
-    }
-
-    nonisolated static func parseUserTopPhotoList(from object: Any) -> [URL] {
-        let root = dictionary(object)
-        guard (root["status"] as? Bool) == true || (root["status"] as? NSNumber)?.boolValue == true else {
-            return []
-        }
-        let items = root["data"] as? [[String: Any]] ?? []
-        var owned: [(url: URL, sort: Int)] = []
-        for item in items {
-            if Int(int64(item, "is_disable")) == 1 { continue }
-            guard let url = normalizedURL(normalizeSpaceImageURL(string(item, "l_img"))) else { continue }
-            let had = Int(int64(item, "had"))
-            let sort = Int(int64(item, "sort_num"))
-            if had == 1 {
-                owned.append((url, sort))
-            }
-        }
-        return owned
-            .sorted { $0.sort > $1.sort }
-            .map(\.url)
     }
 
     nonisolated static func parseUserVideoPage(from object: Any) -> BiliUserVideoPage {
@@ -337,7 +443,7 @@ enum JSONParser {
     nonisolated static func parseHistoryPage(from object: Any) -> BiliHistoryPage {
         let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
         let list = (data["list"] as? [[String: Any]]) ?? findFirstArray(in: data)
-        let items = list.compactMap(parseHistoryItem)
+        let items = deduplicatedHistoryItems(list.compactMap(parseHistoryItem))
         let cursorData = data["cursor"] as? [String: Any]
         let cursor = cursorData.map { cursorDict in
             BiliHistoryCursor(
@@ -348,6 +454,57 @@ enum JSONParser {
             )
         }
         return BiliHistoryPage(items: items, cursor: cursor)
+    }
+
+    nonisolated static func deduplicatedHistoryItems(_ items: [BiliHistoryItem]) -> [BiliHistoryItem] {
+        var result: [BiliHistoryItem] = []
+        var indexByKey: [String: Int] = [:]
+
+        for item in items {
+            let key = historyDedupKey(for: item)
+            if let index = indexByKey[key] {
+                let preferred = preferredHistoryItem(result[index], item)
+                if preferred.id != result[index].id {
+                    result[index] = preferred
+                }
+            } else {
+                indexByKey[key] = result.count
+                result.append(item)
+            }
+        }
+
+        return result
+    }
+
+    nonisolated private static func historyDedupKey(for item: BiliHistoryItem) -> String {
+        if item.video.cid > 0 {
+            return "cid:\(item.video.cid)"
+        }
+        if item.epid > 0 {
+            return "ep:\(item.epid)"
+        }
+        if !item.video.bvid.isEmpty {
+            return "bv:\(item.video.bvid)"
+        }
+        if item.video.aid > 0 {
+            return "aid:\(item.video.aid)"
+        }
+        return "id:\(item.id)"
+    }
+
+    nonisolated private static func preferredHistoryItem(
+        _ existing: BiliHistoryItem,
+        _ candidate: BiliHistoryItem
+    ) -> BiliHistoryItem {
+        let existingHasFace = existing.video.authorFaceURL != nil
+        let candidateHasFace = candidate.video.authorFaceURL != nil
+        if existingHasFace != candidateHasFace {
+            return candidateHasFace ? candidate : existing
+        }
+
+        let existingDate = existing.viewedAt ?? .distantPast
+        let candidateDate = candidate.viewedAt ?? .distantPast
+        return candidateDate >= existingDate ? candidate : existing
     }
 
     nonisolated static func parseHistory(from object: Any) -> [BiliHistoryItem] {
@@ -453,6 +610,71 @@ enum JSONParser {
             epid: epid,
             webURI: webURI,
             badge: badge
+        )
+    }
+
+    nonisolated static func parsePGCEpisodeContext(from object: Any, epid: Int64) -> BiliPGCEpisodeContext? {
+        let result = dictionary(object)["result"] as? [String: Any] ?? dictionary(object)
+        guard epid > 0 else { return nil }
+
+        let episodes = result["episodes"] as? [[String: Any]] ?? []
+        guard let episode = episodes.first(where: { int64($0, "id", "ep_id") == epid }) else {
+            return nil
+        }
+
+        let seasonId = int64(result, "season_id")
+        let seasonTitle = string(result, "title", "season_title").htmlStripped
+        let episodeTitle = string(episode, "title").htmlStripped
+        let longTitle = string(episode, "long_title").htmlStripped
+        let aid = int64(episode, "aid")
+        let bvid = string(episode, "bvid")
+        let cid = int64(episode, "cid")
+        guard aid > 0, !bvid.isEmpty, cid > 0 else { return nil }
+
+        let styles = (result["styles"] as? [String])?.joined(separator: " / ")
+            ?? string(result, "styles").htmlStripped
+        let areas = (result["areas"] as? [[String: Any]])?
+            .compactMap { string($0, "name").htmlStripped }
+            .filter { !$0.isEmpty }
+            .joined(separator: " / ")
+            ?? string(result, "areas").htmlStripped
+
+        let pages = episodes.enumerated().compactMap { index, item -> BiliVideoPage? in
+            let pageEpid = int64(item, "id", "ep_id")
+            let pageCid = int64(item, "cid")
+            guard pageEpid > 0, pageCid > 0 else { return nil }
+            let pageLongTitle = string(item, "long_title").htmlStripped
+            let pageShortTitle = string(item, "title").htmlStripped
+            let title = pageLongTitle.ifEmpty(pageShortTitle).ifEmpty("第\(index + 1)话")
+            let durationMs = int64(item, "duration")
+            let duration = durationMs > 0 ? Int(durationMs / 1000) : 0
+            return BiliVideoPage(
+                page: index + 1,
+                cid: pageCid,
+                title: title,
+                duration: duration,
+                epid: pageEpid
+            )
+        }
+
+        let durationMs = int64(episode, "duration")
+        let duration = durationMs > 0 ? Int(durationMs / 1000) : 0
+
+        return BiliPGCEpisodeContext(
+            epid: epid,
+            seasonId: seasonId,
+            seasonTitle: seasonTitle,
+            episodeTitle: episodeTitle,
+            longTitle: longTitle,
+            aid: aid,
+            bvid: bvid,
+            cid: cid,
+            coverURL: normalizedURL(string(episode, "cover").ifEmpty(string(result, "cover"))),
+            duration: duration,
+            evaluate: string(result, "evaluate").htmlStripped,
+            styles: styles,
+            areas: areas,
+            pages: pages
         )
     }
 
@@ -1059,61 +1281,6 @@ enum JSONParser {
         return URL(string: raw)
     }
 
-    private nonisolated static func parseUserTopPhotoURLs(from data: [String: Any]) -> [URL] {
-        var values: [String] = []
-        values.append(contentsOf: parseDelimitedTopPhotos(string(data, "top_photo")))
-        if let array = data["top_photos"] as? [Any] {
-            for entry in array {
-                let raw = (entry as? String) ?? "\(entry)"
-                let normalized = normalizeSpaceImageURL(raw)
-                if !normalized.isEmpty {
-                    values.append(normalized)
-                }
-            }
-        }
-        if let space = data["space"] as? [String: Any] {
-            let large = normalizeSpaceImageURL(string(space, "l_img"))
-            if !large.isEmpty { values.append(large) }
-            let small = normalizeSpaceImageURL(string(space, "s_img"))
-            if !small.isEmpty { values.append(small) }
-        }
-        return mergeTopPhotoURLs(values.compactMap(normalizedURL))
-    }
-
-    private nonisolated static func parseDelimitedTopPhotos(_ raw: String) -> [String] {
-        raw.split { $0 == "," || $0 == ";" }
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .map(normalizeSpaceImageURL)
-            .filter { !$0.isEmpty }
-    }
-
-    private nonisolated static func mergeTopPhotoURLs(_ groups: [URL]...) -> [URL] {
-        var seen = Set<String>()
-        var merged: [URL] = []
-        for group in groups {
-            for url in group {
-                let key = url.absoluteString
-                if seen.insert(key).inserted {
-                    merged.append(url)
-                }
-            }
-        }
-        return merged
-    }
-
-    private nonisolated static func normalizeSpaceImageURL(_ raw: String) -> String {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return "" }
-        if trimmed.hasPrefix("bfs/") {
-            return "https://i0.hdslb.com/\(trimmed)"
-        }
-        if trimmed.hasPrefix("//") {
-            return "https:\(trimmed)"
-        }
-        return trimmed
-    }
-
     private nonisolated static func normalizeIpLocation(_ raw: String) -> String? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -1209,7 +1376,7 @@ enum JSONParser {
         )
     }
 
-    private struct DynamicRichText: Sendable {
+    private nonisolated struct DynamicRichText: Sendable {
         var text = ""
         var emoticons: [String: String] = [:]
     }

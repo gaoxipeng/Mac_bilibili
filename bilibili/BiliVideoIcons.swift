@@ -13,7 +13,7 @@ enum BiliMenuPopUpAnchor {
     static let gapBelowButton: CGFloat = 10
 
     static func popUp(_ menu: NSMenu, in view: NSView) {
-        let menuWidth = fittedWidth(for: menu)
+        let menuWidth = max(menu.minimumWidth, fittedWidth(for: menu))
         if menuWidth > 0 {
             menu.minimumWidth = menuWidth
         }
@@ -28,6 +28,14 @@ enum BiliMenuPopUpAnchor {
     private static func fittedWidth(for menu: NSMenu) -> CGFloat {
         let font = NSFont.menuFont(ofSize: NSFont.systemFontSize)
         return menu.items.reduce(0) { width, item in
+            if let itemView = item.view {
+                return max(width, ceil(itemView.fittingSize.width))
+            }
+            if let attributedTitle = item.attributedTitle, attributedTitle.length > 0 {
+                let textWidth = (attributedTitle.string as NSString).size(withAttributes: [.font: font]).width
+                let chrome: CGFloat = item.image == nil ? 28 : 48
+                return max(width, ceil(textWidth + chrome))
+            }
             let textWidth = (item.title as NSString).size(withAttributes: [.font: font]).width
             let chrome: CGFloat = item.image == nil ? 28 : 48
             return max(width, ceil(textWidth + chrome))
@@ -176,6 +184,200 @@ final class CoinMenuPressView: NSView {
     }
 }
 
+struct VideoPartMenuPressOverlay: NSViewRepresentable {
+    let pages: [BiliVideoPage]
+    let activeCID: Int64
+    let onSelect: (BiliVideoPage) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onSelect: onSelect)
+    }
+
+    func makeNSView(context: Context) -> VideoPartMenuPressView {
+        let view = VideoPartMenuPressView()
+        view.configure(
+            coordinator: context.coordinator,
+            pages: pages,
+            activeCID: activeCID
+        )
+        return view
+    }
+
+    func updateNSView(_ nsView: VideoPartMenuPressView, context: Context) {
+        context.coordinator.onSelect = onSelect
+        nsView.configure(
+            coordinator: context.coordinator,
+            pages: pages,
+            activeCID: activeCID
+        )
+    }
+
+    final class Coordinator: NSObject {
+        var pages: [BiliVideoPage] = []
+        var onSelect: (BiliVideoPage) -> Void
+
+        init(onSelect: @escaping (BiliVideoPage) -> Void) {
+            self.onSelect = onSelect
+        }
+
+        @objc func handleSelect(_ sender: NSMenuItem) {
+            let index = sender.tag
+            guard pages.indices.contains(index) else { return }
+            onSelect(pages[index])
+        }
+    }
+}
+
+@MainActor
+final class VideoPartMenuPressView: NSView {
+    private let actionMenu = NSMenu()
+    private weak var coordinator: VideoPartMenuPressOverlay.Coordinator?
+
+    override var isOpaque: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard !actionMenu.items.isEmpty else { return }
+        BiliMenuPopUpAnchor.popUp(actionMenu, in: self)
+    }
+
+    func configure(
+        coordinator: VideoPartMenuPressOverlay.Coordinator,
+        pages: [BiliVideoPage],
+        activeCID: Int64
+    ) {
+        self.coordinator = coordinator
+        coordinator.pages = pages
+
+        actionMenu.removeAllItems()
+
+        let menuWidth = fittedEpisodeMenuWidth(for: pages)
+        actionMenu.minimumWidth = menuWidth
+
+        for (index, part) in pages.enumerated() {
+            let item = NSMenuItem()
+            item.view = EpisodeMenuItemView(part: part, menuWidth: menuWidth)
+            item.target = coordinator
+            item.tag = index
+            item.action = #selector(VideoPartMenuPressOverlay.Coordinator.handleSelect(_:))
+            if part.cid == activeCID {
+                item.state = .on
+            }
+            actionMenu.addItem(item)
+        }
+    }
+
+    private func fittedEpisodeMenuWidth(for pages: [BiliVideoPage]) -> CGFloat {
+        let menuFont = EpisodeMenuItemView.menuFont
+        var width: CGFloat = 260
+
+        for part in pages {
+            let title = episodeMainTitle(for: part)
+            let titleWidth = (title as NSString).size(withAttributes: [.font: menuFont]).width
+            let durationWidth = part.duration > 0
+                ? (part.duration.episodeMenuDurationText as NSString).size(withAttributes: [.font: menuFont]).width
+                : 0
+            width = max(width, titleWidth + durationWidth + EpisodeMenuItemView.horizontalPadding * 2 + 32)
+        }
+
+        return min(ceil(width), 460)
+    }
+
+    private func episodeMainTitle(for part: BiliVideoPage) -> String {
+        let title = part.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = title.isEmpty ? "第\(part.page)话" : title
+        return "\(part.page)  \(label)"
+    }
+}
+
+@MainActor
+private final class EpisodeMenuItemView: NSView {
+    static let menuFont = NSFont.menuFont(ofSize: NSFont.systemFontSize)
+    static let horizontalPadding: CGFloat = 12
+    private static let rowHeight: CGFloat = 26
+    private let menuWidth: CGFloat
+
+    init(part: BiliVideoPage, menuWidth: CGFloat) {
+        self.menuWidth = menuWidth
+        super.init(frame: NSRect(x: 0, y: 0, width: menuWidth, height: Self.rowHeight))
+
+        let titleLabel = makeLabel()
+        let durationLabel = makeLabel()
+
+        let title = part.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = title.isEmpty ? "第\(part.page)话" : title
+        titleLabel.stringValue = "\(part.page)  \(label)"
+        durationLabel.stringValue = part.duration > 0 ? part.duration.episodeMenuDurationText : ""
+        durationLabel.alignment = .right
+
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        durationLabel.setContentHuggingPriority(.required, for: .horizontal)
+        durationLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+
+        let row = NSStackView(views: [titleLabel, durationLabel])
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.distribution = .fill
+        row.spacing = 16
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: Self.rowHeight),
+            widthAnchor.constraint(equalToConstant: menuWidth),
+            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.horizontalPadding),
+            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.horizontalPadding),
+            row.topAnchor.constraint(equalTo: topAnchor),
+            row.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    override var fittingSize: NSSize {
+        NSSize(width: menuWidth, height: Self.rowHeight)
+    }
+
+    private func makeLabel() -> NSTextField {
+        let field = NSTextField(labelWithString: "")
+        field.font = Self.menuFont
+        field.textColor = .labelColor
+        field.isBordered = false
+        field.isEditable = false
+        field.drawsBackground = false
+        field.lineBreakMode = .byTruncatingTail
+        field.cell?.truncatesLastVisibleLine = true
+        field.cell?.usesSingleLineMode = true
+        field.cell?.wraps = false
+        field.cell?.isScrollable = false
+        field.translatesAutoresizingMaskIntoConstraints = false
+        return field
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+}
+
+private extension Int {
+    var episodeMenuDurationText: String {
+        guard self > 0 else { return "" }
+        let hours = self / 3600
+        let minutes = (self % 3600) / 60
+        let seconds = self % 60
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+        }
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+}
+
 struct AuthorFollowButton: View {
     let isFollowing: Bool
     let followerCount: Int64
@@ -183,23 +385,36 @@ struct AuthorFollowButton: View {
     var showsFollowerCount = true
     var overlayOnCover = false
     var coverIsLight = true
+    var usesProfileChromeSizing = false
     let onFollow: () -> Void
     let onUnfollow: () -> Void
 
     @State private var isHovered = false
 
+    private var fontSize: CGFloat {
+        usesProfileChromeSizing ? 14 : 12
+    }
+
+    private var horizontalPadding: CGFloat {
+        usesProfileChromeSizing ? 16 : 10
+    }
+
+    private var verticalPadding: CGFloat {
+        usesProfileChromeSizing ? 9 : 6
+    }
+
     var body: some View {
         ZStack {
-            HStack(spacing: 6) {
+            HStack(spacing: usesProfileChromeSizing ? 8 : 6) {
                 Text(isFollowing ? "已关注" : "+ 关注")
                 if showsFollowerCount {
                     Text(followerCount.compactCount)
                         .monospacedDigit()
                 }
             }
-            .font(.system(size: 12, weight: .semibold))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .font(.system(size: fontSize, weight: .semibold))
+            .padding(.horizontal, horizontalPadding)
+            .padding(.vertical, verticalPadding)
             .background(backgroundColor, in: Capsule(style: .continuous))
             .overlay {
                 Capsule(style: .continuous)
@@ -373,6 +588,7 @@ struct BiliIconView: View {
     let icon: BiliIcon
     var color: Color = BiliTheme.actionInactive
     var size: CGFloat = 24
+    var symbolScale: CGFloat = 1
 
     var body: some View {
         Image(icon.rawValue)
@@ -382,6 +598,7 @@ struct BiliIconView: View {
             .antialiased(true)
             .scaledToFit()
             .frame(width: size, height: size)
+            .scaleEffect(symbolScale)
             .foregroundStyle(color)
     }
 }
@@ -393,18 +610,16 @@ struct BiliStatLabel: View {
     var font: Font = .callout
 
     private var iconColor: Color {
-        switch icon {
-        case .like:
-            // 线框点赞图标描边较细，用略深颜色与播放/弹幕视觉对齐。
-            Color(red: 115 / 255, green: 115 / 255, blue: 115 / 255)
-        default:
-            BiliTheme.actionInactive
-        }
+        BiliTheme.actionInactive
+    }
+
+    private var iconSymbolScale: CGFloat {
+        icon == .like ? 1.04 : 1
     }
 
     var body: some View {
         HStack(spacing: 4) {
-            BiliIconView(icon: icon, color: iconColor, size: iconSize)
+            BiliIconView(icon: icon, color: iconColor, size: iconSize, symbolScale: iconSymbolScale)
             Text(value)
                 .font(font)
                 .foregroundStyle(.secondary)

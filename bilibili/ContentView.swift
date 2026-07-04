@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var navigationPath = NavigationPath()
     @State private var detailChrome: VideoDetailChromeInfo?
     @State private var detailChromeHeight: CGFloat = 0
+    @State private var profileChromeHeaderHeight: CGFloat = 0
     @State private var profileChrome: UserProfileChromeInfo?
 
     var body: some View {
@@ -43,6 +44,13 @@ struct ContentView: View {
         .toolbarBackgroundVisibility(.hidden, for: .automatic)
     }
 
+    private var effectiveChromeHeight: CGFloat {
+        if profileChrome != nil {
+            return AppLayout.userProfileFloatingChromeHeight(headerHeight: profileChromeHeaderHeight)
+        }
+        return detailChromeHeight
+    }
+
     private var mainPane: some View {
         ZStack(alignment: .top) {
             NavigationStack(path: $navigationPath) {
@@ -60,8 +68,6 @@ struct ContentView: View {
                     .navigationDestination(for: UserProfileRequest.self) { request in
                         UserProfileView(
                             mid: request.mid,
-                            seedName: request.seedName,
-                            seedFaceURL: request.seedFaceURL,
                             credential: model.account?.credential,
                             viewerMid: model.account.flatMap { Int64($0.uid) }
                         )
@@ -78,7 +84,7 @@ struct ContentView: View {
             .onPreferenceChange(VideoDetailChromePreferenceKey.self) { detailChrome = $0 }
             .onPreferenceChange(VideoDetailChromeMeasuredHeightKey.self) { detailChromeHeight = $0 }
             .onPreferenceChange(UserProfileChromePreferenceKey.self) { profileChrome = $0 }
-            .environment(\.videoDetailChromeHeight, detailChromeHeight)
+            .environment(\.videoDetailChromeHeight, effectiveChromeHeight)
 
             DetailFloatingChrome(
                 model: model,
@@ -93,12 +99,18 @@ struct ContentView: View {
                     model.requestExitSearchResults()
                 }
             )
+            .onPreferenceChange(UserProfileChromeMeasuredHeightKey.self) { profileChromeHeaderHeight = $0 }
         }
-        .onChange(of: navigationPath.count) { _, count in
+        .onChange(of: navigationPath.count) { oldCount, count in
+            if count < oldCount {
+                profileChrome = nil
+                profileChromeHeaderHeight = 0
+            }
             if count == 0 {
                 detailChrome = nil
                 detailChromeHeight = 0
                 profileChrome = nil
+                profileChromeHeaderHeight = 0
                 model.clearProfilePageHandlers()
                 VideoFullscreenPresenter.restoreMainWindowAppearance()
                 MediaPlaybackCoordinator.shared.stopAll()
@@ -221,10 +233,10 @@ private struct DetailFloatingChrome: View {
 
     var body: some View {
         Group {
-            if let detailChrome {
-                detailChromeRow(detailChrome)
-            } else if let profileChrome {
+            if let profileChrome {
                 profileChromeRow(profileChrome)
+            } else if let detailChrome, navigationPath.count < 2 {
+                detailChromeRow(detailChrome)
             } else {
                 defaultChromeRow
             }
@@ -243,7 +255,6 @@ private struct DetailFloatingChrome: View {
         .animation(.easeOut(duration: 0.26), value: showsFloatingBackButton)
         .animation(.easeOut(duration: 0.26), value: canGoBack)
         .animation(.easeOut(duration: 0.26), value: detailChrome?.title)
-        .animation(.easeOut(duration: 0.26), value: profileChrome?.coverIsLight)
     }
 
     @ViewBuilder
@@ -264,35 +275,22 @@ private struct DetailFloatingChrome: View {
 
     @ViewBuilder
     private func profileChromeRow(_ profileChrome: UserProfileChromeInfo) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            if showsFloatingBackButton {
-                profileBackButton
-                    .padding(.top, 10)
-            }
-
-            UserProfileChromeHeaderView(info: profileChrome)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            profileChromeActions(profileChrome)
-                .padding(.top, 10)
-        }
-    }
-
-    @ViewBuilder
-    private func profileChromeActions(_ profileChrome: UserProfileChromeInfo) -> some View {
-        HStack(alignment: .center, spacing: 10) {
-            if profileChrome.showFollowButton {
-                AuthorFollowButton(
-                    isFollowing: profileChrome.isFollowing,
-                    followerCount: profileChrome.followerCount,
-                    isLoading: profileChrome.followLoading,
-                    onFollow: { model.profilePageHandlers?.follow() },
-                    onUnfollow: { model.profilePageHandlers?.unfollow() }
-                )
-            }
-
-            GlassMoreButton(webURL: profileChrome.webURL)
-        }
+        UserProfileChromeHeaderView(
+            info: profileChrome,
+            showsBackButton: showsFloatingBackButton,
+            onBack: {
+                if canGoBack {
+                    if !navigationPath.isEmpty {
+                        navigationPath.removeLast()
+                    }
+                } else {
+                    onExitSearchResults()
+                }
+            },
+            onFollow: { model.profilePageHandlers?.follow() },
+            onUnfollow: { model.profilePageHandlers?.unfollow() }
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder

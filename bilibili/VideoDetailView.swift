@@ -33,7 +33,7 @@ final class VideoDetailModel: ObservableObject {
     private var watchHistoryTask: Task<Void, Never>?
     private var watchHistoryContext: (aid: Int64, cid: Int64)?
     private let initialProgressSeconds: Int
-    private let playbackEpid: Int64
+    private var activeEpid: Int64
     private let playbackRefererURL: URL?
     private var hasAppliedInitialProgress = false
     private var playerChangeSink: AnyCancellable?
@@ -73,7 +73,7 @@ final class VideoDetailModel: ObservableObject {
         self.credential = credential
         self.activeCID = video.cid
         self.initialProgressSeconds = max(0, initialProgressSeconds)
-        self.playbackEpid = max(0, playbackEpid)
+        self.activeEpid = max(0, playbackEpid)
         self.playbackRefererURL = playbackRefererURL
         playerChangeSink = player.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
@@ -81,7 +81,7 @@ final class VideoDetailModel: ObservableObject {
     }
 
     var isBangumiPlayback: Bool {
-        playbackEpid > 0
+        activeEpid > 0
     }
 
     var displayVideo: BiliVideo {
@@ -107,20 +107,26 @@ final class VideoDetailModel: ObservableObject {
         defer { isLoadingDetail = false }
 
         if isBangumiPlayback {
-            detail = BiliVideoDetail(
-                video: seedVideo,
-                publishTime: nil,
-                replyCount: 0,
-                coinCount: 0,
-                favoriteCount: 0,
-                shareCount: 0,
-                pages: []
-            )
-            if activeCID <= 0 {
-                activeCID = seedVideo.cid
+            do {
+                let (context, loaded) = try await loadBangumiEpisodeContext(epid: activeEpid)
+                guard isLifecycleActive(generation), !Task.isCancelled else { return }
+                activeCID = context.cid
+                detail = applyBangumiDetail(context: context, loaded: loaded)
+                async let authorCardTask = loadAuthorCardInfo()
+                async let onlineCountTask = loadOnlineCount()
+                async let videoTagsTask = loadVideoTags()
+                await loadVideoRelation()
+                guard isLifecycleActive(generation), !Task.isCancelled else { return }
+                await loadPlayback()
+                guard isLifecycleActive(generation), !Task.isCancelled else { return }
+                await scheduleInitialCommentsLoad()
+                await authorCardTask
+                await onlineCountTask
+                await videoTagsTask
+            } catch {
+                guard isLifecycleActive(generation) else { return }
+                detailError = error.localizedDescription
             }
-            guard isLifecycleActive(generation), !Task.isCancelled else { return }
-            await loadPlayback()
             return
         }
 
@@ -488,8 +494,33 @@ final class VideoDetailModel: ObservableObject {
     }
 
     func selectPart(_ part: BiliVideoPage) async {
-        guard part.cid != activeCID else { return }
         let generation = lifecycleGeneration
+        if part.epid > 0, part.epid != activeEpid {
+            activeEpid = part.epid
+            activeCID = part.cid
+            isLoadingDetail = true
+            defer { isLoadingDetail = false }
+            do {
+                let (context, loaded) = try await loadBangumiEpisodeContext(epid: part.epid)
+                guard isLifecycleActive(generation), !Task.isCancelled else { return }
+                activeCID = context.cid
+                detail = applyBangumiDetail(context: context, loaded: loaded)
+                loadedCommentsKey = nil
+                comments = []
+                commentsEnd = false
+                await loadVideoRelation()
+                await loadPlayback()
+                guard isLifecycleActive(generation) else { return }
+                await loadOnlineCount()
+                await scheduleInitialCommentsLoad()
+            } catch {
+                guard isLifecycleActive(generation) else { return }
+                playError = error.localizedDescription
+            }
+            return
+        }
+
+        guard part.cid != activeCID else { return }
         activeCID = part.cid
         await loadPlayback()
         guard isLifecycleActive(generation) else { return }
@@ -503,7 +534,7 @@ final class VideoDetailModel: ObservableObject {
         let bvid = displayVideo.bvid
         let cid = activeCID > 0 ? activeCID : displayVideo.cid
         if isBangumiPlayback {
-            guard playbackEpid > 0, cid > 0 else {
+            guard activeEpid > 0 else {
                 playError = "无法确定番剧分集"
                 return
             }
@@ -519,17 +550,7 @@ final class VideoDetailModel: ObservableObject {
         defer { isLoadingPlayback = false }
 
         do {
-            let stream: BiliPlayStream
-            if isBangumiPlayback {
-                stream = try await api.pgcPlayURL(
-                    epid: playbackEpid,
-                    cid: cid,
-                    credential: credential,
-                    referer: playbackRefererURL?.absoluteString ?? "https://www.bilibili.com"
-                )
-            } else {
-                stream = try await api.playURL(bvid: bvid, cid: cid, credential: credential)
-            }
+            let stream = try await resolvePlayStream(bvid: bvid, cid: cid)
             guard isLifecycleActive(generation), !Task.isCancelled else { return }
 
             let resolvedStream = BiliPlayStream(
@@ -550,7 +571,7 @@ final class VideoDetailModel: ObservableObject {
             applyInitialProgressIfNeeded()
             let reportAid = displayVideo.aid > 0 ? displayVideo.aid : resolvedStream.aid
             startWatchHistoryReporting(aid: reportAid, cid: cid)
-            if !isBangumiPlayback {
+            if cid > 0 {
                 await loadDanmaku(cid: cid)
             } else {
                 danmakuItems = []
@@ -559,6 +580,71 @@ final class VideoDetailModel: ObservableObject {
             guard isLifecycleActive(generation), !Task.isCancelled else { return }
             playError = error.localizedDescription
         }
+    }
+
+    private func loadBangumiEpisodeContext(epid: Int64) async throws -> (BiliPGCEpisodeContext, BiliVideoDetail) {
+        let context = try await api.pgcEpisodeContext(epid: epid, credential: credential)
+        let loaded = try await api.videoDetail(bvid: context.bvid, credential: credential)
+        return (context, loaded)
+    }
+
+    private func applyBangumiDetail(context: BiliPGCEpisodeContext, loaded: BiliVideoDetail) -> BiliVideoDetail {
+        BiliVideoDetail(
+            video: mergeVideoWithPGCContext(loaded.video, context: context),
+            publishTime: loaded.publishTime,
+            replyCount: loaded.replyCount,
+            coinCount: loaded.coinCount,
+            favoriteCount: loaded.favoriteCount,
+            shareCount: loaded.shareCount,
+            pages: context.pages.isEmpty ? loaded.pages : context.pages
+        )
+    }
+
+    private func mergeVideoWithPGCContext(_ video: BiliVideo, context: BiliPGCEpisodeContext) -> BiliVideo {
+        BiliVideo(
+            id: "pgc:\(context.epid)",
+            bvid: context.bvid,
+            aid: context.aid,
+            title: context.seasonTitle.ifEmpty(video.title),
+            coverURL: context.coverURL ?? video.coverURL,
+            authorName: video.authorName,
+            authorFaceURL: video.authorFaceURL,
+            authorMid: video.authorMid,
+            viewCount: video.viewCount,
+            danmakuCount: video.danmakuCount,
+            likeCount: video.likeCount,
+            duration: context.duration > 0 ? context.duration : video.duration,
+            description: context.evaluate.ifEmpty(video.description),
+            cid: context.cid
+        )
+    }
+
+    private func resolvePlayStream(bvid: String, cid: Int64) async throws -> BiliPlayStream {
+        let referer = playbackRefererURL?.absoluteString ?? "https://www.bilibili.com"
+        if !bvid.isEmpty, cid > 0 {
+            do {
+                return try await api.playURL(bvid: bvid, cid: cid, credential: credential)
+            } catch {
+                if isBangumiPlayback, activeEpid > 0 {
+                    return try await api.pgcPlayURL(
+                        epid: activeEpid,
+                        cid: cid,
+                        credential: credential,
+                        referer: referer
+                    )
+                }
+                throw error
+            }
+        }
+        if isBangumiPlayback, activeEpid > 0 {
+            return try await api.pgcPlayURL(
+                epid: activeEpid,
+                cid: cid,
+                credential: credential,
+                referer: referer
+            )
+        }
+        throw APIError.message("无法获取播放地址")
     }
 
     private func applyInitialProgressIfNeeded() {
@@ -1040,16 +1126,16 @@ struct VideoDetailView: View {
 
             MacOverlayScrollView(usesOverlayScrollers: false) {
                 VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
+                    if (model.detail?.pages.count ?? 0) > 1 {
+                        VideoEpisodeSection(model: model)
+                            .frame(width: contentWidth)
+                    }
+
                     VideoIntroCard(
                         model: model,
                         onTagTap: { appModel.openSearch(for: $0) }
                     )
                     .frame(width: contentWidth)
-
-                    if (model.detail?.pages.count ?? 0) > 1 {
-                        VideoMultiPartCard(model: model)
-                            .frame(width: contentWidth)
-                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, 8)
@@ -1241,11 +1327,7 @@ struct VideoDetailView: View {
     private var authorAvatarLink: some View {
         if model.displayVideo.authorMid > 0 {
             NavigationLink(
-                value: UserProfileRequest(
-                    mid: model.displayVideo.authorMid,
-                    seedName: model.displayVideo.authorName,
-                    seedFaceURL: model.displayVideo.authorFaceURL
-                )
+                value: UserProfileRequest(mid: model.displayVideo.authorMid)
             ) {
                 authorAvatar
             }
@@ -1273,11 +1355,7 @@ struct VideoDetailView: View {
     private var authorNameLink: some View {
         if model.displayVideo.authorMid > 0 {
             NavigationLink(
-                value: UserProfileRequest(
-                    mid: model.displayVideo.authorMid,
-                    seedName: model.displayVideo.authorName,
-                    seedFaceURL: model.displayVideo.authorFaceURL
-                )
+                value: UserProfileRequest(mid: model.displayVideo.authorMid)
             ) {
                 authorNameRow
             }
@@ -1366,63 +1444,70 @@ private struct VideoIntroCard: View {
     }
 }
 
-private struct VideoMultiPartCard: View {
+private struct VideoEpisodeSection: View {
     @ObservedObject var model: VideoDetailModel
-    @State private var showsPartSheet = false
 
     private var pages: [BiliVideoPage] {
         model.detail?.pages ?? []
     }
 
+    private var activePart: BiliVideoPage? {
+        pages.first(where: { $0.cid == model.activeCID }) ?? pages.first
+    }
+
     var body: some View {
-        Button {
-            showsPartSheet = true
-        } label: {
-            VideoMultiPartEntryRow(
-                title: model.displayVideo.title,
-                partCount: pages.count
+        if let activePart {
+            VideoCurrentEpisodeRow(
+                part: activePart,
+                totalCount: pages.count
             )
-        }
-        .buttonStyle(.plain)
-        .videoDetailCard()
-        .sheet(isPresented: $showsPartSheet) {
-            VideoPartCollectionSheet(
-                pages: pages,
-                activeCID: model.activeCID,
-                onSelect: { part in
-                    showsPartSheet = false
-                    Task { await model.selectPart(part) }
-                },
-                onDismiss: { showsPartSheet = false }
-            )
+            .videoDetailCard()
+            .overlay {
+                VideoPartMenuPressOverlay(
+                    pages: pages,
+                    activeCID: model.activeCID,
+                    onSelect: { part in
+                        Task { await model.selectPart(part) }
+                    }
+                )
+            }
         }
     }
 }
 
-private struct VideoMultiPartEntryRow: View {
-    let title: String
-    let partCount: Int
+private struct VideoCurrentEpisodeRow: View {
+    let part: BiliVideoPage
+    let totalCount: Int
 
     @State private var isHovered = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text("合集")
+        HStack(spacing: 10) {
+            Text("分集")
                 .font(.system(size: 13, weight: .medium))
                 .foregroundStyle(BiliTheme.pink)
 
-            Text(title.ifEmpty("未命名视频"))
+            Text("\(part.page)")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(BiliTheme.pink)
+                .frame(width: 28, height: 22)
+                .background(
+                    BiliTheme.pink.opacity(0.12),
+                    in: RoundedRectangle(cornerRadius: 5, style: .continuous)
+                )
+
+            Text(part.title.ifEmpty("未命名分P"))
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            Text("\(partCount)P")
+            Text("共\(totalCount)集")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
 
-            Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
+            Image(systemName: "chevron.down")
+                .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 12)
@@ -1436,121 +1521,6 @@ private struct VideoMultiPartEntryRow: View {
             withAnimation(.easeOut(duration: 0.15)) {
                 isHovered = hovering
             }
-        }
-    }
-}
-
-private struct VideoPartCollectionSheet: View {
-    let pages: [BiliVideoPage]
-    let activeCID: Int64
-    let onSelect: (BiliVideoPage) -> Void
-    let onDismiss: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("分集 (\(pages.count))")
-                    .font(.system(size: 16, weight: .semibold))
-                Spacer()
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 28, height: 28)
-                        .background(Color.black.opacity(0.05), in: Circle())
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 14)
-
-            Divider()
-
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 4) {
-                        ForEach(pages) { part in
-                            VideoPartCollectionRow(
-                                part: part,
-                                isSelected: part.cid == activeCID,
-                                onSelect: { onSelect(part) }
-                            )
-                            .id(part.cid)
-                        }
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 10)
-                }
-                .onAppear {
-                    scrollToActivePart(using: proxy)
-                }
-                .onChange(of: activeCID) { _, _ in
-                    scrollToActivePart(using: proxy)
-                }
-            }
-        }
-        .frame(width: 440, height: min(520, CGFloat(pages.count) * 58 + 72))
-    }
-
-    private func scrollToActivePart(using proxy: ScrollViewProxy) {
-        guard activeCID > 0 else { return }
-        DispatchQueue.main.async {
-            withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(activeCID, anchor: .center)
-            }
-        }
-    }
-}
-
-private struct VideoPartCollectionRow: View {
-    let part: BiliVideoPage
-    let isSelected: Bool
-    let onSelect: () -> Void
-
-    @State private var isHovered = false
-
-    private var titleColor: Color {
-        isSelected ? BiliTheme.pink : .primary
-    }
-
-    var body: some View {
-        Button(action: onSelect) {
-            HStack(alignment: .top, spacing: 10) {
-                Text("\(part.page)")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(titleColor)
-                    .frame(width: 26, height: 20)
-                    .background(
-                        isSelected ? BiliTheme.pink.opacity(0.12) : Color.black.opacity(0.05),
-                        in: RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    )
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(part.title.ifEmpty("未命名分P"))
-                        .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
-                        .foregroundStyle(titleColor)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    if part.duration > 0 {
-                        Text(part.duration.durationText)
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 10)
-            .background(
-                isHovered ? Color.black.opacity(0.04) : Color.clear,
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering in
-            isHovered = hovering
         }
     }
 }

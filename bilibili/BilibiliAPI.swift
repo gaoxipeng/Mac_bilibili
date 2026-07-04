@@ -153,6 +153,151 @@ actor BilibiliAPI {
         return JSONParser.parseSearchUserPage(from: json)
     }
 
+    func searchPGCMedia(
+        keyword: String,
+        searchType: String,
+        page: Int = 1,
+        credential: BilibiliCredential? = nil
+    ) async throws -> BiliSearchPage<BiliSearchBangumi> {
+        let refererPath = searchType == "media_ft" ? "movie" : "bangumi"
+        let params: [String: String] = [
+            "search_type": searchType,
+            "keyword": keyword,
+            "page": "\(max(1, page))"
+        ]
+        let json = try await wbiJSON(
+            url: "https://api.bilibili.com/x/web-interface/wbi/search/type",
+            params: params,
+            credential: credential,
+            referer: "https://search.bilibili.com/\(refererPath)?keyword=\(keyword.urlQueryEscaped)"
+        )
+        return JSONParser.parseSearchBangumiPage(from: json)
+    }
+
+    func searchAllPGCMedia(
+        keyword: String,
+        credential: BilibiliCredential? = nil
+    ) async throws -> [BiliSearchBangumi] {
+        let json = try await wbiJSON(
+            url: "https://api.bilibili.com/x/web-interface/wbi/search/all/v2",
+            params: ["keyword": keyword],
+            credential: credential,
+            referer: "https://search.bilibili.com/all?keyword=\(keyword.urlQueryEscaped)"
+        )
+        return JSONParser.parseSearchAllPGCMedia(from: json)
+    }
+
+    func pgcSeasonFirstEpid(
+        seasonId: Int64,
+        credential: BilibiliCredential? = nil
+    ) async throws -> Int64 {
+        guard seasonId > 0 else { return 0 }
+        let json = try await json(
+            url: "https://api.bilibili.com/pgc/view/web/season",
+            params: ["season_id": "\(seasonId)"],
+            credential: credential,
+            referer: "https://www.bilibili.com/bangumi/play/ss\(seasonId)"
+        )
+        return JSONParser.parsePGCSeasonFirstEpid(from: json)
+    }
+
+    func enrichPinnedMediaItems(
+        _ items: [BiliSearchBangumi],
+        credential: BilibiliCredential? = nil
+    ) async -> [BiliSearchBangumi] {
+        var enriched = items
+        let pending = items.enumerated().filter { $0.element.firstEpid == 0 && $0.element.seasonId > 0 }.prefix(16)
+        await withTaskGroup(of: (Int, Int64).self) { group in
+            for (index, item) in pending {
+                let seasonId = item.seasonId
+                group.addTask {
+                    let epid = (try? await self.pgcSeasonFirstEpid(seasonId: seasonId, credential: credential)) ?? 0
+                    return (index, epid)
+                }
+            }
+            for await (index, epid) in group where epid > 0 {
+                enriched[index] = enriched[index].withFirstEpid(epid)
+            }
+        }
+        return enriched
+    }
+
+    private func fetchPGCSearchPage(
+        keyword: String,
+        searchType: String,
+        page: Int,
+        credential: BilibiliCredential?
+    ) async -> BiliSearchPage<BiliSearchBangumi> {
+        if let result = try? await searchPGCMedia(
+            keyword: keyword,
+            searchType: searchType,
+            page: page,
+            credential: credential
+        ) {
+            return result
+        }
+
+        try? await Task.sleep(nanoseconds: 250_000_000)
+        if let result = try? await searchPGCMedia(
+            keyword: keyword,
+            searchType: searchType,
+            page: page,
+            credential: credential
+        ) {
+            return result
+        }
+
+        return BiliSearchPage(items: [], page: page, hasMore: false)
+    }
+
+    func searchPinnedMedia(
+        keyword: String,
+        page: Int = 1,
+        credential: BilibiliCredential? = nil
+    ) async throws -> BiliSearchPage<BiliSearchBangumi> {
+        let resolvedPage = max(1, page)
+
+        let allTask = Task { [resolvedPage, keyword, credential] () -> [BiliSearchBangumi] in
+            guard resolvedPage == 1 else { return [] }
+            return (try? await self.searchAllPGCMedia(keyword: keyword, credential: credential)) ?? []
+        }
+        let bangumiTask = Task {
+            await self.fetchPGCSearchPage(
+                keyword: keyword,
+                searchType: "media_bangumi",
+                page: resolvedPage,
+                credential: credential
+            )
+        }
+        let ftTask = Task {
+            await self.fetchPGCSearchPage(
+                keyword: keyword,
+                searchType: "media_ft",
+                page: resolvedPage,
+                credential: credential
+            )
+        }
+
+        let allResults = await allTask.value
+        let bangumiPage = await bangumiTask.value
+        let ftPage = await ftTask.value
+
+        var merged: [BiliSearchBangumi] = []
+        var seen = Set<Int64>()
+        for item in allResults + bangumiPage.items + ftPage.items where seen.insert(item.seasonId).inserted {
+            merged.append(item)
+        }
+
+        merged = BiliSearchBangumi.sortedForDisplay(merged)
+        merged = await enrichPinnedMediaItems(merged, credential: credential)
+
+        return BiliSearchPage(
+            items: merged,
+            page: resolvedPage,
+            hasMore: bangumiPage.hasMore || ftPage.hasMore
+        )
+    }
+
     func hotSearchItems(limit: Int = 30) async throws -> [BiliHotSearchItem] {
         let json = try await json(
             url: "https://s.search.bilibili.com/main/hotword",
@@ -291,26 +436,18 @@ actor BilibiliAPI {
             credential: credential,
             referer: referer
         )
-        let topPhotoJSON = try? await jsonAllowNonZero(
-            url: "https://space.bilibili.com/ajax/topphoto/getlist",
-            params: ["mid": "\(mid)"],
-            credential: credential,
-            referer: referer
-        )
 
         let acc = accJSON.flatMap { JSONParser.parseUserAccInfo(from: $0) }
         let card = cardJSON.flatMap { JSONParser.parseUserCardProfile(from: $0) }
         let likes = upstatJSON.map { JSONParser.parseUserUpstatLikes(from: $0) } ?? 0
         let videoCount = navnumJSON.map { JSONParser.parseUserNavnum(from: $0) } ?? 0
-        let topPhotos = topPhotoJSON.map { JSONParser.parseUserTopPhotoList(from: $0) } ?? []
 
         guard let profile = JSONParser.mergeSpaceProfile(
             acc: acc,
             card: card,
             mid: mid,
             likes: likes,
-            videoCount: videoCount,
-            extraTopPhotoURLs: topPhotos
+            videoCount: videoCount
         ) else {
             throw APIError.message("无法加载用户资料")
         }
@@ -587,6 +724,25 @@ actor BilibiliAPI {
             cid: cid > 0 ? cid : stream.cid
         )
         return stream
+    }
+
+    func pgcEpisodeContext(
+        epid: Int64,
+        credential: BilibiliCredential? = nil
+    ) async throws -> BiliPGCEpisodeContext {
+        guard epid > 0 else {
+            throw APIError.message("无法确定番剧分集")
+        }
+        let json = try await json(
+            url: "https://api.bilibili.com/pgc/view/web/season",
+            params: ["ep_id": "\(epid)"],
+            credential: credential,
+            referer: "https://www.bilibili.com/bangumi/play/ep\(epid)"
+        )
+        guard let context = JSONParser.parsePGCEpisodeContext(from: json, epid: epid) else {
+            throw APIError.message("无法读取番剧详情")
+        }
+        return context
     }
 
     func deleteWatchHistory(kid: String, credential: BilibiliCredential) async throws -> Bool {
@@ -1370,24 +1526,24 @@ actor BilibiliAPI {
     }
 }
 
-private struct GuestSessionStore {
-    struct Session: Codable {
+private enum GuestSessionStore {
+    nonisolated struct Session: Codable, Sendable {
         var buvid3: String
         var buvid4: String
     }
 
-    private static var fileURL: URL {
+    nonisolated private static var fileURL: URL {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let appDirectory = support.appendingPathComponent("gaoxipeng.bilibili", isDirectory: true)
         return appDirectory.appendingPathComponent("guest-session.json")
     }
 
-    static func load() -> Session? {
+    nonisolated static func load() -> Session? {
         guard let data = try? Data(contentsOf: fileURL) else { return nil }
         return try? JSONDecoder().decode(Session.self, from: data)
     }
 
-    static func save(buvid3: String, buvid4: String) {
+    nonisolated static func save(buvid3: String, buvid4: String) {
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let appDirectory = support.appendingPathComponent("gaoxipeng.bilibili", isDirectory: true)
         try? FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)

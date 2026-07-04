@@ -5,8 +5,6 @@ import SwiftUI
 @MainActor
 final class UserProfileModel: ObservableObject {
     let mid: Int64
-    let seedName: String
-    let seedFaceURL: URL?
     var credential: BilibiliCredential?
     let viewerMid: Int64?
 
@@ -31,28 +29,21 @@ final class UserProfileModel: ObservableObject {
 
     init(
         mid: Int64,
-        seedName: String,
-        seedFaceURL: URL?,
         credential: BilibiliCredential?,
         viewerMid: Int64?
     ) {
         self.mid = mid
-        self.seedName = seedName
-        self.seedFaceURL = seedFaceURL
         self.credential = credential
         self.viewerMid = viewerMid
     }
 
     var displayName: String {
-        (profile?.name ?? "").ifEmpty(seedName).ifEmpty("UP 主")
+        guard let profile else { return "" }
+        return profile.name.ifEmpty("UP 主")
     }
 
     var displayFaceURL: URL? {
-        profile?.faceURL ?? seedFaceURL
-    }
-
-    var displayCoverURLs: [URL] {
-        profile?.displayTopPhotoURLs ?? []
+        profile?.faceURL
     }
 
     var authorFollowerCount: Int64 {
@@ -90,8 +81,7 @@ final class UserProfileModel: ObservableObject {
             showFollowButton: showFollowButton,
             isFollowing: relation.following,
             followerCount: authorFollowerCount,
-            followLoading: followLoading,
-            coverIsLight: true
+            followLoading: followLoading
         )
     }
 
@@ -256,7 +246,14 @@ struct UserProfileChromeInfo: Equatable {
     let isFollowing: Bool
     let followerCount: Int64
     let followLoading: Bool
-    let coverIsLight: Bool
+}
+
+struct UserProfileChromeMeasuredHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
 }
 
 struct UserProfileChromePreferenceKey: PreferenceKey {
@@ -271,56 +268,115 @@ struct UserProfileChromePreferenceKey: PreferenceKey {
 
 struct UserProfileChromeHeaderView: View {
     let info: UserProfileChromeInfo
+    var showsBackButton = false
+    var onBack: () -> Void = {}
+    var onFollow: () -> Void = {}
+    var onUnfollow: () -> Void = {}
 
     private let primaryText = Color(red: 0.11, green: 0.11, blue: 0.12)
     private let secondaryText = Color(red: 0.39, green: 0.39, blue: 0.4)
+    private let cardCornerRadius: CGFloat = 22
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        HStack(alignment: .center, spacing: 12) {
+            if showsBackButton {
+                GlassBackButton(action: onBack)
+            }
+
             HStack(alignment: .center, spacing: 12) {
                 profileAvatar
 
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .center, spacing: 6) {
-                        Text(info.name)
-                            .font(.title)
-                            .foregroundStyle(primaryText)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
+                VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .center, spacing: 6) {
+                            Text(info.name)
+                                .font(.title)
+                                .foregroundStyle(primaryText)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.leading)
 
-                        if info.level > 0 {
-                            BiliUserLevelIcon(level: info.level, width: 30, height: 19)
+                            if info.level > 0 {
+                                BiliUserLevelIcon(level: info.level, width: 30, height: 19)
+                            }
+                        }
+
+                        if !info.sign.isEmpty {
+                            Text(info.sign)
+                                .font(.callout)
+                                .foregroundStyle(secondaryText)
+                                .lineSpacing(2)
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
 
-                    if !info.sign.isEmpty {
-                        Text(info.sign)
-                            .font(.callout)
-                            .foregroundStyle(secondaryText)
-                            .lineSpacing(2)
-                            .lineLimit(2)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    ProfileStatsBar(
+                        following: info.following,
+                        follower: info.follower,
+                        likes: info.likes,
+                        videoCount: info.videoCount,
+                        primaryText: primaryText,
+                        secondaryText: secondaryText
+                    )
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            ProfileStatsBar(
-                following: info.following,
-                follower: info.follower,
-                likes: info.likes,
-                videoCount: info.videoCount,
-                primaryText: primaryText,
-                secondaryText: secondaryText
-            )
+            trailingActions
         }
-        .padding(12)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .padding(14)
+        .background {
+            RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                .fill(Color.white.opacity(0.08))
+                .background(
+                    .ultraThinMaterial,
+                    in: RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                )
+                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: cardCornerRadius))
+        }
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(.white.opacity(0.22), lineWidth: 0.6)
+            RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [
+                            Color.white.opacity(0.52),
+                            Color.white.opacity(0.14),
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 0.8
+                )
         }
-        .shadow(color: .black.opacity(0.12), radius: 18, x: 0, y: 10)
+        .shadow(color: .black.opacity(0.10), radius: 18, x: 0, y: 10)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: UserProfileChromeMeasuredHeightKey.self,
+                    value: geometry.size.height
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var trailingActions: some View {
+        HStack(alignment: .center, spacing: 10) {
+            if info.showFollowButton {
+                AuthorFollowButton(
+                    isFollowing: info.isFollowing,
+                    followerCount: info.followerCount,
+                    isLoading: info.followLoading,
+                    usesProfileChromeSizing: true,
+                    onFollow: onFollow,
+                    onUnfollow: onUnfollow
+                )
+            }
+
+            GlassMoreButton(webURL: info.webURL)
+        }
+        .fixedSize()
     }
 
     private var profileAvatar: some View {
@@ -377,24 +433,21 @@ private struct ProfileStatsBar: View {
 
 struct UserProfileView: View {
     @EnvironmentObject private var appModel: AppModel
+    @Environment(\.videoDetailChromeHeight) private var chromeHeight
     @StateObject private var model: UserProfileModel
-    @State private var coverIsLight = true
 
     private let columnInnerPadding: CGFloat = 14
-    private let sectionHeaderHeight: CGFloat = 40
+    private let profileSectionHeaderHeight: CGFloat = 48
+    private let profileDynamicColumnWidthRatio: CGFloat = 0.24
 
     init(
         mid: Int64,
-        seedName: String = "",
-        seedFaceURL: URL? = nil,
         credential: BilibiliCredential?,
         viewerMid: Int64? = nil
     ) {
         _model = StateObject(
             wrappedValue: UserProfileModel(
                 mid: mid,
-                seedName: seedName,
-                seedFaceURL: seedFaceURL,
                 credential: credential,
                 viewerMid: viewerMid
             )
@@ -403,56 +456,48 @@ struct UserProfileView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let contentWidth = geometry.size.width
-                - AppLayout.videoDetailLeadingInset
-                - AppLayout.videoDetailTrailingInset
+            let contentWidth = geometry.size.width - AppLayout.videoDetailLeadingInset
             let dividerWidth: CGFloat = 0.5
             let columnGutter = columnInnerPadding * 2 + dividerWidth
-            let videoColumnWidth = (contentWidth - columnGutter) * 2 / 3
-            let dynamicColumnWidth = (contentWidth - columnGutter) / 3
+            let dynamicColumnWidth = (contentWidth - columnGutter) * profileDynamicColumnWidthRatio
+            let videoColumnWidth = contentWidth - columnGutter - dynamicColumnWidth
+            let contentTopInset = AppLayout.userProfileContentTopInset(chromeHeight: chromeHeight)
 
             VStack(alignment: .leading, spacing: 0) {
-                ProfileCoverCarousel(
-                    urls: model.displayCoverURLs,
-                    onTopLuminance: { luminance in
-                        coverIsLight = luminance >= 0.58
-                    }
-                )
-
-                sectionHeadersRow(
-                    videoColumnWidth: videoColumnWidth,
-                    dynamicColumnWidth: dynamicColumnWidth,
-                    dividerWidth: dividerWidth
-                )
-                .padding(.horizontal, AppLayout.videoDetailLeadingInset)
-                .padding(.top, 14)
-                .frame(height: sectionHeaderHeight)
+                Color.clear
+                    .frame(height: contentTopInset)
 
                 HStack(alignment: .top, spacing: 0) {
-                    MacOverlayScrollView(usesOverlayScrollers: true) {
+                    profileScrollColumn(width: videoColumnWidth) {
+                        videoSectionHeader
+                            .padding(.horizontal, AppLayout.feedHorizontalInset)
+                    } content: {
                         videosScrollContent
+                            .padding(.horizontal, AppLayout.feedHorizontalInset)
                             .environment(\.feedViewportWidth, videoColumnWidth)
+                            .environment(\.feedSymmetricHorizontalInsets, true)
                     }
-                    .frame(width: videoColumnWidth)
                     .padding(.trailing, columnInnerPadding)
 
                     Rectangle()
                         .fill(Color.black.opacity(0.08))
                         .frame(width: dividerWidth)
 
-                    MacOverlayScrollView(usesOverlayScrollers: true) {
+                    profileScrollColumn(width: dynamicColumnWidth) {
+                        dynamicSectionHeader
+                            .padding(.leading, columnInnerPadding)
+                    } content: {
                         dynamicsScrollContent
+                            .padding(.leading, columnInnerPadding)
                     }
-                    .frame(width: dynamicColumnWidth)
-                    .padding(.leading, columnInnerPadding)
                 }
-                .padding(.horizontal, AppLayout.videoDetailLeadingInset)
-                .padding(.top, 8)
+                .padding(.leading, AppLayout.videoDetailLeadingInset)
                 .padding(.bottom, 20)
                 .frame(maxHeight: .infinity, alignment: .topLeading)
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
             .background(AppLayout.videoDetailPageBackground)
+            .animation(.easeOut(duration: 0.22), value: contentTopInset)
         }
         .navigationBarBackButtonHidden(true)
         .background {
@@ -475,8 +520,9 @@ struct UserProfileView: View {
         }
     }
 
-    private var profileChromePreference: UserProfileChromeInfo {
-        UserProfileChromeInfo(
+    private var profileChromePreference: UserProfileChromeInfo? {
+        guard model.profile != nil || !model.loading else { return nil }
+        return UserProfileChromeInfo(
             faceURL: model.chromeInfo.faceURL,
             name: model.chromeInfo.name,
             level: model.chromeInfo.level,
@@ -489,29 +535,26 @@ struct UserProfileView: View {
             showFollowButton: model.chromeInfo.showFollowButton,
             isFollowing: model.chromeInfo.isFollowing,
             followerCount: model.chromeInfo.followerCount,
-            followLoading: model.chromeInfo.followLoading,
-            coverIsLight: coverIsLight
+            followLoading: model.chromeInfo.followLoading
         )
     }
 
-    private func sectionHeadersRow(
-        videoColumnWidth: CGFloat,
-        dynamicColumnWidth: CGFloat,
-        dividerWidth: CGFloat
+    private func profileScrollColumn<Header: View, Content: View>(
+        width: CGFloat,
+        @ViewBuilder header: () -> Header,
+        @ViewBuilder content: @escaping () -> Content
     ) -> some View {
-        HStack(alignment: .center, spacing: 0) {
-            videoSectionHeader
-                .frame(width: videoColumnWidth, alignment: .leading)
-                .padding(.trailing, columnInnerPadding)
+        VStack(alignment: .leading, spacing: 10) {
+            header()
+                .frame(height: profileSectionHeaderHeight, alignment: .center)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .profileSectionHeaderChrome()
 
-            Rectangle()
-                .fill(Color.clear)
-                .frame(width: dividerWidth)
-
-            dynamicSectionHeader
-                .frame(width: dynamicColumnWidth, alignment: .leading)
-                .padding(.leading, columnInnerPadding)
+            MacOverlayScrollView(usesOverlayScrollers: true, clipsContent: true) {
+                content()
+            }
         }
+        .frame(width: width)
     }
 
     private var videoSectionHeader: some View {
@@ -538,7 +581,7 @@ struct UserProfileView: View {
     }
 
     private var dynamicSectionHeader: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
+        HStack(alignment: .center, spacing: 6) {
             Text("动态")
                 .font(.title)
             Text("\(model.dynamics.count)")
@@ -557,7 +600,7 @@ struct UserProfileView: View {
                 .padding(.vertical, 40)
         } else {
             VStack(alignment: .leading, spacing: 0) {
-                VideoFeedGrid(videos: model.videos)
+                VideoFeedGrid(videos: model.videos, showsAuthor: false)
 
                 if model.videosHasMore {
                     FeedLoadMoreFooter(
@@ -901,216 +944,12 @@ private struct DynamicFeedInteractionRow: View {
     }
 }
 
-private struct ProfileCoverCarousel: View {
-    let urls: [URL]
-    var onTopLuminance: (CGFloat) -> Void = { _ in }
-
-    private let interval: TimeInterval = 5.5
-    private let transitionDuration: TimeInterval = 1.35
-    private let fallbackAspect: CGFloat = 2.55
-
-    @State private var currentIndex = 0
-    @State private var revealProgress: CGFloat = 0
-    @State private var isAnimating = false
-    @State private var autoplayTask: Task<Void, Never>?
-    @State private var imageAspectRatio: CGFloat = 2.55
-
-    private var hasMultiple: Bool { urls.count > 1 }
-
-    private var nextIndex: Int {
-        guard !urls.isEmpty else { return 0 }
-        return (currentIndex + 1) % urls.count
-    }
-
-    var body: some View {
-        GeometryReader { geo in
-            let width = geo.size.width
-            ZStack {
-                if urls.isEmpty {
-                    coverPlaceholder
-                } else if hasMultiple {
-                    coverImage(urls[currentIndex])
-                        .offset(x: -width * slowOutgoingOffset)
-
-                    coverImage(urls[nextIndex])
-                        .offset(x: width * fastIncomingOffset)
-                        .zIndex(1)
-                } else {
-                    coverImage(urls[0])
-                }
-
-                if hasMultiple {
-                    VStack {
-                        Spacer()
-                        pageIndicators
-                            .padding(.bottom, 10)
-                    }
-                    .zIndex(2)
-                }
-            }
-        }
-        .aspectRatio(imageAspectRatio, contentMode: .fit)
-        .frame(maxWidth: .infinity)
-        .clipped()
-        .onAppear {
-            if urls.isEmpty {
-                onTopLuminance(0.72)
-            }
-            restartAutoplay()
-        }
-        .onDisappear { autoplayTask?.cancel() }
-        .onChange(of: urls.map(\.absoluteString)) { _, _ in
-            currentIndex = 0
-            revealProgress = 0
-            isAnimating = false
-            imageAspectRatio = fallbackAspect
-            restartAutoplay()
-        }
-    }
-
-    private var slowOutgoingOffset: CGFloat {
-        let eased = 1 - pow(1 - revealProgress, 1.8)
-        return eased * 0.38
-    }
-
-    private var fastIncomingOffset: CGFloat {
-        pow(1 - revealProgress, 0.55)
-    }
-
-    private var pageIndicators: some View {
-        HStack(spacing: 6) {
-            ForEach(urls.indices, id: \.self) { index in
-                Circle()
-                    .fill(Color.white.opacity(index == currentIndex ? 0.95 : 0.45))
-                    .frame(width: index == currentIndex ? 7 : 6, height: index == currentIndex ? 7 : 6)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func coverImage(_ url: URL) -> some View {
-        ProfileCoverImage(url: url) { aspect, luminance in
-            imageAspectRatio = aspect
-            onTopLuminance(luminance)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private var coverPlaceholder: some View {
-        AppLayout.videoDetailPageBackground
-    }
-
-    private func restartAutoplay() {
-        autoplayTask?.cancel()
-        guard hasMultiple else { return }
-        autoplayTask = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-                guard !Task.isCancelled else { return }
-                await advance()
-            }
-        }
-    }
-
-    @MainActor
-    private func advance() async {
-        guard hasMultiple, !isAnimating else { return }
-        isAnimating = true
-        withAnimation(.easeInOut(duration: transitionDuration)) {
-            revealProgress = 1
-        }
-        try? await Task.sleep(nanoseconds: UInt64(transitionDuration * 1_000_000_000))
-        currentIndex = nextIndex
-        revealProgress = 0
-        isAnimating = false
-    }
-}
-
-private struct ProfileCoverImage: View {
-    let url: URL
-    let onImageReady: (CGFloat, CGFloat) -> Void
-
-    @StateObject private var loader = RemoteCoverImageLoader()
-
-    var body: some View {
-        Group {
-            if let image = loader.image {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxWidth: .infinity)
-                    .onAppear {
-                        reportMetrics(for: image)
-                    }
-            } else if loader.failed {
-                Color.secondary.opacity(0.08)
-            } else {
-                Color.secondary.opacity(0.06)
-            }
-        }
-        .onAppear {
-            loader.load(url: url, maxPixelLength: 1600)
-        }
-        .onChange(of: loader.image) { _, image in
-            guard let image else { return }
-            reportMetrics(for: image)
-        }
-    }
-
-    private func reportMetrics(for image: NSImage) {
-        let size = image.size
-        guard size.width > 0, size.height > 0 else { return }
-        onImageReady(size.width / size.height, image.topRegionLuminance)
-    }
-}
-
-private extension NSImage {
-    var topRegionLuminance: CGFloat {
-        guard let cgImage = cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            return 0.72
-        }
-        let width = cgImage.width
-        let height = cgImage.height
-        guard width > 0, height > 0 else { return 0.72 }
-
-        let sampleHeight = max(1, height / 3)
-        let rect = CGRect(x: 0, y: height - sampleHeight, width: width, height: sampleHeight)
-        guard let cropped = cgImage.cropping(to: rect) else { return 0.72 }
-
-        let bytesPerPixel = 4
-        let bytesPerRow = bytesPerPixel * width
-        var data = [UInt8](repeating: 0, count: bytesPerRow * sampleHeight)
-        guard let context = CGContext(
-            data: &data,
-            width: width,
-            height: sampleHeight,
-            bitsPerComponent: 8,
-            bytesPerRow: bytesPerRow,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else {
-            return 0.72
-        }
-
-        context.draw(cropped, in: CGRect(x: 0, y: 0, width: width, height: sampleHeight))
-
-        var total: CGFloat = 0
-        let pixelCount = width * sampleHeight
-        for index in stride(from: 0, to: data.count, by: bytesPerPixel) {
-            let red = CGFloat(data[index]) / 255
-            let green = CGFloat(data[index + 1]) / 255
-            let blue = CGFloat(data[index + 2]) / 255
-            total += 0.2126 * red + 0.7152 * green + 0.0722 * blue
-        }
-        return total / CGFloat(max(pixelCount, 1))
-    }
-}
-
 private struct ProfileVideoSortControl: View {
     let selection: BiliUserVideoSort
     let onChange: (BiliUserVideoSort) -> Void
 
     @State private var isPressing = false
+    @State private var isHovered = false
     @State private var dragX: CGFloat?
     @State private var animationTrigger = 0
     @State private var displayedSelection: BiliUserVideoSort
@@ -1191,12 +1030,13 @@ private struct ProfileVideoSortControl: View {
             )
         }
         .frame(width: AppLayout.searchTypeToggleWidth + 28, height: AppLayout.searchBarHeight)
-        .background(Color.white.opacity(0.78), in: Capsule(style: .continuous))
-        .overlay {
-            Capsule(style: .continuous)
-                .stroke(Color.black.opacity(0.08), lineWidth: 0.8)
+        .searchHeaderCapsuleChrome(isEmphasized: isPressing, isHovered: isHovered)
+        .contentShape(Capsule(style: .continuous))
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) {
+                isHovered = hovering
+            }
         }
-        .shadow(color: .black.opacity(0.035), radius: 6, x: 0, y: 2)
         .onChange(of: selection) { _, newValue in
             displayedSelection = newValue
         }
@@ -1303,5 +1143,19 @@ private enum ProfileSortPhase: CaseIterable {
         case .rebound: .spring(response: 0.28, dampingFraction: 0.58)
         case .settled: .spring(response: 0.34, dampingFraction: 0.62)
         }
+    }
+}
+
+private struct ProfileSectionHeaderChrome: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(AppLayout.videoDetailPageBackground)
+            .zIndex(1)
+    }
+}
+
+private extension View {
+    func profileSectionHeaderChrome() -> some View {
+        modifier(ProfileSectionHeaderChrome())
     }
 }

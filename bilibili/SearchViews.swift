@@ -28,12 +28,16 @@ final class SearchViewModel: ObservableObject {
 
     @Published var selectedTab: SearchResultTab = .videos
     @Published var videos: [BiliVideo] = []
+    @Published var pinnedMedia: [BiliSearchBangumi] = []
     @Published var users: [BiliSearchUser] = []
     @Published var videoLoading = false
+    @Published var pinnedMediaLoading = false
+    @Published var pinnedMediaLoadingMore = false
     @Published var userLoading = false
     @Published var videoLoadingMore = false
     @Published var userLoadingMore = false
     @Published var videoHasMore = false
+    @Published var pinnedMediaHasMore = false
     @Published var userHasMore = false
     @Published var errorMessage: String?
     @Published var previewVideos: [BiliVideo] = []
@@ -44,6 +48,7 @@ final class SearchViewModel: ObservableObject {
     private let api = BilibiliAPI()
     private let historyStore = SearchHistoryStore()
     private var videoPage = 1
+    private var pinnedMediaPage = 1
     private var userPage = 1
     private var searchGeneration = 0
     private var suggestTask: Task<Void, Never>?
@@ -86,6 +91,7 @@ final class SearchViewModel: ObservableObject {
     func exitSearchResults() {
         activeQuery = nil
         videos = []
+        pinnedMedia = []
         users = []
         errorMessage = nil
     }
@@ -113,12 +119,17 @@ final class SearchViewModel: ObservableObject {
         previewTask?.cancel()
         searchHistory = historyStore.touch(normalized)
         videos = []
+        pinnedMedia = []
         users = []
         videoPage = 1
+        pinnedMediaPage = 1
         userPage = 1
         videoHasMore = false
+        pinnedMediaHasMore = false
         userHasMore = false
         videoLoading = false
+        pinnedMediaLoading = false
+        pinnedMediaLoadingMore = false
         userLoading = false
         videoLoadingMore = false
         userLoadingMore = false
@@ -141,7 +152,7 @@ final class SearchViewModel: ObservableObject {
         guard activeQuery != nil else { return }
         switch selectedTab {
         case .videos:
-            guard videos.isEmpty, !videoLoading else { return }
+            guard videos.isEmpty, pinnedMedia.isEmpty, !videoLoading, !pinnedMediaLoading else { return }
             await loadVideos(reset: true)
         case .users:
             guard users.isEmpty, !userLoading else { return }
@@ -157,9 +168,12 @@ final class SearchViewModel: ObservableObject {
         previewVideos = []
         previewLoading = false
         videos = []
+        pinnedMedia = []
         users = []
         errorMessage = nil
         videoLoading = false
+        pinnedMediaLoading = false
+        pinnedMediaLoadingMore = false
         userLoading = false
         videoLoadingMore = false
         userLoadingMore = false
@@ -255,35 +269,90 @@ final class SearchViewModel: ObservableObject {
             guard !videoLoading else { return }
             videoLoading = true
             videoPage = 1
-        } else {
-            guard videoHasMore, !videoLoadingMore, !videoLoading else { return }
-            videoLoadingMore = true
+            videos = []
+            let pinnedTask = Task { await loadPinnedMedia(reset: true, generation: currentGeneration) }
+            defer {
+                if currentGeneration == searchGeneration {
+                    videoLoading = false
+                    videoLoadingMore = false
+                }
+            }
+            do {
+                let result = try await api.searchVideos(keyword: query, page: 1, credential: credential)
+                guard currentGeneration == searchGeneration else { return }
+                var seen = Set<String>()
+                videos = result.items.filter { seen.insert($0.bvid).inserted }
+                videoHasMore = result.hasMore
+                videoPage = result.page
+            } catch {
+                guard currentGeneration == searchGeneration else { return }
+                errorMessage = error.localizedDescription
+            }
+            await pinnedTask.value
+            return
         }
+
+        guard videoHasMore, !videoLoadingMore, !videoLoading else { return }
+        videoLoadingMore = true
         defer {
             if currentGeneration == searchGeneration {
-                videoLoading = false
                 videoLoadingMore = false
             }
         }
 
         do {
-            let page = reset ? 1 : videoPage + 1
+            let page = videoPage + 1
             let result = try await api.searchVideos(keyword: query, page: page, credential: credential)
             guard currentGeneration == searchGeneration else { return }
-            if reset {
-                var seen = Set<String>()
-                videos = result.items.filter { seen.insert($0.bvid).inserted }
-                videoHasMore = result.hasMore
-            } else {
-                var seen = Set(videos.map(\.bvid))
-                let newVideos = result.items.filter { seen.insert($0.bvid).inserted }
-                videos.append(contentsOf: newVideos)
-                videoHasMore = result.hasMore && !newVideos.isEmpty
-            }
+            var seen = Set(videos.map(\.bvid))
+            let newVideos = result.items.filter { seen.insert($0.bvid).inserted }
+            videos.append(contentsOf: newVideos)
+            videoHasMore = result.hasMore && !newVideos.isEmpty
             videoPage = result.page
         } catch {
+            guard currentGeneration == searchGeneration else { return }
+        }
+    }
+
+    func loadPinnedMedia(reset: Bool, generation: Int? = nil) async {
+        let currentGeneration = generation ?? searchGeneration
+        guard let query = activeQuery, currentGeneration == searchGeneration else { return }
+        if reset {
+            guard !pinnedMediaLoading else { return }
+            pinnedMediaLoading = true
+            pinnedMediaPage = 1
+            pinnedMedia = []
+            pinnedMediaHasMore = false
+        } else {
+            guard pinnedMediaHasMore, !pinnedMediaLoadingMore, !pinnedMediaLoading else { return }
+            pinnedMediaLoadingMore = true
+        }
+        defer {
+            if currentGeneration == searchGeneration {
+                pinnedMediaLoading = false
+                pinnedMediaLoadingMore = false
+            }
+        }
+
+        do {
+            let page = reset ? 1 : pinnedMediaPage + 1
+            let result = try await api.searchPinnedMedia(keyword: query, page: page, credential: credential)
+            guard currentGeneration == searchGeneration else { return }
+            if reset {
+                var seen = Set<Int64>()
+                pinnedMedia = result.items.filter { seen.insert($0.seasonId).inserted }
+                pinnedMediaHasMore = result.hasMore
+            } else {
+                var seen = Set(pinnedMedia.map(\.seasonId))
+                let newItems = result.items.filter { seen.insert($0.seasonId).inserted }
+                pinnedMedia.append(contentsOf: newItems)
+                pinnedMediaHasMore = result.hasMore && !newItems.isEmpty
+            }
+            pinnedMediaPage = result.page
+        } catch {
             guard currentGeneration == searchGeneration, reset else { return }
-            errorMessage = error.localizedDescription
+            pinnedMedia = []
+            pinnedMediaHasMore = false
         }
     }
 
@@ -385,7 +454,8 @@ struct SearchDashboard: View {
                     ZStack(alignment: .topLeading) {
                         if searchModel.isShowingResults {
                             searchResultsContent(metrics: metrics)
-                                .padding(.horizontal, AppLayout.feedHorizontalInset)
+                                .padding(.leading, AppLayout.feedHorizontalInset)
+                                .padding(.trailing, AppLayout.feedTrailingInset)
                                 .padding(.bottom, 32)
                                 .transition(.opacity.combined(with: .offset(y: -8)))
                         } else {
@@ -613,27 +683,55 @@ struct SearchDashboard: View {
     }
 
     private var videoResults: some View {
-        Group {
-            if searchModel.videoLoading, searchModel.videos.isEmpty {
-                ProgressView("正在搜索视频")
+        let isInitialLoading = (searchModel.videoLoading || searchModel.pinnedMediaLoading)
+            && searchModel.videos.isEmpty
+            && searchModel.pinnedMedia.isEmpty
+        let isEmpty = searchModel.videos.isEmpty
+            && searchModel.pinnedMedia.isEmpty
+            && !searchModel.videoLoading
+            && !searchModel.pinnedMediaLoading
+
+        return Group {
+            if isInitialLoading {
+                ProgressView("正在搜索")
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 40)
-            } else if searchModel.videos.isEmpty, !searchModel.videoLoading {
+            } else if isEmpty {
                 ContentUnavailableView("没有找到相关视频", systemImage: "film")
                     .padding(.vertical, 40)
             } else {
                 VStack(alignment: .leading, spacing: 0) {
-                    VideoFeedGrid(videos: searchModel.videos)
-
-                    if searchModel.videoHasMore {
-                        FeedLoadMoreFooter(
-                            anchorID: searchModel.videos.count,
-                            hasMore: searchModel.videoHasMore,
-                            loadingMore: searchModel.videoLoadingMore,
+                    if !searchModel.pinnedMedia.isEmpty {
+                        SearchPinnedMediaSection(
+                            media: searchModel.pinnedMedia,
+                            hasMore: searchModel.pinnedMediaHasMore,
+                            loadingMore: searchModel.pinnedMediaLoadingMore,
                             onLoadMore: {
-                                Task { await searchModel.loadVideos(reset: false) }
+                                Task { await searchModel.loadPinnedMedia(reset: false) }
                             }
                         )
+                        .id(searchModel.activeQuery ?? "")
+                        .padding(.bottom, 28)
+                    }
+
+                    if !searchModel.videos.isEmpty {
+                        if !searchModel.pinnedMedia.isEmpty {
+                            SearchVideoResultsSectionHeader()
+                                .padding(.bottom, 12)
+                        }
+
+                        VideoFeedGrid(videos: searchModel.videos)
+
+                        if searchModel.videoHasMore {
+                            FeedLoadMoreFooter(
+                                anchorID: searchModel.videos.count,
+                                hasMore: searchModel.videoHasMore,
+                                loadingMore: searchModel.videoLoadingMore,
+                                onLoadMore: {
+                                    Task { await searchModel.loadVideos(reset: false) }
+                                }
+                            )
+                        }
                     }
                 }
             }
@@ -695,7 +793,7 @@ private struct SearchPageMetrics {
                 (viewportWidth - AppLayout.searchPageMaxWidth) * 0.42
             )
         }
-        resultsContentWidth = max(0, viewportWidth - AppLayout.feedHorizontalInset * 2)
+        resultsContentWidth = AppLayout.feedContentWidth(viewportWidth: viewportWidth)
         let userResultsContentWidth = max(
             0,
             resultsContentWidth - AppLayout.searchUserResultsHorizontalInset * 2
@@ -774,6 +872,7 @@ private struct SearchTextActionButton: View {
 private struct SearchTypeSegmentedControl: View {
     @Binding var selection: SearchResultTab
     @State private var isPressing = false
+    @State private var isHovered = false
     @State private var dragX: CGFloat?
     @State private var animationTrigger = 0
 
@@ -845,13 +944,13 @@ private struct SearchTypeSegmentedControl: View {
             )
         }
         .frame(width: AppLayout.searchTypeToggleWidth, height: AppLayout.searchBarHeight)
-        .background(Color.white.opacity(0.78), in: Capsule(style: .continuous))
-        .overlay {
-            Capsule(style: .continuous)
-                .stroke(Color.black.opacity(0.08), lineWidth: 0.8)
-        }
-        .shadow(color: .black.opacity(0.035), radius: 6, x: 0, y: 2)
+        .searchHeaderCapsuleChrome(isEmphasized: isPressing, isHovered: isHovered)
         .contentShape(Capsule(style: .continuous))
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) {
+                isHovered = hovering
+            }
+        }
     }
 
     private var selectedIndex: Int {
@@ -1144,12 +1243,7 @@ private struct MacSearchSuggestCombo: View {
             }
             .padding(.horizontal, 14)
             .frame(height: AppLayout.searchBarHeight)
-            .glassEffect(.clear, in: .capsule)
-            .overlay {
-                Capsule(style: .continuous)
-                    .stroke(searchFieldBorderColor, lineWidth: isFocused ? 1.2 : 0.6)
-            }
-            .shadow(color: .black.opacity(isFocused ? 0.08 : 0.04), radius: isFocused ? 10 : 6, x: 0, y: 3)
+            .searchHeaderCapsuleChrome(isEmphasized: isFocused, isHovered: isHovered)
             .contentShape(Capsule(style: .continuous))
             .onTapGesture {
                 isFocused = true
@@ -1160,16 +1254,6 @@ private struct MacSearchSuggestCombo: View {
                 }
             }
         )
-    }
-
-    private var searchFieldBorderColor: Color {
-        if isFocused {
-            return BiliTheme.pink.opacity(0.38)
-        }
-        if isHovered {
-            return Color.black.opacity(0.12)
-        }
-        return AppLayout.searchSurfaceBorder
     }
 
     private func clearTextWithAnimation() {
@@ -1652,6 +1736,374 @@ private struct SearchHotRankBadge: View {
     }
 }
 
+private struct SearchPinnedMediaSection: View {
+    let media: [BiliSearchBangumi]
+    let hasMore: Bool
+    let loadingMore: Bool
+    let onLoadMore: () -> Void
+
+    @State private var isExpanded = false
+    @State private var selectedCategory: String?
+    @Environment(\.feedViewportWidth) private var feedViewportWidth
+
+    private var categories: [String] {
+        BiliSearchBangumi.availableCategories(in: media)
+    }
+
+    private var filteredMedia: [BiliSearchBangumi] {
+        guard let selectedCategory else { return media }
+        return media.filter { $0.categoryName == selectedCategory }
+    }
+
+    var body: some View {
+        let layoutWidth = resolvedLayoutWidth
+        let columnCount = max(1, VideoCardLayout.columnCount(for: layoutWidth))
+        let previewCount = columnCount
+        let visibleMedia = isExpanded ? filteredMedia : Array(filteredMedia.prefix(previewCount))
+        let canExpand = !isExpanded && (filteredMedia.count > previewCount || hasMore)
+        let canCollapse = isExpanded && (filteredMedia.count > previewCount || hasMore)
+
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text("相关作品")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 0)
+                if canExpand {
+                    Button("展开") {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            isExpanded = true
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(BiliTheme.blue)
+                } else if canCollapse {
+                    Button("收起") {
+                        withAnimation(.easeOut(duration: 0.2)) {
+                            isExpanded = false
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.bottom, categories.count > 1 ? 10 : 12)
+
+            if categories.count > 1 {
+                SearchPinnedMediaCategoryBar(
+                    categories: categories,
+                    selectedCategory: $selectedCategory
+                )
+                .padding(.bottom, 12)
+            }
+
+            if visibleMedia.isEmpty, selectedCategory != nil {
+                Text("暂无\(selectedCategory ?? "")相关结果")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 20)
+            } else {
+                SearchBangumiFeedGrid(bangumis: visibleMedia)
+
+                if isExpanded, hasMore, selectedCategory == nil {
+                    FeedLoadMoreFooter(
+                        anchorID: media.count,
+                        hasMore: hasMore,
+                        loadingMore: loadingMore,
+                        onLoadMore: onLoadMore
+                    )
+                }
+            }
+        }
+    }
+
+    private var resolvedLayoutWidth: CGFloat {
+        let width = AppLayout.feedContentWidth(viewportWidth: feedViewportWidth)
+        if width > 0 {
+            return width
+        }
+        return VideoCardLayout.minWidth * 2 + VideoCardLayout.gridSpacing
+    }
+}
+
+private struct SearchPinnedMediaCategoryBar: View {
+    let categories: [String]
+    @Binding var selectedCategory: String?
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                categoryChip(title: "全部", isSelected: selectedCategory == nil) {
+                    selectedCategory = nil
+                }
+                ForEach(categories, id: \.self) { category in
+                    categoryChip(title: category, isSelected: selectedCategory == category) {
+                        selectedCategory = category
+                    }
+                }
+            }
+        }
+    }
+
+    private func categoryChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                .foregroundStyle(isSelected ? BiliTheme.blue : .secondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background {
+                    Capsule(style: .continuous)
+                        .fill(isSelected ? BiliTheme.blue.opacity(0.12) : Color.primary.opacity(0.05))
+                }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct SearchVideoResultsSectionHeader: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("相关视频")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.primary)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct SearchBangumiFeedGrid: View {
+    let bangumis: [BiliSearchBangumi]
+    @Environment(\.feedViewportWidth) private var feedViewportWidth
+
+    var body: some View {
+        let layoutWidth = resolvedLayoutWidth
+        let columnCount = VideoCardLayout.columnCount(for: layoutWidth)
+        let columnWidth = VideoCardLayout.columnWidth(for: layoutWidth, columnCount: columnCount)
+        let metrics = VideoCardLayout.RowLayoutMetrics.feed(largeTypography: false)
+        let rows = VideoCardLayout.rowChunks(bangumis, columnCount: columnCount)
+
+        LazyVStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                let titleAreaHeight = VideoCardLayout.rowTitleAreaHeight(
+                    titles: row.map(\.title),
+                    columnWidth: columnWidth,
+                    metrics: metrics
+                )
+                let cardHeight = VideoCardLayout.cardHeight(
+                    columnWidth: columnWidth,
+                    titleAreaHeight: titleAreaHeight,
+                    metrics: metrics
+                )
+
+                HStack(alignment: .top, spacing: VideoCardLayout.gridSpacing) {
+                    ForEach(row) { bangumi in
+                        SearchBangumiCard(
+                            bangumi: bangumi,
+                            columnWidth: columnWidth,
+                            titleAreaHeight: titleAreaHeight
+                        )
+                        .frame(width: columnWidth, height: cardHeight, alignment: .top)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var resolvedLayoutWidth: CGFloat {
+        let width = AppLayout.feedContentWidth(viewportWidth: feedViewportWidth)
+        if width > 0 {
+            return width
+        }
+        return VideoCardLayout.minWidth * 2 + VideoCardLayout.gridSpacing
+    }
+}
+
+private struct SearchBangumiCard: View {
+    let bangumi: BiliSearchBangumi
+    let columnWidth: CGFloat
+    let titleAreaHeight: CGFloat
+    @State private var isCardHovered = false
+    @State private var isCoverHovered = false
+
+    private var metrics: VideoCardLayout.RowLayoutMetrics {
+        .feed(largeTypography: false)
+    }
+
+    private var coverHeight: CGFloat {
+        VideoCardLayout.coverHeight(columnWidth: columnWidth)
+    }
+
+    private var metadataHeight: CGFloat {
+        metrics.metadataHeight(titleAreaHeight: titleAreaHeight)
+    }
+
+    private var playbackRequest: VideoPlaybackRequest {
+        bangumi.playbackRequest()
+    }
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: VideoCardLayout.cornerRadius, style: .continuous)
+        VStack(alignment: .leading, spacing: 0) {
+            coverSection(shape: shape)
+                .frame(height: coverHeight)
+            metadataSection
+                .frame(height: metadataHeight)
+        }
+        .background {
+            ZStack {
+                shape.fill(Color.white)
+                shape.stroke(VideoCardLayout.cardBorderColor, lineWidth: 0.5)
+            }
+        }
+        .shadow(color: .black.opacity(isCardHovered ? 0.07 : 0), radius: isCardHovered ? 8 : 0, x: 0, y: isCardHovered ? 4 : 0)
+        .zIndex(isCardHovered ? 2 : 0)
+        .videoCoverHover(isHovered: $isCardHovered)
+    }
+
+    private var coverHoverAnimation: Animation {
+        isCoverHovered ? VideoCardLayout.coverHoverAnimation : VideoCardLayout.coverHoverExitAnimation
+    }
+
+    @ViewBuilder
+    private func coverSection(shape: RoundedRectangle) -> some View {
+        Group {
+            if bangumi.canPlayInApp {
+                NavigationLink(value: playbackRequest) {
+                    coverContent(shape: shape)
+                }
+                .buttonStyle(.plain)
+            } else if let webURL = bangumi.webURL {
+                Button {
+                    NSWorkspace.shared.open(webURL)
+                } label: {
+                    coverContent(shape: shape)
+                }
+                .buttonStyle(.plain)
+            } else {
+                coverContent(shape: shape)
+            }
+        }
+        .videoCoverHover(isHovered: $isCoverHovered)
+    }
+
+    private func coverContent(shape: RoundedRectangle) -> some View {
+        ZStack(alignment: .topLeading) {
+            RemoteCover(
+                url: bangumi.coverURL,
+                aspectRatio: VideoCardLayout.coverAspect,
+                appliesCornerClip: false,
+                allowsOverflow: true
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipShape(shape)
+            .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
+            .animation(coverHoverAnimation, value: isCoverHovered)
+
+            if !bangumi.categoryName.isEmpty || !bangumi.badge.isEmpty {
+                HStack(spacing: 6) {
+                    if !bangumi.categoryName.isEmpty {
+                        Text(bangumi.categoryName)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Color.black.opacity(0.55), in: Capsule(style: .continuous))
+                    }
+                    if !bangumi.badge.isEmpty {
+                        Text(bangumi.badge)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 3)
+                            .background(Color.pink.opacity(0.92), in: Capsule(style: .continuous))
+                    }
+                }
+                .padding(8)
+            }
+        }
+        .contentShape(shape)
+    }
+
+    @ViewBuilder
+    private var metadataSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            bangumiTitleSection
+
+            Text(bangumi.metadataLine)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: metrics.authorRowHeight, alignment: .center)
+                .padding(.top, metrics.includesStats ? metrics.statsAuthorSpacing : 0)
+        }
+        .padding(metrics.metadataPadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var bangumiTitleSection: some View {
+        if bangumi.canPlayInApp {
+            SearchBangumiCardTitle(
+                title: bangumi.title,
+                areaHeight: titleAreaHeight,
+                destination: playbackRequest
+            )
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(bangumi.title)
+                    .font(.title3.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(nil)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                Spacer(minLength: 0)
+            }
+            .frame(height: titleAreaHeight, alignment: .top)
+        }
+    }
+}
+
+private struct SearchBangumiCardTitle: View {
+    let title: String
+    let areaHeight: CGFloat
+    let destination: VideoPlaybackRequest
+    @State private var isHovered = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title)
+                .font(.title3.weight(.medium))
+                .foregroundStyle(isHovered ? BiliTheme.blue : .primary)
+                .contentTransition(.interpolate)
+                .animation(.easeOut(duration: 0.15), value: isHovered)
+                .lineLimit(nil)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .allowsHitTesting(false)
+
+            Spacer(minLength: 0)
+        }
+        .frame(height: areaHeight, alignment: .top)
+        .overlay {
+            NavigationLink(value: destination) {
+                Color.clear
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.15)) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
 private struct SearchUserRow: View {
     let user: BiliSearchUser
 
@@ -1661,11 +2113,7 @@ private struct SearchUserRow: View {
 
     var body: some View {
         NavigationLink(
-            value: UserProfileRequest(
-                mid: user.mid,
-                seedName: user.name,
-                seedFaceURL: user.faceURL
-            )
+            value: UserProfileRequest(mid: user.mid)
         ) {
             HStack(alignment: .center, spacing: 14) {
                 AsyncImage(url: user.faceURL) { phase in

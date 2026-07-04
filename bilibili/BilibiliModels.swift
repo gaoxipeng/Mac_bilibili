@@ -40,7 +40,7 @@ struct BiliHistoryPage: Sendable {
     }
 }
 
-struct BiliVideo: Identifiable, Hashable, Sendable {
+nonisolated struct BiliVideo: Identifiable, Hashable, Sendable {
     let id: String
     let bvid: String
     let aid: Int64
@@ -94,6 +94,114 @@ struct BiliSearchUser: Identifiable, Hashable, Sendable {
     var id: Int64 { mid }
 }
 
+nonisolated struct BiliSearchBangumi: Identifiable, Hashable, Sendable {
+    let seasonId: Int64
+    let mediaId: Int64
+    let title: String
+    let subtitle: String
+    let coverURL: URL?
+    let areas: String
+    let styles: String
+    let badge: String
+    let categoryName: String
+    let indexShow: String
+    let webURL: URL?
+    let firstEpid: Int64
+
+    var id: Int64 { seasonId }
+
+    var metadataLine: String {
+        let parts = [styles, areas, indexShow].map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        if !parts.isEmpty {
+            return parts.joined(separator: " · ")
+        }
+        if !categoryName.isEmpty {
+            return categoryName
+        }
+        return "影视"
+    }
+
+    nonisolated func withFirstEpid(_ epid: Int64) -> BiliSearchBangumi {
+        BiliSearchBangumi(
+            seasonId: seasonId,
+            mediaId: mediaId,
+            title: title,
+            subtitle: subtitle,
+            coverURL: coverURL,
+            areas: areas,
+            styles: styles,
+            badge: badge,
+            categoryName: categoryName,
+            indexShow: indexShow,
+            webURL: webURL,
+            firstEpid: epid
+        )
+    }
+
+    var canPlayInApp: Bool {
+        firstEpid > 0
+    }
+
+    func playbackVideo() -> BiliVideo {
+        let videoID = firstEpid > 0 ? "pgc:\(firstEpid)" : "pgc-season:\(seasonId)"
+        return BiliVideo(
+            id: videoID,
+            bvid: "",
+            aid: 0,
+            title: title,
+            coverURL: coverURL,
+            authorName: metadataLine,
+            authorFaceURL: nil,
+            authorMid: 0,
+            viewCount: 0,
+            danmakuCount: 0,
+            likeCount: 0,
+            duration: 0,
+            description: subtitle,
+            cid: 0
+        )
+    }
+
+    func playbackRequest() -> VideoPlaybackRequest {
+        VideoPlaybackRequest(
+            playbackVideo(),
+            epid: firstEpid,
+            refererURL: webURL
+        )
+    }
+
+    static func categoryDisplayPriority(_ categoryName: String) -> Int {
+        switch categoryName {
+        case "番剧": 0
+        case "国创": 1
+        case "纪录片": 2
+        case "电影": 3
+        case "电视剧": 4
+        case "综艺": 5
+        case "影视": 6
+        default: 99
+        }
+    }
+
+    nonisolated static func sortedForDisplay(_ items: [BiliSearchBangumi]) -> [BiliSearchBangumi] {
+        items.enumerated().sorted { lhs, rhs in
+            let leftPriority = categoryDisplayPriority(lhs.element.categoryName)
+            let rightPriority = categoryDisplayPriority(rhs.element.categoryName)
+            if leftPriority != rightPriority {
+                return leftPriority < rightPriority
+            }
+            return lhs.offset < rhs.offset
+        }.map(\.element)
+    }
+
+    static func availableCategories(in items: [BiliSearchBangumi]) -> [String] {
+        let categories = Set(items.map(\.categoryName).filter { !$0.isEmpty })
+        return categories.sorted {
+            categoryDisplayPriority($0) < categoryDisplayPriority($1)
+        }
+    }
+}
+
 struct BiliSearchPage<Item: Sendable>: Sendable {
     let items: [Item]
     let page: Int
@@ -143,12 +251,7 @@ struct BiliUserProfile: Hashable, Sendable {
     let coinCount: Int64
     let bcoinBalance: Double
     let videoCount: Int64
-    let topPhotoURLs: [URL]
     let ipLocation: String?
-
-    var displayTopPhotoURLs: [URL] {
-        topPhotoURLs
-    }
 }
 
 struct BiliAuthorRelation: Hashable, Sendable {
@@ -189,17 +292,9 @@ struct BiliUserVideoPage: Sendable {
 
 struct UserProfileRequest: Hashable, Sendable {
     let mid: Int64
-    let seedName: String
-    let seedFaceURL: URL?
-
-    init(mid: Int64, seedName: String = "", seedFaceURL: URL? = nil) {
-        self.mid = mid
-        self.seedName = seedName
-        self.seedFaceURL = seedFaceURL
-    }
 }
 
-struct BiliDynamicLink: Hashable, Sendable {
+nonisolated struct BiliDynamicLink: Hashable, Sendable {
     let title: String
     let url: String
     let coverURL: URL?
@@ -274,13 +369,13 @@ enum BiliHistoryBusiness: String, Sendable, Hashable {
     case unknown
 }
 
-struct VideoPlaybackRequest: Hashable, Sendable {
+nonisolated struct VideoPlaybackRequest: Hashable, Sendable {
     let video: BiliVideo
     let progressSeconds: Int
     let epid: Int64
     let refererURL: URL?
 
-    init(
+    nonisolated init(
         _ video: BiliVideo,
         progressSeconds: Int = 0,
         epid: Int64 = 0,
@@ -293,13 +388,39 @@ struct VideoPlaybackRequest: Hashable, Sendable {
     }
 }
 
-struct BiliVideoPage: Identifiable, Hashable, Sendable {
+nonisolated struct BiliVideoPage: Identifiable, Hashable, Sendable {
     let page: Int
     let cid: Int64
     let title: String
     let duration: Int
+    let epid: Int64
 
-    var id: Int64 { cid }
+    nonisolated init(page: Int, cid: Int64, title: String, duration: Int, epid: Int64 = 0) {
+        self.page = page
+        self.cid = cid
+        self.title = title
+        self.duration = duration
+        self.epid = epid
+    }
+
+    var id: Int64 { epid > 0 ? epid : cid }
+}
+
+nonisolated struct BiliPGCEpisodeContext: Sendable {
+    let epid: Int64
+    let seasonId: Int64
+    let seasonTitle: String
+    let episodeTitle: String
+    let longTitle: String
+    let aid: Int64
+    let bvid: String
+    let cid: Int64
+    let coverURL: URL?
+    let duration: Int
+    let evaluate: String
+    let styles: String
+    let areas: String
+    let pages: [BiliVideoPage]
 }
 
 struct BiliVideoDetail: Hashable, Sendable {

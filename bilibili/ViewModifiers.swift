@@ -17,6 +17,7 @@ enum AppLayout {
     static let floatingChromeBottomSpacing: CGFloat = 12
     static let pageHorizontalInset: CGFloat = 20
     static let feedHorizontalInset: CGFloat = 16
+    static let feedOverlayScrollbarWidth: CGFloat = 14
     static let feedVerticalInset: CGFloat = 28
     static let mainContentPadding: CGFloat = 40
     static let mainContentPaddingCompact: CGFloat = 24
@@ -36,7 +37,15 @@ enum AppLayout {
     static let searchUserResultColumnSpacing: CGFloat = 12
     static let searchUserResultsHorizontalInset: CGFloat = 32
 
+    static var feedTrailingInset: CGFloat {
+        feedHorizontalInset + feedOverlayScrollbarWidth
+    }
+
     static func feedContentWidth(viewportWidth: CGFloat) -> CGFloat {
+        max(0, viewportWidth - feedHorizontalInset - feedTrailingInset)
+    }
+
+    static func feedContentWidthSymmetric(viewportWidth: CGFloat) -> CGFloat {
         max(0, viewportWidth - feedHorizontalInset * 2)
     }
 
@@ -75,8 +84,8 @@ enum AppLayout {
         floatingChromeInset
     }
     static let sidebarBackground = Color(red: 0.969, green: 0.969, blue: 0.973)
-    static let sidebarBlurWhiteTint: CGFloat = 0.42
-    static let sidebarBlurMaterial: NSVisualEffectView.Material = .sidebar
+    static let sidebarBlurWhiteTint: CGFloat = 0.04
+    static let sidebarBlurMaterial: NSVisualEffectView.Material = .hudWindow
     static let sidebarSelectionCornerRadius: CGFloat = 10
     static let sidebarNavItemHeight: CGFloat = 42
     static let sidebarSelectionFill = BiliTheme.pink.opacity(0.12)
@@ -120,6 +129,19 @@ enum AppLayout {
     static let videoDetailSidebarWidthRatio: CGFloat = 0.28
     static let videoDetailSidebarMaxWidthRatio: CGFloat = 0.36
     static let videoDetailChromeBottomSpacing: CGFloat = 10
+    static let userProfileFallbackChromeHeight: CGFloat = 152
+    static let userProfileChromeShadowOverflow: CGFloat = 8
+
+    static let userProfileChromeBottomSpacing: CGFloat = 10
+
+    static func userProfileFloatingChromeHeight(headerHeight: CGFloat) -> CGFloat {
+        AppLayout.floatingChromeInset + (headerHeight > 0 ? headerHeight : userProfileFallbackChromeHeight)
+    }
+
+    static func userProfileContentTopInset(chromeHeight: CGFloat) -> CGFloat {
+        let chrome = chromeHeight > 0 ? chromeHeight : userProfileFloatingChromeHeight(headerHeight: 0)
+        return chrome + userProfileChromeBottomSpacing + userProfileChromeShadowOverflow
+    }
 
     static func videoDetailSidebarWidth(in availableWidth: CGFloat) -> CGFloat {
         guard availableWidth > 0 else { return 0 }
@@ -200,6 +222,46 @@ struct GlassCircleButton: View {
     }
 }
 
+struct SearchHeaderCapsuleChrome: ViewModifier {
+    var isEmphasized: Bool
+    var isHovered: Bool
+
+    private var borderColor: Color {
+        if isEmphasized {
+            return Color.black.opacity(0.18)
+        }
+        if isHovered {
+            return Color.black.opacity(0.16)
+        }
+        return Color.black.opacity(0.14)
+    }
+
+    private var borderLineWidth: CGFloat {
+        0.8
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .glassEffect(.clear, in: .capsule)
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(borderColor, lineWidth: borderLineWidth)
+            }
+            .shadow(
+                color: .black.opacity(isEmphasized ? 0.08 : 0.04),
+                radius: isEmphasized ? 10 : 6,
+                x: 0,
+                y: 3
+            )
+    }
+}
+
+extension View {
+    func searchHeaderCapsuleChrome(isEmphasized: Bool, isHovered: Bool) -> some View {
+        modifier(SearchHeaderCapsuleChrome(isEmphasized: isEmphasized, isHovered: isHovered))
+    }
+}
+
 struct GlassCircleIcon: View {
     let systemImage: String
     var size: CGFloat = 32
@@ -269,18 +331,64 @@ struct GlassRefreshButton: View {
     }
 }
 
+struct GlassMoreDotsIcon: View {
+    var size: CGFloat = 32
+    var isHovered = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(isHovered ? Color.black.opacity(0.08) : Color.white.opacity(0.92))
+
+            HStack(spacing: size * 0.094) {
+                ForEach(0..<3, id: \.self) { _ in
+                    Circle()
+                        .fill(Color.primary)
+                        .frame(width: size * 0.09375, height: size * 0.09375)
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .overlay {
+            Circle().stroke(Color.black.opacity(0.08), lineWidth: 0.6)
+        }
+        .shadow(color: .black.opacity(0.08), radius: 10, x: 0, y: 4)
+    }
+}
+
 struct GlassMoreButton: View {
     let webURL: URL
 
+    @State private var isHovered = false
+    @State private var isPressed = false
+
     var body: some View {
-        GlassMorePopUpButtonRepresentable(webURL: webURL)
-            .frame(width: AppLayout.floatingChromeButtonSize, height: AppLayout.floatingChromeButtonSize)
-            .transition(.glassMoreButton)
+        ZStack {
+            GlassMoreDotsIcon(
+                size: AppLayout.floatingChromeButtonSize,
+                isHovered: isHovered
+            )
+            .scaleEffect(isPressed ? 0.94 : 1)
+            .animation(.easeOut(duration: 0.14), value: isPressed)
+
+            GlassMorePopUpButtonRepresentable(webURL: webURL, isPressed: $isPressed)
+                .frame(
+                    width: AppLayout.floatingChromeButtonSize,
+                    height: AppLayout.floatingChromeButtonSize
+                )
+        }
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.18)) {
+                isHovered = hovering
+            }
+        }
+        .transition(.glassMoreButton)
     }
 }
 
 struct GlassMorePopUpButtonRepresentable: NSViewRepresentable {
     let webURL: URL
+    @Binding var isPressed: Bool
 
     func makeCoordinator() -> Coordinator {
         Coordinator()
@@ -288,12 +396,12 @@ struct GlassMorePopUpButtonRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> GlassMorePopUpButtonView {
         let view = GlassMorePopUpButtonView()
-        view.configure(webURL: webURL, coordinator: context.coordinator)
+        view.configure(webURL: webURL, coordinator: context.coordinator, isPressed: $isPressed)
         return view
     }
 
     func updateNSView(_ nsView: GlassMorePopUpButtonView, context: Context) {
-        nsView.configure(webURL: webURL, coordinator: context.coordinator)
+        nsView.configure(webURL: webURL, coordinator: context.coordinator, isPressed: $isPressed)
     }
 
     final class Coordinator: NSObject {
@@ -307,10 +415,9 @@ struct GlassMorePopUpButtonRepresentable: NSViewRepresentable {
 }
 
 final class GlassMorePopUpButtonView: NSView, NSMenuDelegate {
-    private let iconView = NSImageView()
     private let actionMenu = NSMenu()
     private weak var coordinator: GlassMorePopUpButtonRepresentable.Coordinator?
-    private var trackingArea: NSTrackingArea?
+    private var isPressedBinding: Binding<Bool>?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -322,39 +429,33 @@ final class GlassMorePopUpButtonView: NSView, NSMenuDelegate {
     }
 
     private func setup() {
-        iconView.translatesAutoresizingMaskIntoConstraints = false
-        iconView.imageScaling = .scaleNone
-        iconView.imageAlignment = .alignCenter
-        iconView.isEditable = false
-        iconView.animates = false
-
-        addSubview(iconView)
         NSLayoutConstraint.activate([
             widthAnchor.constraint(equalToConstant: AppLayout.floatingChromeButtonSize),
             heightAnchor.constraint(equalToConstant: AppLayout.floatingChromeButtonSize),
-            iconView.centerXAnchor.constraint(equalTo: centerXAnchor),
-            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: AppLayout.floatingChromeButtonSize),
-            iconView.heightAnchor.constraint(equalToConstant: AppLayout.floatingChromeButtonSize),
         ])
-
-        wantsLayer = true
-        layer?.cornerRadius = AppLayout.floatingChromeButtonSize / 2
-        iconView.image = Self.makeMoreIconImage()
-        updateChromeBackground(hovered: false)
     }
 
     override func mouseDown(with event: NSEvent) {
+        setPressed(true)
         guard !actionMenu.items.isEmpty else { return }
         BiliMenuPopUpAnchor.popUp(actionMenu, in: self)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        setPressed(false)
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
         true
     }
 
-    func configure(webURL: URL, coordinator: GlassMorePopUpButtonRepresentable.Coordinator) {
+    func configure(
+        webURL: URL,
+        coordinator: GlassMorePopUpButtonRepresentable.Coordinator,
+        isPressed: Binding<Bool>
+    ) {
         self.coordinator = coordinator
+        self.isPressedBinding = isPressed
         coordinator.webURL = webURL
 
         actionMenu.removeAllItems()
@@ -372,68 +473,19 @@ final class GlassMorePopUpButtonView: NSView, NSMenuDelegate {
         toolTip = "更多"
     }
 
-    private static func makeMoreIconImage() -> NSImage {
-        let buttonSize = AppLayout.floatingChromeButtonSize
-        let image = NSImage(size: NSSize(width: buttonSize, height: buttonSize))
-        image.lockFocus()
-
-        let dotRadius: CGFloat = 1.5
-        let centerSpacing: CGFloat = 6.2
-        let center = CGPoint(x: buttonSize / 2, y: buttonSize / 2)
-        NSColor.labelColor.setFill()
-        for offset in [-centerSpacing, 0, centerSpacing] {
-            let rect = NSRect(
-                x: center.x + offset - dotRadius,
-                y: center.y - dotRadius,
-                width: dotRadius * 2,
-                height: dotRadius * 2
-            )
-            NSBezierPath(ovalIn: rect).fill()
-        }
-
-        image.unlockFocus()
-        image.isTemplate = false
-        return image
-    }
-
     func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) {}
 
     func menuWillOpen(_ menu: NSMenu) {}
 
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let trackingArea {
-            removeTrackingArea(trackingArea)
+    func menuDidClose(_ menu: NSMenu) {
+        setPressed(false)
+    }
+
+    private func setPressed(_ pressed: Bool) {
+        guard let isPressedBinding else { return }
+        if isPressedBinding.wrappedValue != pressed {
+            isPressedBinding.wrappedValue = pressed
         }
-        let area = NSTrackingArea(
-            rect: bounds,
-            options: [.mouseEnteredAndExited, .activeInActiveApp, .inVisibleRect],
-            owner: self,
-            userInfo: nil
-        )
-        addTrackingArea(area)
-        trackingArea = area
-    }
-
-    override func mouseEntered(with event: NSEvent) {
-        updateChromeBackground(hovered: true)
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        updateChromeBackground(hovered: false)
-    }
-
-    private func updateChromeBackground(hovered: Bool) {
-        let fill: NSColor = hovered
-            ? NSColor.black.withAlphaComponent(0.08)
-            : NSColor.white.withAlphaComponent(0.92)
-        layer?.backgroundColor = fill.cgColor
-        layer?.borderColor = NSColor.black.withAlphaComponent(0.08).cgColor
-        layer?.borderWidth = 0.6
-        layer?.shadowColor = NSColor.black.withAlphaComponent(0.08).cgColor
-        layer?.shadowOpacity = 1
-        layer?.shadowRadius = 10
-        layer?.shadowOffset = CGSize(width: 0, height: -4)
     }
 }
 
@@ -441,10 +493,19 @@ private struct FeedViewportWidthKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
 }
 
+private struct FeedSymmetricHorizontalInsetsKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 extension EnvironmentValues {
     var feedViewportWidth: CGFloat {
         get { self[FeedViewportWidthKey.self] }
         set { self[FeedViewportWidthKey.self] = newValue }
+    }
+
+    var feedSymmetricHorizontalInsets: Bool {
+        get { self[FeedSymmetricHorizontalInsetsKey.self] }
+        set { self[FeedSymmetricHorizontalInsetsKey.self] = newValue }
     }
 }
 
@@ -459,7 +520,8 @@ struct AppScrollView<Content: View>: View {
         GeometryReader { geometry in
             ScrollView {
                 content()
-                    .padding(.horizontal, AppLayout.feedHorizontalInset)
+                    .padding(.leading, AppLayout.feedHorizontalInset)
+                    .padding(.trailing, AppLayout.feedTrailingInset)
                     .padding(.vertical, AppLayout.feedVerticalInset)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .environment(\.feedViewportWidth, geometry.size.width)
@@ -472,10 +534,16 @@ struct AppScrollView<Content: View>: View {
 
 struct MacOverlayScrollView<Content: View>: View {
     var usesOverlayScrollers: Bool
+    var clipsContent: Bool
     @ViewBuilder private var content: () -> Content
 
-    init(usesOverlayScrollers: Bool = true, @ViewBuilder content: @escaping () -> Content) {
+    init(
+        usesOverlayScrollers: Bool = true,
+        clipsContent: Bool = false,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
         self.usesOverlayScrollers = usesOverlayScrollers
+        self.clipsContent = clipsContent
         self.content = content
     }
 
@@ -483,20 +551,124 @@ struct MacOverlayScrollView<Content: View>: View {
         ScrollView {
             content()
         }
+        .modifier(MacOverlayScrollClipModifier(clipsContent: clipsContent))
         .background(MacOverlayScrollConfigurator(usesOverlayScrollers: usesOverlayScrollers))
+    }
+}
+
+private struct MacOverlayScrollClipModifier: ViewModifier {
+    let clipsContent: Bool
+
+    func body(content: Content) -> some View {
+        if clipsContent {
+            content
+        } else {
+            content.scrollClipDisabled()
+        }
+    }
+}
+
+struct MacScrollOffsetObserver: NSViewRepresentable {
+    @Binding var offsetY: CGFloat
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(offsetY: $offsetY)
+    }
+
+    func makeNSView(context: Context) -> MacScrollOffsetObserverView {
+        let view = MacScrollOffsetObserverView()
+        view.coordinator = context.coordinator
+        return view
+    }
+
+    func updateNSView(_ nsView: MacScrollOffsetObserverView, context: Context) {
+        nsView.coordinator = context.coordinator
+        nsView.attachIfNeeded()
+    }
+
+    final class Coordinator {
+        var offsetY: Binding<CGFloat>
+
+        init(offsetY: Binding<CGFloat>) {
+            self.offsetY = offsetY
+        }
+
+        func update(_ y: CGFloat) {
+            if offsetY.wrappedValue != y {
+                offsetY.wrappedValue = y
+            }
+        }
+    }
+}
+
+final class MacScrollOffsetObserverView: NSView {
+    weak var coordinator: MacScrollOffsetObserver.Coordinator?
+    private weak var observedScrollView: NSScrollView?
+    private var boundsObservation: NSKeyValueObservation?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        attachIfNeeded()
+    }
+
+    override func layout() {
+        super.layout()
+        if observedScrollView == nil {
+            attachIfNeeded()
+        }
+    }
+
+    func attachIfNeeded() {
+        guard let scrollView = resolveScrollView() else { return }
+        guard observedScrollView !== scrollView || boundsObservation == nil else { return }
+
+        boundsObservation?.invalidate()
+        observedScrollView = scrollView
+        reportOffset(from: scrollView)
+
+        boundsObservation = scrollView.contentView.observe(\.bounds, options: [.new]) { [weak self] _, _ in
+            guard let self, let scrollView = self.observedScrollView else { return }
+            self.reportOffset(from: scrollView)
+        }
+    }
+
+    private func reportOffset(from scrollView: NSScrollView) {
+        let offset = scrollView.documentVisibleRect.origin.y
+        DispatchQueue.main.async { [weak self] in
+            self?.coordinator?.update(offset)
+        }
+    }
+
+    private func resolveScrollView() -> NSScrollView? {
+        if let observedScrollView {
+            return observedScrollView
+        }
+
+        var candidate: NSView? = superview
+        while let view = candidate {
+            if let scrollView = view as? NSScrollView {
+                return scrollView
+            }
+            candidate = view.superview
+        }
+        return nil
+    }
+
+    deinit {
+        boundsObservation?.invalidate()
     }
 }
 
 private struct MacOverlayScrollConfigurator: NSViewRepresentable {
     var usesOverlayScrollers: Bool = true
 
-    func makeNSView(context: Context) -> MacOverlayScrollFinderView {
+    fileprivate func makeNSView(context: Context) -> MacOverlayScrollFinderView {
         let view = MacOverlayScrollFinderView()
         view.usesOverlayScrollers = usesOverlayScrollers
         return view
     }
 
-    func updateNSView(_ nsView: MacOverlayScrollFinderView, context: Context) {
+    fileprivate func updateNSView(_ nsView: MacOverlayScrollFinderView, context: Context) {
         nsView.usesOverlayScrollers = usesOverlayScrollers
         nsView.applyOverlayStyle()
     }
@@ -572,6 +744,7 @@ enum WindowActivationController {
     static func configure(_ window: NSWindow) {
         window.isOpaque = false
         window.backgroundColor = .clear
+        window.titlebarAppearsTransparent = true
     }
 
     static func activateApplication(bringing window: NSWindow? = nil) {
@@ -600,10 +773,19 @@ extension View {
             ZStack {
                 DesktopSidebarBlurBackground()
                 Color.white.opacity(AppLayout.sidebarBlurWhiteTint)
+                LinearGradient(
+                    colors: [
+                        .white.opacity(0.06),
+                        .white.opacity(0.015),
+                        .clear
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
             }
             .overlay(alignment: .trailing) {
                 Rectangle()
-                    .fill(Color.primary.opacity(0.06))
+                    .fill(Color.primary.opacity(0.08))
                     .frame(width: 0.5)
             }
         }
@@ -622,7 +804,7 @@ private struct DesktopSidebarBlurBackground: NSViewRepresentable {
         view.material = AppLayout.sidebarBlurMaterial
         view.blendingMode = .behindWindow
         view.state = .active
-        view.isEmphasized = false
+        view.isEmphasized = true
         return view
     }
 
@@ -630,7 +812,7 @@ private struct DesktopSidebarBlurBackground: NSViewRepresentable {
         nsView.material = AppLayout.sidebarBlurMaterial
         nsView.blendingMode = .behindWindow
         nsView.state = .active
-        nsView.isEmphasized = false
+        nsView.isEmphasized = true
     }
 }
 

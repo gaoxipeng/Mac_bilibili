@@ -17,8 +17,8 @@ final class RemoteCoverImageLoader: ObservableObject {
         cache.totalCostLimit = 256 * 1024 * 1024
         return cache
     }()
-    private static let maxPixelLength = 720
-    static let fullscreenMaxPixelLength = 4096
+    private nonisolated static let maxPixelLength = 720
+    nonisolated static let fullscreenMaxPixelLength = 4096
     private static let loadGate = ImageLoadGate(limit: 4)
 
     func load(url: URL?, targetSize: CGSize, scale: CGFloat) {

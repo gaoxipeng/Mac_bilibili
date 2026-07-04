@@ -289,6 +289,7 @@ struct UserProfileChromePreferenceKey: PreferenceKey {
 private enum ProfileChromeCapsuleMetrics {
     static let height: CGFloat = 48
     static let horizontalPadding: CGFloat = 14
+    static let selectedInset: CGFloat = 6
     static let statColumnCount: CGFloat = 4
     static let barWidth: CGFloat = 300
 }
@@ -475,6 +476,7 @@ private struct ProfileStatsBar: View {
                     secondaryText: secondaryText,
                     fixedWidth: columnWidth,
                     fixedHeight: ProfileChromeCapsuleMetrics.height,
+                    leadingHoverExtension: ProfileChromeCapsuleMetrics.horizontalPadding,
                     action: onFollowingTap
                 )
                 ProfileStatItem(
@@ -514,6 +516,7 @@ private struct ProfileStatsBar: View {
             Capsule(style: .continuous)
                 .strokeBorder(Color.black.opacity(0.10), lineWidth: 0.8)
         }
+        .clipShape(Capsule(style: .continuous))
     }
 
     private var plainBody: some View {
@@ -556,11 +559,25 @@ private struct ProfileStatItem: View {
     let secondaryText: Color
     var fixedWidth: CGFloat? = nil
     var fixedHeight: CGFloat? = nil
+    var leadingHoverExtension: CGFloat = 0
     var action: (() -> Void)? = nil
 
     @State private var isHovered = false
 
-    private let hoverInset: CGFloat = 5
+    private var hoverWidth: CGFloat? {
+        guard let fixedWidth else { return nil }
+        let inset = ProfileChromeCapsuleMetrics.selectedInset
+        return max(44, fixedWidth - inset * 2 + leadingHoverExtension)
+    }
+
+    private var hoverHeight: CGFloat {
+        let inset = ProfileChromeCapsuleMetrics.selectedInset
+        return fixedHeight.map { max(34, $0 - inset * 2) } ?? 34
+    }
+
+    private var hoverXOffset: CGFloat {
+        -leadingHoverExtension / 2
+    }
 
     var body: some View {
         Group {
@@ -574,7 +591,8 @@ private struct ProfileStatItem: View {
             }
         }
         .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.18)) {
+            guard action != nil else { return }
+            withAnimation(.easeOut(duration: 0.16)) {
                 isHovered = hovering
             }
         }
@@ -592,16 +610,22 @@ private struct ProfileStatItem: View {
                 .foregroundStyle(secondaryText)
                 .lineLimit(1)
         }
+        .offset(x: isHovered ? hoverXOffset : 0)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .frame(width: fixedWidth, height: fixedHeight)
         .background {
             Capsule(style: .continuous)
                 .fill(Color(red: 0.92, green: 0.92, blue: 0.93))
                 .glassEffect(.regular.interactive(), in: .capsule)
-                .padding(hoverInset)
+                .overlay {
+                    Capsule(style: .continuous)
+                        .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.6)
+                }
+                .frame(width: hoverWidth, height: hoverHeight)
+                .offset(x: hoverXOffset)
                 .opacity(isHovered ? 1 : 0)
         }
-        .animation(.easeOut(duration: 0.18), value: isHovered)
+        .animation(.easeOut(duration: 0.16), value: isHovered)
         .contentShape(Rectangle())
     }
 }

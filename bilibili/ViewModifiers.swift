@@ -155,6 +155,11 @@ enum AppLayout {
         return chrome + userProfileChromeBottomSpacing
     }
 
+    /// Aligns the relation-list tab toggle with the right edge of the two-column user grid.
+    static var userRelationToggleTrailingInset: CGFloat {
+        feedHorizontalInset + searchUserResultsHorizontalInset - floatingChromeInset
+    }
+
     static func videoDetailSidebarWidth(in availableWidth: CGFloat) -> CGFloat {
         guard availableWidth > 0 else { return 0 }
         let adaptiveMin = min(videoDetailSidebarMinWidth, availableWidth * 0.42)

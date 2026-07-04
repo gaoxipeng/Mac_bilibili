@@ -382,6 +382,7 @@ private struct DetailFloatingChrome: View {
                 ),
                 title: { $0.title }
             )
+            .padding(.trailing, AppLayout.userRelationToggleTrailingInset)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {

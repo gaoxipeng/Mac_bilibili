@@ -1466,24 +1466,17 @@ struct VideoDetailView: View {
             NavigationLink(
                 value: UserProfileRequest(mid: model.displayVideo.authorMid)
             ) {
-                authorNameRow
+                VideoDetailAuthorNameLabel(
+                    name: model.displayVideo.authorName,
+                    level: model.authorLevel
+                )
             }
             .buttonStyle(.plain)
         } else {
-            authorNameRow
-        }
-    }
-
-    private var authorNameRow: some View {
-        HStack(spacing: 6) {
-            Text(model.displayVideo.authorName.ifEmpty("未知 UP 主"))
-                .font(.system(size: 18, weight: .semibold))
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if model.authorLevel > 0 {
-                BiliUserLevelIcon(level: model.authorLevel, width: 28, height: 18)
-            }
+            VideoDetailAuthorNameLabel(
+                name: model.displayVideo.authorName,
+                level: model.authorLevel
+            )
         }
     }
 
@@ -2495,6 +2488,36 @@ private struct VideoCommentsPanel: View {
     private var nestedReplyIndent: CGFloat { 44 }
 }
 
+private struct VideoDetailAuthorNameLabel: View {
+    let name: String
+    let level: Int
+
+    @State private var isHovered = false
+
+    private let defaultColor = Color(red: 0.14, green: 0.14, blue: 0.16)
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(name.ifEmpty("未知 UP 主"))
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(isHovered ? BiliTheme.blue : defaultColor)
+                .contentTransition(.interpolate)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if level > 0 {
+                BiliUserLevelIcon(level: level, width: 28, height: 18)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: isHovered)
+        .onHover { hovering in
+            withAnimation(.easeInOut(duration: 0.2)) {
+                isHovered = hovering
+            }
+        }
+    }
+}
+
 private struct CommentRow: View {
     let comment: BiliCommentItem
     let nested: Bool
@@ -2511,25 +2534,11 @@ private struct CommentRow: View {
                 Spacer().frame(width: 16)
             }
 
-            AsyncImage(url: comment.authorFaceURL) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFill()
-                default:
-                    Image(systemName: "person.fill")
-                        .font(.system(size: nested ? 12 : 14))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(width: nested ? 28 : 34, height: nested ? 28 : 34)
-            .clipShape(Circle())
+            authorAvatarLink
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .center, spacing: 6) {
-                    Text(comment.authorName.ifEmpty("用户"))
-                        .font(.system(size: nested ? 14 : 15, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.14, green: 0.14, blue: 0.16))
-                        .lineLimit(1)
+                    authorNameLink
 
                     if comment.level > 0 {
                         BiliUserLevelIcon(level: comment.level, width: 22, height: 14)
@@ -2563,6 +2572,55 @@ private struct CommentRow: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, nested ? 4 : 6)
+    }
+
+    @ViewBuilder
+    private var authorAvatarLink: some View {
+        let avatar = authorAvatar
+        if comment.authorMid > 0 {
+            NavigationLink(value: UserProfileRequest(mid: comment.authorMid)) {
+                avatar
+            }
+            .buttonStyle(.plain)
+        } else {
+            avatar
+        }
+    }
+
+    private var authorAvatar: some View {
+        AsyncImage(url: comment.authorFaceURL) { phase in
+            switch phase {
+            case .success(let image):
+                image.resizable().scaledToFill()
+            default:
+                Image(systemName: "person.fill")
+                    .font(.system(size: nested ? 12 : 14))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: nested ? 28 : 34, height: nested ? 28 : 34)
+        .clipShape(Circle())
+        .contentShape(Circle())
+    }
+
+    @ViewBuilder
+    private var authorNameLink: some View {
+        if comment.authorMid > 0 {
+            NavigationLink(value: UserProfileRequest(mid: comment.authorMid)) {
+                authorNameLabel
+            }
+            .buttonStyle(.plain)
+        } else {
+            authorNameLabel
+        }
+    }
+
+    private var authorNameLabel: some View {
+        Text(comment.authorName.ifEmpty("用户"))
+            .font(.system(size: nested ? 14 : 15, weight: .semibold))
+            .foregroundStyle(Color(red: 0.14, green: 0.14, blue: 0.16))
+            .lineLimit(1)
+            .contentShape(Rectangle())
     }
 
     private var commentMetaRow: some View {

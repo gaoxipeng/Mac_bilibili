@@ -17,11 +17,11 @@ final class MediaPlaybackCoordinator {
         }
         model.reactivateIfNeeded()
         visibleDetail = model
-        applyPlaybackPolicy(for: model)
+        model.resumePlaybackIfNeeded()
     }
 
     func notifyDetailHidden(_ model: VideoDetailModel) {
-        model.suspendPlayback()
+        model.teardown()
         if visibleDetail === model {
             visibleDetail = nil
         }

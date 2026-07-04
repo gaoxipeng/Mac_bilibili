@@ -525,6 +525,7 @@ private enum HistoryLayout {
     static let lineWidth: CGFloat = 1
     static let labelToTrackSpacing: CGFloat = 10
     static let pinnedRowPitch: CGFloat = 36
+    static let sectionScrollTopInset: CGFloat = AppLayout.feedVerticalInset
     static let labelColor = Color(red: 0.38, green: 0.40, blue: 0.43)
     static let labelHoverColor = BiliTheme.blue
     static let lineColor = Color(red: 0.788, green: 0.804, blue: 0.816)
@@ -687,7 +688,7 @@ struct HistoryView: View {
                         .zIndex(0)
 
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: HistoryLayout.sectionSpacing) {
+                        VStack(alignment: .leading, spacing: HistoryLayout.sectionSpacing) {
                             StateBanner(
                                 loading: loading,
                                 error: error,
@@ -723,10 +724,12 @@ struct HistoryView: View {
                         }
                         .padding(.leading, AppLayout.feedHorizontalInset)
                         .padding(.trailing, AppLayout.feedTrailingInset)
-                        .padding(.vertical, AppLayout.feedVerticalInset)
+                        .padding(.bottom, AppLayout.feedVerticalInset)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .environment(\.feedViewportWidth, geometry.size.width)
                     }
+                    .contentMargins(.top, HistoryLayout.sectionScrollTopInset, for: .scrollContent)
+                    .contentMargins(.bottom, AppLayout.feedVerticalInset, for: .scrollContent)
                     .scrollClipDisabled()
                     .zIndex(1)
                     .onPreferenceChange(HistorySectionViewportKey.self) { updates in
@@ -1488,9 +1491,8 @@ private func historySectionLabel(from date: Date?) -> String {
     if itemDay == yesterday { return "昨天" }
 
     let daysAgo = calendar.dateComponents([.day], from: itemDay, to: today).day ?? 0
-    if daysAgo < 7 { return "近一周" }
-    if daysAgo < 14 { return "一周前" }
-    if daysAgo < 30 { return "一个月前" }
+    if daysAgo >= 7 && daysAgo < 14 { return "一周前" }
+    if daysAgo >= 14 && daysAgo < 30 { return "一个月前" }
 
     return historySectionDateText(from: date)
 }

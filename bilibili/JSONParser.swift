@@ -938,11 +938,15 @@ enum JSONParser {
         return BiliPlayStream(videoURL: url, audioURL: nil, aid: 0, cid: 0)
     }
 
-    nonisolated static func parseCommentPage(from object: Any) -> BiliCommentPage {
+    nonisolated static func parseCommentPage(from object: Any, includePinned: Bool = true) -> BiliCommentPage {
         let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
         let cursor = data["cursor"] as? [String: Any]
+        let pinned = includePinned ? parsePinnedCommentItems(from: data) : []
+        let pinnedIDs = Set(pinned.map(\.id))
         let replies = data["replies"] as? [[String: Any]] ?? []
-        let comments = replies.compactMap { parseCommentItem($0, includeInlineReplies: true) }
+        let regular = replies.compactMap { parseCommentItem($0, includeInlineReplies: true) }
+            .filter { !pinnedIDs.contains($0.id) }
+        let comments = pinned + regular
         let paginationReply = parseCommentPaginationReply(cursor)
         let nextCursor = parseCommentNextCursor(cursor: cursor, paginationReply: paginationReply)
         let totalCount = int64(cursor ?? [:], "all_count").ifZero(
@@ -1071,7 +1075,43 @@ enum JSONParser {
         return pageCommentCount == 0
     }
 
-    private nonisolated static func parseCommentItem(_ item: [String: Any], includeInlineReplies: Bool) -> BiliCommentItem? {
+    private nonisolated static func parsePinnedCommentItems(from data: [String: Any]) -> [BiliCommentItem] {
+        var result: [BiliCommentItem] = []
+        var seen = Set<Int64>()
+
+        func append(_ raw: Any?) {
+            guard let dictionary = raw as? [String: Any],
+                  let item = parseCommentItem(dictionary, includeInlineReplies: true, isPinned: true),
+                  seen.insert(item.id).inserted else {
+                return
+            }
+            result.append(item)
+        }
+
+        if let top = data["top"] as? [String: Any] {
+            append(top["upper"])
+            append(top["admin"])
+            append(top["vote"])
+        }
+
+        if let upper = data["upper"] as? [String: Any] {
+            append(upper["top"])
+        }
+
+        if let topReplies = data["top_replies"] as? [[String: Any]] {
+            for reply in topReplies {
+                append(reply)
+            }
+        }
+
+        return result
+    }
+
+    private nonisolated static func parseCommentItem(
+        _ item: [String: Any],
+        includeInlineReplies: Bool,
+        isPinned: Bool = false
+    ) -> BiliCommentItem? {
         guard let member = item["member"] as? [String: Any] else { return nil }
         let content = item["content"] as? [String: Any] ?? [:]
         let message = string(content, "message")
@@ -1093,7 +1133,8 @@ enum JSONParser {
             publishTime: ctime > 0 ? Date(timeIntervalSince1970: TimeInterval(ctime)) : nil,
             ipLocation: normalizeIPLocation((item["reply_control"] as? [String: Any])?["location"] as? String),
             emoticons: emoticons,
-            replies: includeInlineReplies ? nested : []
+            replies: includeInlineReplies ? nested : [],
+            isPinned: isPinned
         )
     }
 
@@ -1130,6 +1171,7 @@ enum JSONParser {
         guard !bvid.isEmpty else { return nil }
 
         let stat = archive["stat"] as? [String: Any] ?? [:]
+        let cntInfo = archive["cnt_info"] as? [String: Any] ?? [:]
         let like = (modules["module_stat"] as? [String: Any])?["like"] as? [String: Any] ?? [:]
         let aid = int64(archive, "aid")
 
@@ -1142,8 +1184,10 @@ enum JSONParser {
             authorName: author.map { string($0, "name") } ?? "",
             authorFaceURL: normalizedURL(author.map { string($0, "face") } ?? ""),
             authorMid: author.map { int64($0, "mid") } ?? 0,
-            viewCount: looseCount(string(stat, "play")),
-            danmakuCount: looseCount(string(stat, "danmaku")),
+            viewCount: parseArchiveStatCount(stat, "play", "view")
+                .ifZero(parseArchiveStatCount(cntInfo, "play", "view")),
+            danmakuCount: parseArchiveStatCount(stat, "danmaku", "video_review", "dm")
+                .ifZero(parseArchiveStatCount(cntInfo, "danmaku", "video_review", "dm")),
             likeCount: int64(like, "count"),
             duration: parseDurationText(string(archive, "duration_text")),
             description: string(archive, "desc"),
@@ -1265,7 +1309,77 @@ enum JSONParser {
     }
 
     private nonisolated static func looseCount(_ raw: String) -> Int64 {
-        let digits = raw.filter(\.isNumber)
+        parseLooseOrCompactCount(raw)
+    }
+
+    private nonisolated static func parseArchiveStatCount(
+        _ dictionary: [String: Any],
+        _ keys: String...
+    ) -> Int64 {
+        for key in keys {
+            guard let raw = dictionary[key] else { continue }
+            let parsed = parseStatCountValue(raw)
+            if parsed > 0 {
+                return parsed
+            }
+        }
+        return 0
+    }
+
+    private nonisolated static func parseStatCountValue(_ raw: Any) -> Int64 {
+        if let dictionary = raw as? [String: Any] {
+            let numeric = int64(dictionary, "count", "value", "num", "number")
+            if numeric > 0 {
+                return numeric
+            }
+            let text = string(dictionary, "count", "value", "text", "num", "number")
+            if !text.isEmpty {
+                return parseLooseOrCompactCount(text)
+            }
+            return 0
+        }
+
+        if let number = raw as? NSNumber {
+            return number.int64Value
+        }
+        if let value = raw as? Int {
+            return Int64(value)
+        }
+        if let value = raw as? Int64 {
+            return value
+        }
+        if let value = raw as? Double {
+            return Int64(value)
+        }
+        if let value = raw as? String {
+            return parseLooseOrCompactCount(value)
+        }
+        return 0
+    }
+
+    private nonisolated static func parseLooseOrCompactCount(_ raw: String) -> Int64 {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed != "-" else { return 0 }
+
+        if trimmed.contains("亿") {
+            let numeric = trimmed
+                .replacingOccurrences(of: "亿", with: "")
+                .filter { $0.isNumber || $0 == "." }
+            if let value = Double(numeric), value > 0 {
+                return Int64(value * 100_000_000)
+            }
+        }
+
+        if trimmed.contains("万") {
+            let numeric = trimmed
+                .replacingOccurrences(of: "万", with: "")
+                .filter { $0.isNumber || $0 == "." }
+            if let value = Double(numeric), value > 0 {
+                return Int64(value * 10_000)
+            }
+        }
+
+        let digits = trimmed.filter(\.isNumber)
         guard !digits.isEmpty else { return 0 }
         return Int64(digits) ?? 0
     }
@@ -1766,6 +1880,7 @@ enum JSONParser {
         guard !bvid.isEmpty else { return nil }
         let author = modules["module_author"] as? [String: Any]
         let stat = archive["stat"] as? [String: Any] ?? [:]
+        let cntInfo = archive["cnt_info"] as? [String: Any] ?? [:]
         let like = (modules["module_stat"] as? [String: Any])?["like"] as? [String: Any] ?? [:]
         return BiliVideo(
             id: bvid,
@@ -1776,8 +1891,10 @@ enum JSONParser {
             authorName: author.map { string($0, "name") } ?? "",
             authorFaceURL: normalizedURL(author.map { string($0, "face") } ?? ""),
             authorMid: author.map { int64($0, "mid") } ?? 0,
-            viewCount: looseCount(string(stat, "play")),
-            danmakuCount: looseCount(string(stat, "danmaku")),
+            viewCount: parseArchiveStatCount(stat, "play", "view")
+                .ifZero(parseArchiveStatCount(cntInfo, "play", "view")),
+            danmakuCount: parseArchiveStatCount(stat, "danmaku", "video_review", "dm")
+                .ifZero(parseArchiveStatCount(cntInfo, "danmaku", "video_review", "dm")),
             likeCount: int64(like, "count"),
             duration: parseDurationText(string(archive, "duration_text")),
             description: string(archive, "desc"),

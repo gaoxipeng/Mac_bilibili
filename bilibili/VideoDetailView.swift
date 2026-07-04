@@ -184,6 +184,7 @@ final class VideoDetailModel: ObservableObject {
         do {
             try await api.modifyFollow(mid: mid, follow: true, credential: credential)
             authorRelation.following = true
+            authorFollowerCount = max(0, authorFollowerCount + 1)
             actionMessage = nil
         } catch {
             actionMessage = error.localizedDescription
@@ -202,6 +203,7 @@ final class VideoDetailModel: ObservableObject {
             try await api.modifyFollow(mid: mid, follow: false, credential: credential)
             authorRelation.following = false
             authorRelation.followerMe = false
+            authorFollowerCount = max(0, authorFollowerCount - 1)
             actionMessage = nil
         } catch {
             actionMessage = error.localizedDescription
@@ -568,6 +570,10 @@ final class VideoDetailModel: ObservableObject {
                 return
             }
 
+            if isPlaybackSuspended {
+                player.pausePlayback()
+            }
+
             applyInitialProgressIfNeeded()
             let reportAid = displayVideo.aid > 0 ? displayVideo.aid : resolvedStream.aid
             startWatchHistoryReporting(aid: reportAid, cid: cid)
@@ -926,7 +932,8 @@ final class VideoDetailModel: ObservableObject {
                 emoticons: comment.emoticons,
                 replies: comment.replies,
                 loadedReplies: merged,
-                repliesEnd: page.isEnd
+                repliesEnd: page.isEnd,
+                isPinned: comment.isPinned
             )
             comments[index] = comment
         } catch {
@@ -948,9 +955,7 @@ struct VideoDetailChromePreferenceKey: PreferenceKey {
     static var defaultValue: VideoDetailChromeInfo?
 
     static func reduce(value: inout VideoDetailChromeInfo?, nextValue: () -> VideoDetailChromeInfo?) {
-        if let next = nextValue() {
-            value = next
-        }
+        value = nextValue()
     }
 }
 
@@ -1012,6 +1017,19 @@ struct VideoDetailView: View {
     @State private var playerScreenFrame: NSRect = .zero
     @State private var showLogin = false
     @StateObject private var webSession = BilibiliWebSession()
+    @State private var publishesFloatingChrome = false
+
+    private func updateFloatingChrome() {
+        if publishesFloatingChrome {
+            appModel.presentVideoFloatingChrome(detailChromeInfo)
+        } else {
+            appModel.refreshVideoFloatingChrome(detailChromeInfo)
+        }
+    }
+
+    private func publishVideoFloatingChrome() {
+        appModel.presentVideoFloatingChrome(detailChromeInfo)
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -1042,19 +1060,29 @@ struct VideoDetailView: View {
         }
         .background(AppLayout.videoDetailPageBackground)
         .navigationBarBackButtonHidden(true)
-        .background {
-            Color.clear
-                .preference(key: VideoDetailChromePreferenceKey.self, value: detailChromeInfo)
-        }
         .task { await model.load() }
         .onAppear {
+            publishesFloatingChrome = true
+            publishVideoFloatingChrome()
             MediaPlaybackCoordinator.shared.notifyDetailVisible(model)
         }
+        .task(id: model.seedVideo.id) {
+            if publishesFloatingChrome {
+                publishVideoFloatingChrome()
+            }
+        }
         .onDisappear {
+            publishesFloatingChrome = false
+            appModel.resignVideoFloatingChrome()
             fullscreenPresenter.dismissImmediately()
             MediaPlaybackCoordinator.shared.notifyDetailHidden(model)
             VideoFullscreenPresenter.restoreMainWindowAppearance()
         }
+        .onChange(of: model.displayVideo.title) { _, _ in updateFloatingChrome() }
+        .onChange(of: model.displayVideo.viewCount) { _, _ in updateFloatingChrome() }
+        .onChange(of: model.displayVideo.danmakuCount) { _, _ in updateFloatingChrome() }
+        .onChange(of: model.onlineCount) { _, _ in updateFloatingChrome() }
+        .onChange(of: model.detail?.publishTime) { _, _ in updateFloatingChrome() }
         .onChange(of: model.needsLoginPrompt) { _, needsLogin in
             if needsLogin {
                 showLogin = true
@@ -1773,8 +1801,8 @@ private struct VideoPlayerSection: View {
             onTogglePlayback: { player.togglePlayback() },
             onSeekBackward: { player.seek(by: -5) },
             onSeekForward: { player.seek(by: 5) },
-            onVolumeUp: { SystemAudioVolume.adjust(by: 0.1) },
-            onVolumeDown: { SystemAudioVolume.adjust(by: -0.1) },
+            onVolumeUp: { SystemAudioVolume.increase() },
+            onVolumeDown: { SystemAudioVolume.decrease() },
             onToggleFullscreen: { onToggleFullscreen?() },
             onExitFullscreen: { onToggleFullscreen?() },
             onToggleMute: { player.toggleMute() },
@@ -1890,8 +1918,8 @@ private struct VideoPlayerFullscreenContent: View {
             onTogglePlayback: { player.togglePlayback() },
             onSeekBackward: { player.seek(by: -5) },
             onSeekForward: { player.seek(by: 5) },
-            onVolumeUp: { SystemAudioVolume.adjust(by: 0.1) },
-            onVolumeDown: { SystemAudioVolume.adjust(by: -0.1) },
+            onVolumeUp: { SystemAudioVolume.increase() },
+            onVolumeDown: { SystemAudioVolume.decrease() },
             onToggleFullscreen: onClose,
             onExitFullscreen: onClose,
             onToggleMute: { player.toggleMute() },
@@ -2317,9 +2345,17 @@ private struct VideoCommentsPanel: View {
     private var commentList: some View {
         LazyVStack(alignment: .leading, spacing: 4) {
             ForEach(model.comments) { comment in
-                CommentRow(comment: comment, nested: false)
+                CommentRow(
+                    comment: comment,
+                    nested: false,
+                    videoAuthorMid: model.displayVideo.authorMid
+                )
                 ForEach(comment.loadedReplies) { reply in
-                    CommentRow(comment: reply, nested: true)
+                    CommentRow(
+                        comment: reply,
+                        nested: true,
+                        videoAuthorMid: model.displayVideo.authorMid
+                    )
                 }
                 if comment.replyCount > Int64(comment.loadedReplies.count), !comment.repliesEnd {
                     Button {
@@ -2378,6 +2414,11 @@ private struct VideoCommentsPanel: View {
 private struct CommentRow: View {
     let comment: BiliCommentItem
     let nested: Bool
+    let videoAuthorMid: Int64
+
+    private var isVideoAuthor: Bool {
+        videoAuthorMid > 0 && comment.authorMid == videoAuthorMid
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -2399,7 +2440,7 @@ private struct CommentRow: View {
             .clipShape(Circle())
 
             VStack(alignment: .leading, spacing: 6) {
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                HStack(alignment: .center, spacing: 6) {
                     Text(comment.authorName.ifEmpty("用户"))
                         .font(.system(size: nested ? 14 : 15, weight: .semibold))
                         .foregroundStyle(Color(red: 0.14, green: 0.14, blue: 0.16))
@@ -2407,6 +2448,14 @@ private struct CommentRow: View {
 
                     if comment.level > 0 {
                         BiliUserLevelIcon(level: comment.level, width: 22, height: 14)
+                    }
+
+                    if isVideoAuthor {
+                        BiliUpAuthorBadge()
+                    }
+
+                    if comment.isPinned {
+                        BiliPinnedCommentBadge()
                     }
                 }
 

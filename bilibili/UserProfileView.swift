@@ -210,6 +210,7 @@ final class UserProfileModel: ObservableObject {
         do {
             try await api.modifyFollow(mid: mid, follow: true, credential: credential)
             relation.following = true
+            applyFollowerDelta(1)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -226,9 +227,28 @@ final class UserProfileModel: ObservableObject {
             try await api.modifyFollow(mid: mid, follow: false, credential: credential)
             relation.following = false
             relation.followerMe = false
+            applyFollowerDelta(-1)
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func applyFollowerDelta(_ delta: Int64) {
+        guard let current = profile else { return }
+        profile = BiliUserProfile(
+            mid: current.mid,
+            name: current.name,
+            faceURL: current.faceURL,
+            sign: current.sign,
+            level: current.level,
+            following: current.following,
+            follower: max(0, current.follower + delta),
+            likes: current.likes,
+            coinCount: current.coinCount,
+            bcoinBalance: current.bcoinBalance,
+            videoCount: current.videoCount,
+            ipLocation: current.ipLocation
+        )
     }
 }
 
@@ -260,10 +280,13 @@ struct UserProfileChromePreferenceKey: PreferenceKey {
     static var defaultValue: UserProfileChromeInfo?
 
     static func reduce(value: inout UserProfileChromeInfo?, nextValue: () -> UserProfileChromeInfo?) {
-        if let next = nextValue() {
-            value = next
-        }
+        value = nextValue()
     }
+}
+
+private enum ProfileChromeCapsuleMetrics {
+    static let height: CGFloat = 48
+    static let horizontalPadding: CGFloat = 14
 }
 
 struct UserProfileChromeHeaderView: View {
@@ -309,15 +332,6 @@ struct UserProfileChromeHeaderView: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-
-                    ProfileStatsBar(
-                        following: info.following,
-                        follower: info.follower,
-                        likes: info.likes,
-                        videoCount: info.videoCount,
-                        primaryText: primaryText,
-                        secondaryText: secondaryText
-                    )
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -363,12 +377,23 @@ struct UserProfileChromeHeaderView: View {
     @ViewBuilder
     private var trailingActions: some View {
         HStack(alignment: .center, spacing: 10) {
+            ProfileStatsBar(
+                following: info.following,
+                follower: info.follower,
+                likes: info.likes,
+                videoCount: info.videoCount,
+                primaryText: primaryText,
+                secondaryText: secondaryText,
+                style: .borderedChrome
+            )
+
             if info.showFollowButton {
                 AuthorFollowButton(
                     isFollowing: info.isFollowing,
                     followerCount: info.followerCount,
                     isLoading: info.followLoading,
                     usesProfileChromeSizing: true,
+                    fixedCapsuleHeight: ProfileChromeCapsuleMetrics.height,
                     onFollow: onFollow,
                     onUnfollow: onUnfollow
                 )
@@ -376,7 +401,7 @@ struct UserProfileChromeHeaderView: View {
 
             GlassMoreButton(webURL: info.webURL)
         }
-        .fixedSize()
+        .fixedSize(horizontal: false, vertical: true)
     }
 
     private var profileAvatar: some View {
@@ -400,21 +425,45 @@ struct UserProfileChromeHeaderView: View {
 }
 
 private struct ProfileStatsBar: View {
+    enum Style {
+        case plain
+        case borderedChrome
+    }
+
     let following: Int64?
     let follower: Int64?
     let likes: Int64?
     let videoCount: Int64?
     let primaryText: Color
     let secondaryText: Color
+    var style: Style = .plain
+
+    private var itemSpacing: CGFloat {
+        style == .borderedChrome ? 16 : 24
+    }
 
     var body: some View {
-        HStack(spacing: 24) {
+        HStack(spacing: itemSpacing) {
             statItem(title: "关注", value: following?.compactCount ?? "-")
             statItem(title: "粉丝", value: follower?.compactCount ?? "-")
             statItem(title: "获赞", value: likes?.compactCount ?? "-")
             statItem(title: "投稿", value: videoCount?.compactCount ?? "-")
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: style == .plain ? .infinity : nil, alignment: .leading)
+        .padding(.horizontal, style == .borderedChrome ? ProfileChromeCapsuleMetrics.horizontalPadding : 0)
+        .frame(height: style == .borderedChrome ? ProfileChromeCapsuleMetrics.height : nil)
+        .background {
+            if style == .borderedChrome {
+                Capsule(style: .continuous)
+                    .fill(Color.white.opacity(0.42))
+            }
+        }
+        .overlay {
+            if style == .borderedChrome {
+                Capsule(style: .continuous)
+                    .strokeBorder(Color.black.opacity(0.10), lineWidth: 0.8)
+            }
+        }
     }
 
     private func statItem(title: String, value: String) -> some View {
@@ -435,6 +484,7 @@ struct UserProfileView: View {
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.videoDetailChromeHeight) private var chromeHeight
     @StateObject private var model: UserProfileModel
+    @State private var publishesFloatingChrome = false
 
     private let columnInnerPadding: CGFloat = 14
     private let profileSectionHeaderHeight: CGFloat = 48
@@ -500,14 +550,10 @@ struct UserProfileView: View {
             .animation(.easeOut(duration: 0.22), value: contentTopInset)
         }
         .navigationBarBackButtonHidden(true)
-        .background {
-            Color.clear.preference(
-                key: UserProfileChromePreferenceKey.self,
-                value: profileChromePreference
-            )
-        }
         .task { await model.load() }
         .onAppear {
+            publishesFloatingChrome = true
+            publishProfileFloatingChrome()
             appModel.profilePageHandlers = ProfilePageHandlers(
                 follow: { Task { await model.followAuthor() } },
                 unfollow: { Task { await model.unfollowAuthor() } }
@@ -515,14 +561,34 @@ struct UserProfileView: View {
             MediaPlaybackCoordinator.shared.notifyObscuringPageVisible()
         }
         .onDisappear {
+            publishesFloatingChrome = false
+            appModel.resignProfileFloatingChrome()
             appModel.clearProfilePageHandlers()
             MediaPlaybackCoordinator.shared.notifyObscuringPageHidden()
         }
+        .onChange(of: model.profile?.name) { _, _ in updateFloatingProfileChrome() }
+        .onChange(of: model.profile?.sign) { _, _ in updateFloatingProfileChrome() }
+        .onChange(of: model.profile?.level) { _, _ in updateFloatingProfileChrome() }
+        .onChange(of: model.profile?.follower) { _, _ in updateFloatingProfileChrome() }
+        .onChange(of: model.relation.following) { _, _ in updateFloatingProfileChrome() }
+        .onChange(of: model.followLoading) { _, _ in updateFloatingProfileChrome() }
+        .onChange(of: model.loading) { _, _ in updateFloatingProfileChrome() }
+    }
+
+    private func updateFloatingProfileChrome() {
+        if publishesFloatingChrome {
+            publishProfileFloatingChrome()
+        } else {
+            appModel.refreshProfileFloatingChrome(profileChromePreference)
+        }
+    }
+
+    private func publishProfileFloatingChrome() {
+        appModel.presentProfileFloatingChrome(profileChromePreference)
     }
 
     private var profileChromePreference: UserProfileChromeInfo? {
-        guard model.profile != nil || !model.loading else { return nil }
-        return UserProfileChromeInfo(
+        UserProfileChromeInfo(
             faceURL: model.chromeInfo.faceURL,
             name: model.chromeInfo.name,
             level: model.chromeInfo.level,

@@ -167,10 +167,23 @@ final class DynamicDetailModel: ObservableObject {
 
 struct DynamicDetailView: View {
     @Environment(\.videoDetailChromeHeight) private var chromeHeight
+    @EnvironmentObject private var appModel: AppModel
     @StateObject private var model: DynamicDetailModel
+    @State private var publishesFloatingChrome = false
 
     init(item: BiliDynamicItem, credential: BilibiliCredential?) {
         _model = StateObject(wrappedValue: DynamicDetailModel(item: item, credential: credential))
+    }
+
+    private var dynamicChromeInfo: VideoDetailChromeInfo {
+        VideoDetailChromeInfo(
+            title: "动态详情",
+            viewCount: 0,
+            danmakuCount: 0,
+            publishTime: model.item.publishDate,
+            onlineCount: 0,
+            webURL: URL(string: model.referer)
+        )
     }
 
     var body: some View {
@@ -192,24 +205,15 @@ struct DynamicDetailView: View {
         }
         .background(AppLayout.videoDetailPageBackground)
         .navigationBarBackButtonHidden(true)
-        .background {
-            Color.clear.preference(
-                key: VideoDetailChromePreferenceKey.self,
-                value: VideoDetailChromeInfo(
-                    title: "动态详情",
-                    viewCount: 0,
-                    danmakuCount: 0,
-                    publishTime: model.item.publishDate,
-                    onlineCount: 0,
-                    webURL: URL(string: model.referer)
-                )
-            )
-        }
         .task { await model.load() }
         .onAppear {
+            publishesFloatingChrome = true
+            appModel.presentVideoFloatingChrome(dynamicChromeInfo)
             MediaPlaybackCoordinator.shared.notifyObscuringPageVisible()
         }
         .onDisappear {
+            publishesFloatingChrome = false
+            appModel.resignVideoFloatingChrome()
             MediaPlaybackCoordinator.shared.notifyObscuringPageHidden()
         }
     }

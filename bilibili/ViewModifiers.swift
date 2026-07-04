@@ -191,6 +191,30 @@ struct VideoDetailChromeMeasuredHeightKey: PreferenceKey {
     }
 }
 
+private struct MeasuredHeightReporter<K: PreferenceKey>: ViewModifier where K.Value == CGFloat {
+    let when: Bool
+
+    func body(content: Content) -> some View {
+        content.background {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: K.self,
+                    value: when ? geometry.size.height : 0
+                )
+            }
+        }
+    }
+}
+
+extension View {
+    func reportMeasuredHeight<K: PreferenceKey>(
+        to key: K.Type,
+        when: Bool = true
+    ) -> some View where K.Value == CGFloat {
+        modifier(MeasuredHeightReporter<K>(when: when))
+    }
+}
+
 private struct VideoDetailChromeHeightEnvironmentKey: EnvironmentKey {
     static let defaultValue: CGFloat = 0
 }
@@ -927,8 +951,57 @@ struct ReliableHoverDetector: NSViewRepresentable {
     }
 }
 
+@MainActor
+private enum HoverScrollInvalidationCenter {
+    private static var trackedViews = NSHashTable<ReliableHoverTrackingView>.weakObjects()
+    private static var scrollWheelMonitor: Any?
+
+    static func track(_ view: ReliableHoverTrackingView) {
+        trackedViews.add(view)
+        installScrollWheelMonitorIfNeeded()
+    }
+
+    static func untrack(_ view: ReliableHoverTrackingView) {
+        trackedViews.remove(view)
+        if trackedViews.allObjects.isEmpty {
+            removeScrollWheelMonitor()
+        }
+    }
+
+    static func invalidateAll() {
+        let views = trackedViews.allObjects
+        guard !views.isEmpty else { return }
+        DispatchQueue.main.async {
+            views.first?.window?.contentView?.layoutSubtreeIfNeeded()
+            for view in views {
+                view.scheduleRecheckHoverState()
+            }
+        }
+    }
+
+    private static func installScrollWheelMonitorIfNeeded() {
+        guard scrollWheelMonitor == nil else { return }
+        scrollWheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            invalidateAll()
+            return event
+        }
+    }
+
+    private static func removeScrollWheelMonitor() {
+        if let scrollWheelMonitor {
+            NSEvent.removeMonitor(scrollWheelMonitor)
+            self.scrollWheelMonitor = nil
+        }
+    }
+}
+
 final class ReliableHoverTrackingView: NSView {
     var onHoverChanged: ((Bool) -> Void)?
+    private weak var observedScrollView: NSScrollView?
+    private var boundsObservation: NSKeyValueObservation?
+    private var boundsChangeObserver: NSObjectProtocol?
+    private var isHovering = false
+    private var recheckScheduled = false
 
     override var isOpaque: Bool { false }
 
@@ -937,11 +1010,43 @@ final class ReliableHoverTrackingView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         updateTrackingAreas()
+        attachScrollObserverIfNeeded()
+        if window != nil {
+            HoverScrollInvalidationCenter.track(self)
+        }
+        scheduleRecheckHoverState()
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil {
+            detachScrollObserver()
+            HoverScrollInvalidationCenter.untrack(self)
+            setHovering(false)
+        }
     }
 
     override func layout() {
         super.layout()
         updateTrackingAreas()
+        attachScrollObserverIfNeeded()
+        scheduleRecheckHoverState()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        let sizeChanged = frame.size != newSize
+        super.setFrameSize(newSize)
+        if sizeChanged {
+            scheduleRecheckHoverState()
+        }
+    }
+
+    override func setFrameOrigin(_ newOrigin: NSPoint) {
+        let originChanged = frame.origin != newOrigin
+        super.setFrameOrigin(newOrigin)
+        if originChanged {
+            scheduleRecheckHoverState()
+        }
     }
 
     override func updateTrackingAreas() {
@@ -958,11 +1063,113 @@ final class ReliableHoverTrackingView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        onHoverChanged?(true)
+        setHovering(true)
     }
 
     override func mouseExited(with event: NSEvent) {
-        onHoverChanged?(false)
+        setHovering(false)
+    }
+
+    func scheduleRecheckHoverState() {
+        guard !recheckScheduled else { return }
+        recheckScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.recheckScheduled = false
+            self.recheckHoverState()
+        }
+    }
+
+    private func attachScrollObserverIfNeeded() {
+        guard let scrollView = resolveScrollView() else { return }
+        guard observedScrollView !== scrollView || boundsObservation == nil else { return }
+
+        detachScrollObserver()
+        observedScrollView = scrollView
+
+        let clipView = scrollView.contentView
+        clipView.postsBoundsChangedNotifications = true
+
+        boundsObservation = clipView.observe(\.bounds, options: [.new]) { [weak self] _, _ in
+            self?.scheduleRecheckHoverState()
+        }
+
+        boundsChangeObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clipView,
+            queue: .main
+        ) { [weak self] _ in
+            self?.scheduleRecheckHoverState()
+        }
+    }
+
+    private func detachScrollObserver() {
+        boundsObservation?.invalidate()
+        boundsObservation = nil
+        if let boundsChangeObserver {
+            NotificationCenter.default.removeObserver(boundsChangeObserver)
+            self.boundsChangeObserver = nil
+        }
+        observedScrollView = nil
+    }
+
+    private func resolveScrollView() -> NSScrollView? {
+        if let observedScrollView {
+            return observedScrollView
+        }
+
+        var candidate: NSView? = self
+        while let view = candidate {
+            if let scrollView = view as? NSScrollView {
+                return scrollView
+            }
+            if let scrollView = view.enclosingScrollView {
+                return scrollView
+            }
+            candidate = view.superview
+        }
+        return nil
+    }
+
+    private func recheckHoverState() {
+        guard let window else {
+            setHovering(false)
+            return
+        }
+        guard bounds.width > 0, bounds.height > 0 else {
+            setHovering(false)
+            return
+        }
+
+        let mouseInWindow = window.mouseLocationOutsideOfEventStream
+        let hovering = isMouseInsideCover(mouseInWindow: mouseInWindow)
+        setHovering(hovering)
+    }
+
+    private func isMouseInsideCover(mouseInWindow: NSPoint) -> Bool {
+        if let scrollView = resolveScrollView(), let documentView = scrollView.documentView {
+            let coverFrameInDocument = convert(bounds, to: documentView)
+            guard coverFrameInDocument.width > 0, coverFrameInDocument.height > 0 else { return false }
+
+            let mouseInDocument = documentView.convert(mouseInWindow, from: nil)
+            let visibleDocumentRect = scrollView.documentVisibleRect
+            let visibleCover = coverFrameInDocument.intersection(visibleDocumentRect)
+            guard visibleCover.width > 0, visibleCover.height > 0 else { return false }
+            return visibleCover.contains(mouseInDocument)
+        }
+
+        let localPoint = convert(mouseInWindow, from: nil)
+        return bounds.contains(localPoint)
+    }
+
+    private func setHovering(_ hovering: Bool) {
+        guard isHovering != hovering else { return }
+        isHovering = hovering
+        onHoverChanged?(hovering)
+    }
+
+    deinit {
+        detachScrollObserver()
     }
 }
 

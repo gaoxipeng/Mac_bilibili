@@ -29,6 +29,52 @@ final class AppModel: ObservableObject {
 
     var profilePageHandlers: ProfilePageHandlers?
 
+    @Published private(set) var floatingVideoChrome: VideoDetailChromeInfo?
+    @Published private(set) var floatingProfileChrome: UserProfileChromeInfo?
+    @Published private(set) var activeFloatingChromeKind: AppFloatingChromeKind?
+
+    func presentVideoFloatingChrome(_ info: VideoDetailChromeInfo?) {
+        if let info {
+            floatingVideoChrome = info
+        }
+        activeFloatingChromeKind = .video
+    }
+
+    func refreshVideoFloatingChrome(_ info: VideoDetailChromeInfo?) {
+        if let info {
+            floatingVideoChrome = info
+        }
+    }
+
+    func presentProfileFloatingChrome(_ info: UserProfileChromeInfo?) {
+        if let info {
+            floatingProfileChrome = info
+        }
+        activeFloatingChromeKind = .profile
+    }
+
+    func refreshProfileFloatingChrome(_ info: UserProfileChromeInfo?) {
+        if let info {
+            floatingProfileChrome = info
+        }
+    }
+
+    func resignProfileFloatingChrome() {
+        guard activeFloatingChromeKind == .profile else { return }
+        activeFloatingChromeKind = floatingVideoChrome != nil ? .video : nil
+    }
+
+    func resignVideoFloatingChrome() {
+        guard activeFloatingChromeKind == .video else { return }
+        activeFloatingChromeKind = floatingProfileChrome != nil ? .profile : nil
+    }
+
+    func clearFloatingChrome() {
+        floatingVideoChrome = nil
+        floatingProfileChrome = nil
+        activeFloatingChromeKind = nil
+    }
+
     private var followingOffset: String?
     private var homeFreshIdx = 1
     private var homeFetchRow = 1
@@ -452,6 +498,12 @@ private struct AccountStore {
     func clear() {
         try? FileManager.default.removeItem(at: fileURL)
     }
+}
+
+@MainActor
+enum AppFloatingChromeKind: Equatable {
+    case video
+    case profile
 }
 
 @MainActor

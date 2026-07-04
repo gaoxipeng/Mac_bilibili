@@ -438,6 +438,31 @@ enum BiliCommentFormats {
     }
 }
 
+struct BiliUpAuthorBadge: View {
+    private let badgeHeight: CGFloat = 14
+
+    var body: some View {
+        Text("UP")
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(BiliTheme.pink)
+            .frame(width: 18, height: badgeHeight)
+            .background(BiliTheme.pink.opacity(0.14), in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+    }
+}
+
+struct BiliPinnedCommentBadge: View {
+    private let badgeHeight: CGFloat = 14
+
+    var body: some View {
+        Text("置顶")
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(BiliTheme.pink)
+            .frame(height: badgeHeight)
+            .padding(.horizontal, 4)
+            .background(BiliTheme.pink.opacity(0.12), in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+    }
+}
+
 struct BiliCommentSortToggle: View {
     let sort: BiliCommentSort
     let action: () -> Void

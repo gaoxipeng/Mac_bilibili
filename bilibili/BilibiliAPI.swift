@@ -527,7 +527,7 @@ actor BilibiliAPI {
             credential: credential,
             referer: referer
         )
-        return JSONParser.parseCommentPage(from: json)
+        return JSONParser.parseCommentPage(from: json, includePinned: cursor == nil)
     }
 
     func subjectCommentReplies(
@@ -1131,7 +1131,7 @@ actor BilibiliAPI {
             credential: credential,
             referer: videoCommentReferer(bvid: bvid, aid: aid)
         )
-        return JSONParser.parseCommentPage(from: json)
+        return JSONParser.parseCommentPage(from: json, includePinned: cursor == nil)
     }
 
     func commentReplies(

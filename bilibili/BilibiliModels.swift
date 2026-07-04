@@ -501,6 +501,7 @@ struct BiliCommentItem: Identifiable, Hashable, Sendable {
     let replies: [BiliCommentItem]
     var loadedReplies: [BiliCommentItem]
     var repliesEnd: Bool
+    let isPinned: Bool
 
     nonisolated init(
         id: Int64,
@@ -516,7 +517,8 @@ struct BiliCommentItem: Identifiable, Hashable, Sendable {
         emoticons: [String: String] = [:],
         replies: [BiliCommentItem] = [],
         loadedReplies: [BiliCommentItem]? = nil,
-        repliesEnd: Bool = false
+        repliesEnd: Bool = false,
+        isPinned: Bool = false
     ) {
         self.id = id
         self.authorMid = authorMid
@@ -532,6 +534,7 @@ struct BiliCommentItem: Identifiable, Hashable, Sendable {
         self.replies = replies
         self.loadedReplies = loadedReplies ?? replies
         self.repliesEnd = repliesEnd
+        self.isPinned = isPinned
     }
 }
 

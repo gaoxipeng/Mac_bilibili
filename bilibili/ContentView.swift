@@ -5,10 +5,20 @@ struct ContentView: View {
     @StateObject private var model = AppModel()
     @State private var sidebarSelection: AppSection? = .home
     @State private var navigationPath = NavigationPath()
-    @State private var detailChrome: VideoDetailChromeInfo?
     @State private var detailChromeHeight: CGFloat = 0
     @State private var profileChromeHeaderHeight: CGFloat = 0
-    @State private var profileChrome: UserProfileChromeInfo?
+
+    private var effectiveChromeHeight: CGFloat {
+        switch model.activeFloatingChromeKind {
+        case .profile:
+            return AppLayout.userProfileFloatingChromeHeight(headerHeight: profileChromeHeaderHeight)
+        case .video:
+            let measured = detailChromeHeight > 0 ? min(detailChromeHeight, 220) : 0
+            return AppLayout.videoDetailPlayerTopInset(chromeHeight: measured)
+        case nil:
+            return 0
+        }
+    }
 
     var body: some View {
         HStack(spacing: 0) {
@@ -44,13 +54,6 @@ struct ContentView: View {
         .toolbarBackgroundVisibility(.hidden, for: .automatic)
     }
 
-    private var effectiveChromeHeight: CGFloat {
-        if profileChrome != nil {
-            return AppLayout.userProfileFloatingChromeHeight(headerHeight: profileChromeHeaderHeight)
-        }
-        return detailChromeHeight
-    }
-
     private var mainPane: some View {
         ZStack(alignment: .top) {
             NavigationStack(path: $navigationPath) {
@@ -78,12 +81,10 @@ struct ContentView: View {
                             item: request.item,
                             credential: model.account?.credential
                         )
+                        .environmentObject(model)
                     }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .onPreferenceChange(VideoDetailChromePreferenceKey.self) { detailChrome = $0 }
-            .onPreferenceChange(VideoDetailChromeMeasuredHeightKey.self) { detailChromeHeight = $0 }
-            .onPreferenceChange(UserProfileChromePreferenceKey.self) { profileChrome = $0 }
             .environment(\.videoDetailChromeHeight, effectiveChromeHeight)
 
             DetailFloatingChrome(
@@ -93,24 +94,28 @@ struct ContentView: View {
                 canExitSearchResults: model.isSearchShowingResults
                     && navigationPath.isEmpty
                     && model.selectedSection == .search,
-                detailChrome: detailChrome,
-                profileChrome: profileChrome,
                 onExitSearchResults: {
                     model.requestExitSearchResults()
                 }
             )
-            .onPreferenceChange(UserProfileChromeMeasuredHeightKey.self) { profileChromeHeaderHeight = $0 }
         }
-        .onChange(of: navigationPath.count) { oldCount, count in
-            if count < oldCount {
-                profileChrome = nil
-                profileChromeHeaderHeight = 0
-            }
-            if count == 0 {
-                detailChrome = nil
+        .onPreferenceChange(UserProfileChromeMeasuredHeightKey.self) { profileChromeHeaderHeight = $0 }
+        .onPreferenceChange(VideoDetailChromeMeasuredHeightKey.self) { detailChromeHeight = $0 }
+        .onChange(of: model.floatingVideoChrome) { _, chrome in
+            if chrome == nil {
                 detailChromeHeight = 0
-                profileChrome = nil
+            }
+        }
+        .onChange(of: model.activeFloatingChromeKind) { _, kind in
+            if kind != .video {
+                detailChromeHeight = 0
+            }
+        }
+        .onChange(of: navigationPath.count) { _, count in
+            if count == 0 {
+                detailChromeHeight = 0
                 profileChromeHeaderHeight = 0
+                model.clearFloatingChrome()
                 model.clearProfilePageHandlers()
                 VideoFullscreenPresenter.restoreMainWindowAppearance()
                 MediaPlaybackCoordinator.shared.stopAll()
@@ -223,38 +228,51 @@ private struct DetailFloatingChrome: View {
     @Binding var navigationPath: NavigationPath
     let canGoBack: Bool
     let canExitSearchResults: Bool
-    let detailChrome: VideoDetailChromeInfo?
-    let profileChrome: UserProfileChromeInfo?
     let onExitSearchResults: () -> Void
+
+    private var detailChrome: VideoDetailChromeInfo? {
+        model.activeFloatingChromeKind == .video ? model.floatingVideoChrome : nil
+    }
+
+    private var profileChrome: UserProfileChromeInfo? {
+        model.activeFloatingChromeKind == .profile ? model.floatingProfileChrome : nil
+    }
 
     private var showsFloatingBackButton: Bool {
         canExitSearchResults || (canGoBack && (detailChrome != nil || profileChrome != nil))
     }
 
+    private var showsActiveChrome: Bool {
+        detailChrome != nil || profileChrome != nil
+    }
+
     var body: some View {
-        Group {
-            if let profileChrome {
-                profileChromeRow(profileChrome)
-            } else if let detailChrome, navigationPath.count < 2 {
-                detailChromeRow(detailChrome)
-            } else {
-                defaultChromeRow
-            }
-        }
-        .padding(.horizontal, AppLayout.floatingChromeInset)
-        .padding(.top, AppLayout.floatingChromeInset)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background {
-            GeometryReader { geometry in
-                Color.clear.preference(
-                    key: VideoDetailChromeMeasuredHeightKey.self,
-                    value: (detailChrome == nil && profileChrome == nil) ? 0 : geometry.size.height
-                )
-            }
-        }
+        chromeContent
+            .padding(.horizontal, AppLayout.floatingChromeInset)
+            .padding(.top, AppLayout.floatingChromeInset)
+            .fixedSize(horizontal: false, vertical: true)
+            .reportMeasuredHeight(
+                to: VideoDetailChromeMeasuredHeightKey.self,
+                when: showsActiveChrome
+            )
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .allowsHitTesting(detailChrome != nil || profileChrome != nil || !showsFloatingBackButton)
         .animation(.easeOut(duration: 0.26), value: showsFloatingBackButton)
         .animation(.easeOut(duration: 0.26), value: canGoBack)
         .animation(.easeOut(duration: 0.26), value: detailChrome?.title)
+        .animation(.easeOut(duration: 0.26), value: profileChrome?.name)
+        .animation(.easeOut(duration: 0.26), value: model.activeFloatingChromeKind)
+    }
+
+    @ViewBuilder
+    private var chromeContent: some View {
+        if let detailChrome {
+            detailChromeRow(detailChrome)
+        } else if let profileChrome {
+            profileChromeRow(profileChrome)
+        } else {
+            defaultChromeRow
+        }
     }
 
     @ViewBuilder

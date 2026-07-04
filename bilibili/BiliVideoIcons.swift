@@ -386,6 +386,7 @@ struct AuthorFollowButton: View {
     var overlayOnCover = false
     var coverIsLight = true
     var usesProfileChromeSizing = false
+    var fixedCapsuleHeight: CGFloat?
     let onFollow: () -> Void
     let onUnfollow: () -> Void
 
@@ -414,7 +415,8 @@ struct AuthorFollowButton: View {
             }
             .font(.system(size: fontSize, weight: .semibold))
             .padding(.horizontal, horizontalPadding)
-            .padding(.vertical, verticalPadding)
+            .padding(.vertical, fixedCapsuleHeight == nil ? verticalPadding : 0)
+            .frame(height: fixedCapsuleHeight)
             .background(backgroundColor, in: Capsule(style: .continuous))
             .overlay {
                 Capsule(style: .continuous)

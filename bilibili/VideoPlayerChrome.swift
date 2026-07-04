@@ -1,7 +1,6 @@
 import AppKit
-import ApplicationServices
 import Combine
-import CoreAudio
+import CoreGraphics
 import SwiftUI
 
 @MainActor
@@ -96,8 +95,8 @@ final class VideoPlayerKeyboardMonitorView: NSView {
                 guard handlers.shouldHandle() else { return event }
                 return self.handleKeyEvent(event) ? nil : event
             }
-            guard let window, event.window === window else { return event }
             guard handlers.shouldHandle() else { return event }
+            guard self.shouldReceiveKeyboardEvent(event) else { return event }
             return self.handleKeyEvent(event) ? nil : event
         }
     }
@@ -107,6 +106,12 @@ final class VideoPlayerKeyboardMonitorView: NSView {
             NSEvent.removeMonitor(keyMonitor)
             self.keyMonitor = nil
         }
+    }
+
+    private func shouldReceiveKeyboardEvent(_ event: NSEvent) -> Bool {
+        guard let window else { return false }
+        guard let eventWindow = event.window ?? NSApp.keyWindow else { return false }
+        return eventWindow === window
     }
 
     func handleKeyEvent(_ event: NSEvent) -> Bool {
@@ -165,147 +170,27 @@ enum SystemAudioVolume {
         static let soundDown: Int32 = 1
     }
 
-    private static let step: Float = 1.0 / 16.0
-    private static var didPromptAccessibilityThisSession = false
-    private static var didShowAccessibilityAlertThisSession = false
-
-    @MainActor
-    static func increase() {
-        adjust(by: step)
-    }
-
-    @MainActor
-    static func decrease() {
-        adjust(by: -step)
-    }
+    private static var didRequestPostEventAccess = false
+    private static var didShowHUDPermissionHint = false
 
     @MainActor
     static func adjust(by delta: Float) {
         guard delta != 0 else { return }
 
         let mediaKey = delta > 0 ? MediaKey.soundUp : MediaKey.soundDown
-        if AXIsProcessTrusted() {
-            postVolumeKey(mediaKey)
-            return
-        }
-
-        if adjustUsingCoreAudio(by: delta) || adjustViaAppleScript(by: delta) {
-            promptForAccessibilityIfNeeded()
-            return
-        }
-
+        requestPostEventAccessIfNeeded()
         postVolumeKey(mediaKey)
-        promptForAccessibilityIfNeeded()
+
+        if !CGPreflightPostEventAccess() {
+            promptForHUDAccessIfNeeded()
+        }
     }
 
     @MainActor
-    private static func adjustUsingCoreAudio(by delta: Float) -> Bool {
-        guard let deviceID = defaultOutputDeviceID() else { return false }
-        guard var volume = readVolume(deviceID: deviceID) else { return false }
-        volume = min(1, max(0, volume + delta))
-        return writeVolume(deviceID: deviceID, volume: volume)
-    }
-
-    private static func defaultOutputDeviceID() -> AudioDeviceID? {
-        var deviceID = AudioDeviceID(0)
-        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        let status = AudioObjectGetPropertyData(
-            AudioObjectID(kAudioObjectSystemObject),
-            &address,
-            0,
-            nil,
-            &size,
-            &deviceID
-        )
-        guard status == noErr, deviceID != 0 else { return nil }
-        return deviceID
-    }
-
-    private static func readVolume(deviceID: AudioDeviceID) -> Float? {
-        if let volume = readVirtualMainVolume(deviceID: deviceID) {
-            return volume
-        }
-        return readScalarVolume(deviceID: deviceID)
-    }
-
-    private static func writeVolume(deviceID: AudioDeviceID, volume: Float) -> Bool {
-        if writeVirtualMainVolume(deviceID: deviceID, volume: volume) {
-            return true
-        }
-        return writeScalarVolume(deviceID: deviceID, volume: volume)
-    }
-
-    private static let virtualMainVolumeSelector: AudioObjectPropertySelector = 0x766D_7663 // 'vmvc'
-
-    private static func readVirtualMainVolume(deviceID: AudioDeviceID) -> Float? {
-        var volume = Float32(0)
-        var size = UInt32(MemoryLayout<Float32>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: virtualMainVolumeSelector,
-            mScope: kAudioObjectPropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        guard AudioObjectHasProperty(deviceID, &address) else { return nil }
-        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &volume)
-        guard status == noErr else { return nil }
-        return Float(volume)
-    }
-
-    private static func writeVirtualMainVolume(deviceID: AudioDeviceID, volume: Float) -> Bool {
-        var mutableVolume = Float32(volume)
-        var address = AudioObjectPropertyAddress(
-            mSelector: virtualMainVolumeSelector,
-            mScope: kAudioObjectPropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        guard AudioObjectHasProperty(deviceID, &address) else { return false }
-        let status = AudioObjectSetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            UInt32(MemoryLayout<Float32>.size),
-            &mutableVolume
-        )
-        return status == noErr
-    }
-
-    private static func readScalarVolume(deviceID: AudioDeviceID) -> Float? {
-        var volume = Float32(0)
-        var size = UInt32(MemoryLayout<Float32>.size)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyVolumeScalar,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        guard AudioObjectHasProperty(deviceID, &address) else { return nil }
-        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &size, &volume)
-        guard status == noErr else { return nil }
-        return Float(volume)
-    }
-
-    private static func writeScalarVolume(deviceID: AudioDeviceID, volume: Float) -> Bool {
-        var mutableVolume = Float32(volume)
-        var address = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyVolumeScalar,
-            mScope: kAudioDevicePropertyScopeOutput,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        guard AudioObjectHasProperty(deviceID, &address) else { return false }
-        let status = AudioObjectSetPropertyData(
-            deviceID,
-            &address,
-            0,
-            nil,
-            UInt32(MemoryLayout<Float32>.size),
-            &mutableVolume
-        )
-        return status == noErr
+    private static func requestPostEventAccessIfNeeded() {
+        guard !CGPreflightPostEventAccess(), !didRequestPostEventAccess else { return }
+        didRequestPostEventAccess = true
+        _ = CGRequestPostEventAccess()
     }
 
     @MainActor
@@ -328,49 +213,17 @@ enum SystemAudioVolume {
     }
 
     @MainActor
-    private static func adjustViaAppleScript(by delta: Float) -> Bool {
-        guard let current = readOutputVolumePercent() else { return false }
-        let next = min(100, max(0, current + Int((delta * 100).rounded())))
-        guard next != current else { return true }
-        return setOutputVolumePercent(next)
-    }
-
-    @MainActor
-    private static func readOutputVolumePercent() -> Int? {
-        var error: NSDictionary?
-        let script = NSAppleScript(source: "output volume of (get volume settings)")
-        guard let descriptor = script?.executeAndReturnError(&error), error == nil else { return nil }
-        let value = descriptor.int32Value
-        guard value >= 0 else { return nil }
-        return Int(value)
-    }
-
-    @MainActor
-    private static func setOutputVolumePercent(_ value: Int) -> Bool {
-        var error: NSDictionary?
-        let script = NSAppleScript(source: "set volume output volume \(value)")
-        script?.executeAndReturnError(&error)
-        return error == nil
-    }
-
-    @MainActor
-    private static func promptForAccessibilityIfNeeded() {
-        if AXIsProcessTrusted() {
-            return
-        }
-
-        if !didPromptAccessibilityThisSession {
-            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
-            _ = AXIsProcessTrustedWithOptions(options)
-            didPromptAccessibilityThisSession = true
-        }
-
-        guard !didShowAccessibilityAlertThisSession else { return }
-        didShowAccessibilityAlertThisSession = true
+    private static func promptForHUDAccessIfNeeded() {
+        guard !didShowHUDPermissionHint else { return }
+        didShowHUDPermissionHint = true
 
         let alert = NSAlert()
-        alert.messageText = "需要辅助功能权限"
-        alert.informativeText = "上下方向键调节系统音量时，需要在「系统设置 → 隐私与安全性 → 辅助功能」中允许 bilibili 控制你的 Mac。"
+        alert.messageText = "需要辅助功能权限以显示系统音量条"
+        alert.informativeText = """
+        上下方向键要弹出系统音量条，需要在「系统设置 → 隐私与安全性 → 辅助功能」中允许 bilibili。
+
+        授权后请完全退出并重新打开应用。
+        """
         alert.alertStyle = .informational
         alert.addButton(withTitle: "打开系统设置")
         alert.addButton(withTitle: "稍后")
@@ -381,11 +234,8 @@ enum SystemAudioVolume {
                     openAccessibilitySettings()
                 }
             }
-        } else {
-            let response = alert.runModal()
-            if response == .alertFirstButtonReturn {
-                openAccessibilitySettings()
-            }
+        } else if alert.runModal() == .alertFirstButtonReturn {
+            openAccessibilitySettings()
         }
     }
 

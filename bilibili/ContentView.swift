@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var navigationPath = NavigationPath()
     @State private var detailChromeHeight: CGFloat = 0
     @State private var profileChromeHeaderHeight: CGFloat = 0
+    @State private var relationChromeHeaderHeight: CGFloat = 0
 
     private var effectiveChromeHeight: CGFloat {
         switch model.activeFloatingChromeKind {
@@ -15,7 +16,12 @@ struct ContentView: View {
         case .video:
             let measured = detailChromeHeight > 0 ? min(detailChromeHeight, 220) : 0
             return AppLayout.videoDetailPlayerTopInset(chromeHeight: measured)
+        case .relationList:
+            return AppLayout.userRelationFloatingChromeHeight(headerHeight: relationChromeHeaderHeight)
         case nil:
+            if !navigationPath.isEmpty {
+                return AppLayout.floatingChromeBackOnlyHeight
+            }
             return 0
         }
     }
@@ -43,6 +49,10 @@ struct ContentView: View {
             guard oldValue != newValue else { return }
             sidebarSelection = newValue
             navigationPath = NavigationPath()
+            model.clearFloatingChrome()
+            model.clearProfilePageHandlers()
+            VideoFullscreenPresenter.restoreMainWindowAppearance()
+            MediaPlaybackCoordinator.shared.stopAll()
             if newValue != .search {
                 model.isSearchShowingResults = false
             }
@@ -83,6 +93,15 @@ struct ContentView: View {
                         )
                         .environmentObject(model)
                     }
+                    .navigationDestination(for: UserRelationListRequest.self) { request in
+                        UserRelationListView(
+                            request: request,
+                            navigationPath: $navigationPath,
+                            credential: model.account?.credential,
+                            viewerMid: model.account.flatMap { Int64($0.uid) }
+                        )
+                        .environmentObject(model)
+                    }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .environment(\.videoDetailChromeHeight, effectiveChromeHeight)
@@ -101,6 +120,12 @@ struct ContentView: View {
         }
         .onPreferenceChange(UserProfileChromeMeasuredHeightKey.self) { profileChromeHeaderHeight = $0 }
         .onPreferenceChange(VideoDetailChromeMeasuredHeightKey.self) { detailChromeHeight = $0 }
+        .onPreferenceChange(UserRelationChromeMeasuredHeightKey.self) { relationChromeHeaderHeight = $0 }
+        .onChange(of: model.selectedSection) { _, _ in
+            detailChromeHeight = 0
+            profileChromeHeaderHeight = 0
+            relationChromeHeaderHeight = 0
+        }
         .onChange(of: model.floatingVideoChrome) { _, chrome in
             if chrome == nil {
                 detailChromeHeight = 0
@@ -110,17 +135,28 @@ struct ContentView: View {
             if kind != .video {
                 detailChromeHeight = 0
             }
+            if kind != .relationList {
+                relationChromeHeaderHeight = 0
+            }
         }
         .onChange(of: navigationPath.count) { _, count in
             if count == 0 {
                 detailChromeHeight = 0
                 profileChromeHeaderHeight = 0
-                model.clearFloatingChrome()
-                model.clearProfilePageHandlers()
+                relationChromeHeaderHeight = 0
+                model.handleReturnedToRootNavigation()
+                if model.selectedSection != .mine {
+                    model.clearProfilePageHandlers()
+                }
                 VideoFullscreenPresenter.restoreMainWindowAppearance()
                 MediaPlaybackCoordinator.shared.stopAll()
                 Task { await model.refreshSectionAfterReturningFromDetail() }
             }
+        }
+        .onChange(of: model.pendingUserRelationListRequest) { _, request in
+            guard let request else { return }
+            navigationPath.append(request)
+            model.pendingUserRelationListRequest = nil
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
@@ -207,7 +243,7 @@ struct ContentView: View {
                 }
             )
         case .mine:
-            MineView(model: model)
+            MineView()
         }
     }
 }
@@ -238,29 +274,41 @@ private struct DetailFloatingChrome: View {
         model.activeFloatingChromeKind == .profile ? model.floatingProfileChrome : nil
     }
 
+    private var relationChrome: UserRelationChromeInfo? {
+        model.activeFloatingChromeKind == .relationList ? model.floatingRelationChrome : nil
+    }
+
     private var showsFloatingBackButton: Bool {
-        canExitSearchResults || (canGoBack && (detailChrome != nil || profileChrome != nil))
+        canExitSearchResults || canGoBack
     }
 
     private var showsActiveChrome: Bool {
-        detailChrome != nil || profileChrome != nil
+        detailChrome != nil || profileChrome != nil || relationChrome != nil
+    }
+
+    private var reportsFloatingChromeHeight: Bool {
+        showsActiveChrome || (canGoBack && !canExitSearchResults)
     }
 
     var body: some View {
-        chromeContent
-            .padding(.horizontal, AppLayout.floatingChromeInset)
-            .padding(.top, AppLayout.floatingChromeInset)
-            .fixedSize(horizontal: false, vertical: true)
-            .reportMeasuredHeight(
-                to: VideoDetailChromeMeasuredHeightKey.self,
-                when: showsActiveChrome
-            )
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .allowsHitTesting(detailChrome != nil || profileChrome != nil || !showsFloatingBackButton)
+        HStack(alignment: .top, spacing: 0) {
+            chromeContent
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, AppLayout.floatingChromeInset)
+        .padding(.top, AppLayout.floatingChromeInset)
+        .reportMeasuredHeight(
+            to: VideoDetailChromeMeasuredHeightKey.self,
+            when: reportsFloatingChromeHeight
+        )
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .allowsHitTesting(showsActiveChrome || showsFloatingBackButton)
         .animation(.easeOut(duration: 0.26), value: showsFloatingBackButton)
         .animation(.easeOut(duration: 0.26), value: canGoBack)
         .animation(.easeOut(duration: 0.26), value: detailChrome?.title)
         .animation(.easeOut(duration: 0.26), value: profileChrome?.name)
+        .animation(.easeOut(duration: 0.26), value: relationChrome?.hostName)
         .animation(.easeOut(duration: 0.26), value: model.activeFloatingChromeKind)
     }
 
@@ -270,6 +318,8 @@ private struct DetailFloatingChrome: View {
             detailChromeRow(detailChrome)
         } else if let profileChrome {
             profileChromeRow(profileChrome)
+        } else if let relationChrome {
+            relationChromeRow(relationChrome)
         } else {
             defaultChromeRow
         }
@@ -306,15 +356,50 @@ private struct DetailFloatingChrome: View {
                 }
             },
             onFollow: { model.profilePageHandlers?.follow() },
-            onUnfollow: { model.profilePageHandlers?.unfollow() }
+            onUnfollow: { model.profilePageHandlers?.unfollow() },
+            onFollowingTap: { model.profilePageHandlers?.openRelationList(.following) },
+            onFollowersTap: { model.profilePageHandlers?.openRelationList(.followers) }
         )
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
+    private func relationChromeRow(_ relationChrome: UserRelationChromeInfo) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            if showsFloatingBackButton {
+                profileBackButton
+            }
+
+            UserRelationHostSummaryView(info: relationChrome)
+                .layoutPriority(1)
+
+            Spacer(minLength: 16)
+
+            BiliLiquidSegmentedControl(
+                selection: Binding(
+                    get: { model.relationListSelectedTab },
+                    set: { model.setRelationListTab($0) }
+                ),
+                title: { $0.title }
+            )
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            GeometryReader { geometry in
+                Color.clear.preference(
+                    key: UserRelationChromeMeasuredHeightKey.self,
+                    value: geometry.size.height
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
     private var defaultChromeRow: some View {
         HStack(alignment: .top, spacing: 12) {
-            if !showsFloatingBackButton {
+            if showsFloatingBackButton {
+                profileBackButton
+            } else {
                 Spacer()
             }
 

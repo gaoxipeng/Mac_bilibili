@@ -294,6 +294,58 @@ struct UserProfileRequest: Hashable, Sendable {
     let mid: Int64
 }
 
+enum BiliUserRelationTab: String, Hashable, Sendable, CaseIterable, Identifiable {
+    case following
+    case followers
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .following: "关注"
+        case .followers: "粉丝"
+        }
+    }
+}
+
+struct UserRelationListRequest: Hashable, Sendable {
+    let hostMid: Int64
+    let hostName: String
+    let hostFaceURL: URL?
+    let hostSign: String
+    let initialTab: BiliUserRelationTab
+}
+
+struct BiliRelationUser: Identifiable, Hashable, Sendable {
+    let mid: Int64
+    let name: String
+    let faceURL: URL?
+    let sign: String
+    var relation: BiliAuthorRelation
+    let fanCount: Int64
+    let ipLocation: String?
+
+    var id: Int64 { mid }
+
+    var searchDisplay: BiliSearchUser {
+        BiliSearchUser(
+            mid: mid,
+            name: name,
+            faceURL: faceURL,
+            sign: sign,
+            fans: fanCount,
+            level: 0
+        )
+    }
+}
+
+struct BiliRelationUserPage: Sendable {
+    let users: [BiliRelationUser]
+    let hasMore: Bool
+    let total: Int64
+    let errorMessage: String?
+}
+
 nonisolated struct BiliDynamicLink: Hashable, Sendable {
     let title: String
     let url: String

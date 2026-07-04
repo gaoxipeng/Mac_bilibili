@@ -1180,47 +1180,23 @@ private struct HistoryVideoCard: View {
 }
 
 struct MineView: View {
-    @ObservedObject var model: AppModel
+    @EnvironmentObject private var model: AppModel
     @State private var showLogin = false
     @StateObject private var webSession = BilibiliWebSession()
 
     var body: some View {
-        AppScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                PageHeader(title: "我的", subtitle: model.account == nil ? "登录后同步个人资料、关注和历史" : "账号与资料")
-                if let account = model.account {
-                    if let mid = Int64(account.uid), mid > 0 {
-                        NavigationLink(
-                            value: UserProfileRequest(mid: mid)
-                        ) {
-                            ProfileCard(account: account, profile: model.profile)
-                        }
-                        .buttonStyle(.plain)
-                    } else {
-                        ProfileCard(account: account, profile: model.profile)
-                    }
-                } else {
-                    LoginCard {
-                        showLogin = true
-                    }
-                }
-
-                if let message = model.loginMessage {
-                    Label(message, systemImage: message.hasPrefix("已") ? "checkmark.circle" : "exclamationmark.triangle")
-                        .foregroundStyle(message.hasPrefix("已") ? .green : .orange)
-                        .padding(14)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .materialPanel()
-                }
-
-                AccountActionGrid(
-                    loggedIn: model.account != nil,
-                    onFollowing: { model.selectedSection = .following },
-                    onHistory: { model.selectedSection = .history },
-                    onHome: { model.selectedSection = .home },
-                    onLogout: { model.logout() }
+        Group {
+            if let account = model.account,
+               let mid = Int64(account.uid),
+               mid > 0 {
+                UserProfileView(
+                    mid: mid,
+                    credential: account.credential,
+                    viewerMid: mid
                 )
-
+                .id(mid)
+            } else {
+                loginContent
             }
         }
         .sheet(isPresented: $showLogin) {
@@ -1231,6 +1207,25 @@ struct MineView: View {
                     if success {
                         showLogin = false
                     }
+                }
+            }
+        }
+    }
+
+    private var loginContent: some View {
+        AppScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                PageHeader(title: "我的", subtitle: "登录后查看个人主页、关注和历史")
+                LoginCard {
+                    showLogin = true
+                }
+
+                if let message = model.loginMessage {
+                    Label(message, systemImage: message.hasPrefix("已") ? "checkmark.circle" : "exclamationmark.triangle")
+                        .foregroundStyle(message.hasPrefix("已") ? .green : .orange)
+                        .padding(14)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .materialPanel()
                 }
             }
         }

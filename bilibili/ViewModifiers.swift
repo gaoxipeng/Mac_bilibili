@@ -13,6 +13,7 @@ enum AppLayout {
     static let sidebarWidth: CGFloat = 188
     static let sidebarNavTopInset: CGFloat = 52
     static let floatingChromeInset: CGFloat = 20
+    static let floatingChromeBackOnlyHeight: CGFloat = floatingChromeInset + 32 + 8
     static let floatingChromeButtonSize: CGFloat = 32
     static let floatingChromeBottomSpacing: CGFloat = 12
     static let pageHorizontalInset: CGFloat = 20
@@ -141,6 +142,17 @@ enum AppLayout {
     static func userProfileContentTopInset(chromeHeight: CGFloat) -> CGFloat {
         let chrome = chromeHeight > 0 ? chromeHeight : userProfileFloatingChromeHeight(headerHeight: 0)
         return chrome + userProfileChromeBottomSpacing + userProfileChromeShadowOverflow
+    }
+
+    static let userRelationFallbackChromeHeight: CGFloat = 72
+
+    static func userRelationFloatingChromeHeight(headerHeight: CGFloat) -> CGFloat {
+        AppLayout.floatingChromeInset + (headerHeight > 0 ? headerHeight : userRelationFallbackChromeHeight)
+    }
+
+    static func userRelationContentTopInset(chromeHeight: CGFloat) -> CGFloat {
+        let chrome = chromeHeight > 0 ? chromeHeight : userRelationFloatingChromeHeight(headerHeight: 0)
+        return chrome + userProfileChromeBottomSpacing
     }
 
     static func videoDetailSidebarWidth(in availableWidth: CGFloat) -> CGFloat {
@@ -283,6 +295,215 @@ struct SearchHeaderCapsuleChrome: ViewModifier {
 extension View {
     func searchHeaderCapsuleChrome(isEmphasized: Bool, isHovered: Bool) -> some View {
         modifier(SearchHeaderCapsuleChrome(isEmphasized: isEmphasized, isHovered: isHovered))
+    }
+}
+
+struct BiliLiquidSegmentedControl<Tab: Hashable & Identifiable>: View {
+    @Binding var selection: Tab
+    let tabs: [Tab]
+    let title: (Tab) -> String
+    var width: CGFloat
+    var height: CGFloat
+
+    @State private var isPressing = false
+    @State private var isHovered = false
+    @State private var dragX: CGFloat?
+    @State private var animationTrigger = 0
+
+    private let outerPadding: CGFloat = 5
+    private let indicatorInset: CGFloat = 3
+
+    init(
+        selection: Binding<Tab>,
+        title: @escaping (Tab) -> String,
+        width: CGFloat = AppLayout.searchTypeToggleWidth,
+        height: CGFloat = AppLayout.searchBarHeight
+    ) where Tab: CaseIterable {
+        _selection = selection
+        self.tabs = Array(Tab.allCases)
+        self.title = title
+        self.width = width
+        self.height = height
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let size = proxy.size
+            let segmentWidth = max(1, (size.width - outerPadding * 2) / CGFloat(tabs.count))
+            let indicatorWidth = max(1, segmentWidth - indicatorInset * 2)
+            let indicatorHeight = max(1, size.height - outerPadding * 2)
+            let restingX = outerPadding + CGFloat(selectedIndex) * segmentWidth + indicatorInset
+            let draggingX = clampedIndicatorX(
+                centerX: dragX ?? restingX + indicatorWidth / 2,
+                indicatorWidth: indicatorWidth,
+                totalWidth: size.width
+            )
+            let indicatorX = isPressing ? draggingX : restingX
+
+            ZStack(alignment: .topLeading) {
+                BiliLiquidSegmentIndicator(isPressing: isPressing, animationTrigger: animationTrigger)
+                    .frame(width: indicatorWidth, height: indicatorHeight)
+                    .offset(x: indicatorX, y: outerPadding)
+                    .animation(
+                        isPressing
+                        ? .interactiveSpring(response: 0.18, dampingFraction: 0.78, blendDuration: 0.02)
+                        : .spring(response: 0.34, dampingFraction: 0.58, blendDuration: 0.04),
+                        value: indicatorX
+                    )
+                    .animation(.spring(response: 0.22, dampingFraction: 0.62, blendDuration: 0.02), value: isPressing)
+
+                HStack(spacing: 0) {
+                    ForEach(tabs) { tab in
+                        Text(title(tab))
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(Color.black.opacity(selection == tab ? 0.92 : 0.82))
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: indicatorHeight)
+                            .offset(y: outerPadding)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                select(tab)
+                            }
+                    }
+                }
+            }
+            .contentShape(Capsule(style: .continuous))
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        if !isPressing {
+                            withAnimation(.spring(response: 0.18, dampingFraction: 0.68, blendDuration: 0.02)) {
+                                isPressing = true
+                            }
+                        }
+                        dragX = value.location.x
+                        updateSelection(for: value.location.x, segmentWidth: segmentWidth)
+                    }
+                    .onEnded { value in
+                        updateSelection(for: value.location.x, segmentWidth: segmentWidth)
+                        dragX = nil
+                        animationTrigger += 1
+                        withAnimation(.spring(response: 0.36, dampingFraction: 0.56, blendDuration: 0.04)) {
+                            isPressing = false
+                        }
+                    }
+            )
+        }
+        .frame(width: width, height: height)
+        .searchHeaderCapsuleChrome(isEmphasized: isPressing, isHovered: isHovered)
+        .contentShape(Capsule(style: .continuous))
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.12)) {
+                isHovered = hovering
+            }
+        }
+    }
+
+    private var selectedIndex: Int {
+        tabs.firstIndex(where: { $0 == selection }) ?? 0
+    }
+
+    private func select(_ tab: Tab) {
+        guard selection != tab else {
+            animationTrigger += 1
+            return
+        }
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.58, blendDuration: 0.04)) {
+            selection = tab
+        }
+        animationTrigger += 1
+    }
+
+    private func updateSelection(for x: CGFloat, segmentWidth: CGFloat) {
+        let adjustedX = x - outerPadding
+        let index = min(
+            tabs.count - 1,
+            max(0, Int((adjustedX / segmentWidth).rounded(.down)))
+        )
+        let tab = tabs[index]
+        guard selection != tab else { return }
+        withAnimation(.interactiveSpring(response: 0.20, dampingFraction: 0.72, blendDuration: 0.02)) {
+            selection = tab
+        }
+    }
+
+    private func clampedIndicatorX(centerX: CGFloat, indicatorWidth: CGFloat, totalWidth: CGFloat) -> CGFloat {
+        let expandedOverflow = indicatorWidth * 0.08
+        return min(
+            totalWidth - outerPadding - indicatorWidth - expandedOverflow,
+            max(outerPadding + expandedOverflow, centerX - indicatorWidth / 2)
+        )
+    }
+}
+
+private struct BiliLiquidSegmentIndicator: View {
+    let isPressing: Bool
+    let animationTrigger: Int
+
+    var body: some View {
+        Capsule(style: .continuous)
+            .fill(Color(red: 0.92, green: 0.92, blue: 0.93))
+            .glassEffect(.regular.interactive(), in: .capsule)
+            .phaseAnimator(
+                BiliLiquidSegmentPhase.allCases,
+                trigger: animationTrigger
+            ) { content, phase in
+                content
+                    .scaleEffect(
+                        x: isPressing ? 1.12 : phase.xScale,
+                        y: isPressing ? 1.08 : phase.yScale
+                    )
+                    .blur(radius: isPressing ? 0.18 : phase.blurRadius)
+                    .shadow(
+                        color: .black.opacity(isPressing ? 0.08 : 0.025),
+                        radius: isPressing ? 8 : 3,
+                        x: 0,
+                        y: isPressing ? 3 : 1
+                    )
+            } animation: { phase in
+                phase.animation
+            }
+    }
+}
+
+private enum BiliLiquidSegmentPhase: CaseIterable {
+    case resting
+    case droplet
+    case rebound
+    case settled
+
+    var xScale: CGFloat {
+        switch self {
+        case .resting, .settled: 1
+        case .droplet: 1.18
+        case .rebound: 0.96
+        }
+    }
+
+    var yScale: CGFloat {
+        switch self {
+        case .resting, .settled: 1
+        case .droplet: 0.90
+        case .rebound: 1.04
+        }
+    }
+
+    var blurRadius: CGFloat {
+        self == .droplet ? 0.2 : 0
+    }
+
+    var animation: Animation {
+        switch self {
+        case .resting:
+            .linear(duration: 0.01)
+        case .droplet:
+            .smooth(duration: 0.11)
+        case .rebound:
+            .spring(response: 0.18, dampingFraction: 0.58, blendDuration: 0.02)
+        case .settled:
+            .spring(response: 0.26, dampingFraction: 0.68, blendDuration: 0.04)
+        }
     }
 }
 

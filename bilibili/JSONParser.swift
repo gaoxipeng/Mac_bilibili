@@ -407,6 +407,59 @@ enum JSONParser {
         )
     }
 
+    nonisolated static func parseRelationUserPage(from object: Any, pageSize: Int) -> BiliRelationUserPage {
+        let root = dictionary(object)
+        let code = Int(int64(root, "code"))
+        if code != 0 {
+            let message = string(root, "message")
+            let errorMessage: String = {
+                if !message.isEmpty, message != "0" { return message }
+                switch code {
+                case 22115, 22118: return "由于该用户隐私设置，列表不可见"
+                case -101: return "登录后查看"
+                default: return "加载失败"
+                }
+            }()
+            return BiliRelationUserPage(users: [], hasMore: false, total: 0, errorMessage: errorMessage)
+        }
+
+        let data = root["data"] as? [String: Any] ?? [:]
+        let list = data["list"] as? [[String: Any]] ?? []
+        let users = list.compactMap(parseRelationUser)
+        return BiliRelationUserPage(
+            users: users,
+            hasMore: users.count >= pageSize,
+            total: int64(data, "total"),
+            errorMessage: nil
+        )
+    }
+
+    nonisolated private static func parseRelationUser(_ item: [String: Any]) -> BiliRelationUser? {
+        let mid = int64(item, "mid")
+        guard mid > 0 else { return nil }
+
+        let ipRaw = string(item, "location")
+            .ifEmpty((item["res"] as? [String: Any]).map { string($0, "location") } ?? "")
+            .ifEmpty((item["user"] as? [String: Any]).map { string($0, "location") } ?? "")
+
+        let fanCandidates = [
+            int64(item, "fans"),
+            int64(item, "follower"),
+            int64(item["official"] as? [String: Any] ?? [:], "fans"),
+        ]
+        let fanCount = fanCandidates.first(where: { $0 > 0 }) ?? Int64(0)
+
+        return BiliRelationUser(
+            mid: mid,
+            name: string(item, "uname").ifEmpty("用户"),
+            faceURL: normalizedURL(string(item, "face")),
+            sign: string(item, "sign"),
+            relation: relationFromAttribute(Int(int64(item, "attribute"))),
+            fanCount: fanCount,
+            ipLocation: normalizeIpLocation(ipRaw)
+        )
+    }
+
     nonisolated static func mergeSpaceProfile(
         acc: BiliUserProfile?,
         card: BiliUserProfile?,

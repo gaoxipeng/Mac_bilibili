@@ -80,6 +80,7 @@ final class UserProfileModel: ObservableObject {
             webURL: spaceWebURL,
             showFollowButton: showFollowButton,
             isFollowing: relation.following,
+            followerMe: relation.followerMe,
             followerCount: authorFollowerCount,
             followLoading: followLoading
         )
@@ -264,6 +265,7 @@ struct UserProfileChromeInfo: Equatable {
     let webURL: URL
     let showFollowButton: Bool
     let isFollowing: Bool
+    let followerMe: Bool
     let followerCount: Int64
     let followLoading: Bool
 }
@@ -287,6 +289,8 @@ struct UserProfileChromePreferenceKey: PreferenceKey {
 private enum ProfileChromeCapsuleMetrics {
     static let height: CGFloat = 48
     static let horizontalPadding: CGFloat = 14
+    static let statColumnCount: CGFloat = 4
+    static let barWidth: CGFloat = 300
 }
 
 struct UserProfileChromeHeaderView: View {
@@ -295,6 +299,8 @@ struct UserProfileChromeHeaderView: View {
     var onBack: () -> Void = {}
     var onFollow: () -> Void = {}
     var onUnfollow: () -> Void = {}
+    var onFollowingTap: (() -> Void)?
+    var onFollowersTap: (() -> Void)?
 
     private let primaryText = Color(red: 0.11, green: 0.11, blue: 0.12)
     private let secondaryText = Color(red: 0.39, green: 0.39, blue: 0.4)
@@ -376,7 +382,7 @@ struct UserProfileChromeHeaderView: View {
 
     @ViewBuilder
     private var trailingActions: some View {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: 16) {
             ProfileStatsBar(
                 following: info.following,
                 follower: info.follower,
@@ -384,12 +390,15 @@ struct UserProfileChromeHeaderView: View {
                 videoCount: info.videoCount,
                 primaryText: primaryText,
                 secondaryText: secondaryText,
-                style: .borderedChrome
+                style: .borderedChrome,
+                onFollowingTap: onFollowingTap,
+                onFollowersTap: onFollowersTap
             )
 
             if info.showFollowButton {
                 AuthorFollowButton(
                     isFollowing: info.isFollowing,
+                    followerMe: info.followerMe,
                     followerCount: info.followerCount,
                     isLoading: info.followLoading,
                     usesProfileChromeSizing: true,
@@ -437,46 +446,163 @@ private struct ProfileStatsBar: View {
     let primaryText: Color
     let secondaryText: Color
     var style: Style = .plain
+    var onFollowingTap: (() -> Void)?
+    var onFollowersTap: (() -> Void)?
 
     private var itemSpacing: CGFloat {
-        style == .borderedChrome ? 16 : 24
+        style == .borderedChrome ? 22 : 24
     }
 
     var body: some View {
-        HStack(spacing: itemSpacing) {
-            statItem(title: "关注", value: following?.compactCount ?? "-")
-            statItem(title: "粉丝", value: follower?.compactCount ?? "-")
-            statItem(title: "获赞", value: likes?.compactCount ?? "-")
-            statItem(title: "投稿", value: videoCount?.compactCount ?? "-")
-        }
-        .frame(maxWidth: style == .plain ? .infinity : nil, alignment: .leading)
-        .padding(.horizontal, style == .borderedChrome ? ProfileChromeCapsuleMetrics.horizontalPadding : 0)
-        .frame(height: style == .borderedChrome ? ProfileChromeCapsuleMetrics.height : nil)
-        .background {
+        Group {
             if style == .borderedChrome {
-                Capsule(style: .continuous)
-                    .fill(Color.white.opacity(0.42))
-            }
-        }
-        .overlay {
-            if style == .borderedChrome {
-                Capsule(style: .continuous)
-                    .strokeBorder(Color.black.opacity(0.10), lineWidth: 0.8)
+                borderedChromeBody
+            } else {
+                plainBody
             }
         }
     }
 
-    private func statItem(title: String, value: String) -> some View {
+    private var borderedChromeBody: some View {
+        GeometryReader { geometry in
+            let columnWidth = geometry.size.width / ProfileChromeCapsuleMetrics.statColumnCount
+
+            HStack(spacing: 0) {
+                ProfileStatItem(
+                    title: "关注",
+                    value: following?.compactCount ?? "-",
+                    primaryText: primaryText,
+                    secondaryText: secondaryText,
+                    fixedWidth: columnWidth,
+                    fixedHeight: ProfileChromeCapsuleMetrics.height,
+                    action: onFollowingTap
+                )
+                ProfileStatItem(
+                    title: "粉丝",
+                    value: follower?.compactCount ?? "-",
+                    primaryText: primaryText,
+                    secondaryText: secondaryText,
+                    fixedWidth: columnWidth,
+                    fixedHeight: ProfileChromeCapsuleMetrics.height,
+                    action: onFollowersTap
+                )
+                ProfileStatItem(
+                    title: "获赞",
+                    value: likes?.compactCount ?? "-",
+                    primaryText: primaryText,
+                    secondaryText: secondaryText,
+                    fixedWidth: columnWidth,
+                    fixedHeight: ProfileChromeCapsuleMetrics.height
+                )
+                ProfileStatItem(
+                    title: "投稿",
+                    value: videoCount?.compactCount ?? "-",
+                    primaryText: primaryText,
+                    secondaryText: secondaryText,
+                    fixedWidth: columnWidth,
+                    fixedHeight: ProfileChromeCapsuleMetrics.height
+                )
+            }
+        }
+        .padding(.horizontal, ProfileChromeCapsuleMetrics.horizontalPadding)
+        .frame(width: ProfileChromeCapsuleMetrics.barWidth, height: ProfileChromeCapsuleMetrics.height)
+        .background {
+            Capsule(style: .continuous)
+                .fill(Color.white.opacity(0.42))
+        }
+        .overlay {
+            Capsule(style: .continuous)
+                .strokeBorder(Color.black.opacity(0.10), lineWidth: 0.8)
+        }
+    }
+
+    private var plainBody: some View {
+        HStack(spacing: itemSpacing) {
+            ProfileStatItem(
+                title: "关注",
+                value: following?.compactCount ?? "-",
+                primaryText: primaryText,
+                secondaryText: secondaryText,
+                action: onFollowingTap
+            )
+            ProfileStatItem(
+                title: "粉丝",
+                value: follower?.compactCount ?? "-",
+                primaryText: primaryText,
+                secondaryText: secondaryText,
+                action: onFollowersTap
+            )
+            ProfileStatItem(
+                title: "获赞",
+                value: likes?.compactCount ?? "-",
+                primaryText: primaryText,
+                secondaryText: secondaryText
+            )
+            ProfileStatItem(
+                title: "投稿",
+                value: videoCount?.compactCount ?? "-",
+                primaryText: primaryText,
+                secondaryText: secondaryText
+            )
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct ProfileStatItem: View {
+    let title: String
+    let value: String
+    let primaryText: Color
+    let secondaryText: Color
+    var fixedWidth: CGFloat? = nil
+    var fixedHeight: CGFloat? = nil
+    var action: (() -> Void)? = nil
+
+    @State private var isHovered = false
+
+    private let hoverInset: CGFloat = 5
+
+    var body: some View {
+        Group {
+            if let action {
+                Button(action: action) {
+                    label
+                }
+                .buttonStyle(.plain)
+            } else {
+                label
+            }
+        }
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.18)) {
+                isHovered = hovering
+            }
+        }
+    }
+
+    private var label: some View {
         VStack(alignment: .center, spacing: 3) {
             Text(value)
                 .font(.system(size: 13, weight: .semibold).monospacedDigit())
                 .foregroundStyle(primaryText)
                 .lineLimit(1)
+                .minimumScaleFactor(fixedWidth == nil ? 1 : 0.75)
             Text(title)
                 .font(.system(size: 11))
                 .foregroundStyle(secondaryText)
                 .lineLimit(1)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(width: fixedWidth, height: fixedHeight)
+        .background {
+            Capsule(style: .continuous)
+                .fill(Color(red: 0.92, green: 0.92, blue: 0.93))
+                .glassEffect(.regular.interactive(), in: .capsule)
+                .padding(hoverInset)
+                .opacity(isHovered ? 1 : 0)
+        }
+        .animation(.easeOut(duration: 0.18), value: isHovered)
+        .contentShape(Rectangle())
     }
 }
 
@@ -556,13 +682,25 @@ struct UserProfileView: View {
             publishProfileFloatingChrome()
             appModel.profilePageHandlers = ProfilePageHandlers(
                 follow: { Task { await model.followAuthor() } },
-                unfollow: { Task { await model.unfollowAuthor() } }
+                unfollow: { Task { await model.unfollowAuthor() } },
+                openRelationList: { tab in
+                    appModel.requestUserRelationList(
+                        UserRelationListRequest(
+                            hostMid: model.mid,
+                            hostName: model.chromeInfo.name,
+                            hostFaceURL: model.chromeInfo.faceURL,
+                            hostSign: model.chromeInfo.sign,
+                            initialTab: tab
+                        )
+                    )
+                }
             )
             MediaPlaybackCoordinator.shared.notifyObscuringPageVisible()
         }
         .onDisappear {
             publishesFloatingChrome = false
-            appModel.resignProfileFloatingChrome()
+            appModel.popProfileFloatingChrome()
+            appModel.restoreRelationListChrome()
             appModel.clearProfilePageHandlers()
             MediaPlaybackCoordinator.shared.notifyObscuringPageHidden()
         }
@@ -600,6 +738,7 @@ struct UserProfileView: View {
             webURL: model.chromeInfo.webURL,
             showFollowButton: model.chromeInfo.showFollowButton,
             isFollowing: model.chromeInfo.isFollowing,
+            followerMe: model.chromeInfo.followerMe,
             followerCount: model.chromeInfo.followerCount,
             followLoading: model.chromeInfo.followLoading
         )
@@ -635,14 +774,14 @@ struct UserProfileView: View {
                 }
             }
 
+            Spacer(minLength: 0)
+
             ProfileVideoSortControl(
                 selection: model.videoSort,
                 onChange: { sort in
                     Task { await model.changeSort(sort) }
                 }
             )
-
-            Spacer(minLength: 0)
         }
     }
 

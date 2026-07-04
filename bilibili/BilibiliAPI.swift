@@ -578,6 +578,45 @@ actor BilibiliAPI {
         )
     }
 
+    func userRelationListPage(
+        hostMid: Int64,
+        tab: BiliUserRelationTab,
+        page: Int,
+        pageSize: Int = 20,
+        credential: BilibiliCredential? = nil
+    ) async -> BiliRelationUserPage {
+        let url: String
+        var params: [String: String] = [
+            "vmid": "\(hostMid)",
+            "pn": "\(max(1, page))",
+            "ps": "\(pageSize)",
+        ]
+        switch tab {
+        case .following:
+            url = "https://api.bilibili.com/x/relation/followings"
+            params["order_type"] = ""
+        case .followers:
+            url = "https://api.bilibili.com/x/relation/followers"
+        }
+
+        do {
+            let json = try await jsonAllowNonZero(
+                url: url,
+                params: params,
+                credential: credential,
+                referer: "https://space.bilibili.com/\(hostMid)"
+            )
+            return JSONParser.parseRelationUserPage(from: json, pageSize: pageSize)
+        } catch {
+            return BiliRelationUserPage(
+                users: [],
+                hasMore: false,
+                total: 0,
+                errorMessage: error.localizedDescription
+            )
+        }
+    }
+
     func followingFeed(credential: BilibiliCredential, offset: String? = nil) async throws -> BiliFollowingFeedPage {
         var params: [String: String] = [
             "timezone_offset": "-480",

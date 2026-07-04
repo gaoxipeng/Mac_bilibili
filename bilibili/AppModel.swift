@@ -28,10 +28,16 @@ final class AppModel: ObservableObject {
     @Published private(set) var exitSearchResultsRequest = 0
 
     var profilePageHandlers: ProfilePageHandlers?
+    @Published var pendingUserRelationListRequest: UserRelationListRequest?
 
     @Published private(set) var floatingVideoChrome: VideoDetailChromeInfo?
     @Published private(set) var floatingProfileChrome: UserProfileChromeInfo?
+    @Published private(set) var floatingRelationChrome: UserRelationChromeInfo?
     @Published private(set) var activeFloatingChromeKind: AppFloatingChromeKind?
+    @Published private(set) var relationListSelectedTab: BiliUserRelationTab = .following
+
+    private var relationListTabChangeHandler: ((BiliUserRelationTab) -> Void)?
+    private var profileChromeStack: [UserProfileChromeInfo] = []
 
     func presentVideoFloatingChrome(_ info: VideoDetailChromeInfo?) {
         if let info {
@@ -48,6 +54,9 @@ final class AppModel: ObservableObject {
 
     func presentProfileFloatingChrome(_ info: UserProfileChromeInfo?) {
         if let info {
+            if let current = floatingProfileChrome, current != info {
+                profileChromeStack.append(current)
+            }
             floatingProfileChrome = info
         }
         activeFloatingChromeKind = .profile
@@ -64,6 +73,58 @@ final class AppModel: ObservableObject {
         activeFloatingChromeKind = floatingVideoChrome != nil ? .video : nil
     }
 
+    func restoreProfileFloatingChrome() {
+        guard floatingProfileChrome != nil else { return }
+        activeFloatingChromeKind = .profile
+    }
+
+    func popProfileFloatingChrome() {
+        guard activeFloatingChromeKind == .profile else { return }
+        activeFloatingChromeKind = nil
+        if let restored = profileChromeStack.popLast() {
+            floatingProfileChrome = restored
+        }
+    }
+
+    func presentRelationListChrome(
+        _ info: UserRelationChromeInfo,
+        selectedTab: BiliUserRelationTab,
+        onTabChange: @escaping (BiliUserRelationTab) -> Void
+    ) {
+        floatingRelationChrome = info
+        relationListSelectedTab = selectedTab
+        relationListTabChangeHandler = onTabChange
+        activeFloatingChromeKind = .relationList
+    }
+
+    func setRelationListTab(_ tab: BiliUserRelationTab) {
+        guard relationListSelectedTab != tab else { return }
+        relationListSelectedTab = tab
+        relationListTabChangeHandler?(tab)
+    }
+
+    func suspendRelationListChrome() {
+        guard activeFloatingChromeKind == .relationList else { return }
+        activeFloatingChromeKind = nil
+    }
+
+    func restoreRelationListChrome() {
+        guard floatingRelationChrome != nil else { return }
+        activeFloatingChromeKind = .relationList
+    }
+
+    func dismissRelationListChrome() {
+        relationListTabChangeHandler = nil
+        floatingRelationChrome = nil
+        if activeFloatingChromeKind == .relationList {
+            activeFloatingChromeKind = nil
+        }
+    }
+
+    func resignRelationListChrome() {
+        dismissRelationListChrome()
+    }
+
     func resignVideoFloatingChrome() {
         guard activeFloatingChromeKind == .video else { return }
         activeFloatingChromeKind = floatingProfileChrome != nil ? .profile : nil
@@ -72,7 +133,23 @@ final class AppModel: ObservableObject {
     func clearFloatingChrome() {
         floatingVideoChrome = nil
         floatingProfileChrome = nil
+        floatingRelationChrome = nil
+        relationListTabChangeHandler = nil
+        profileChromeStack.removeAll()
         activeFloatingChromeKind = nil
+    }
+
+    func handleReturnedToRootNavigation() {
+        floatingVideoChrome = nil
+        floatingRelationChrome = nil
+        relationListTabChangeHandler = nil
+        profileChromeStack.removeAll()
+        if selectedSection == .mine, floatingProfileChrome != nil {
+            activeFloatingChromeKind = .profile
+        } else {
+            floatingProfileChrome = nil
+            activeFloatingChromeKind = nil
+        }
     }
 
     private var followingOffset: String?
@@ -139,6 +216,10 @@ final class AppModel: ObservableObject {
 
     func clearProfilePageHandlers() {
         profilePageHandlers = nil
+    }
+
+    func requestUserRelationList(_ request: UserRelationListRequest) {
+        pendingUserRelationListRequest = request
     }
 
     func reloadSelected() async {
@@ -516,10 +597,12 @@ private struct AccountStore {
 enum AppFloatingChromeKind: Equatable {
     case video
     case profile
+    case relationList
 }
 
 @MainActor
 struct ProfilePageHandlers {
     let follow: () -> Void
     let unfollow: () -> Void
+    let openRelationList: (BiliUserRelationTab) -> Void
 }

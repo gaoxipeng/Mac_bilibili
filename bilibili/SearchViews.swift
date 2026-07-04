@@ -757,7 +757,7 @@ struct SearchDashboard: View {
                     .padding(.vertical, 40)
             } else {
                 ForEach(searchModel.users) { user in
-                    SearchUserRow(user: user)
+                    BiliUserCapsuleRow(user: user)
                 }
 
                 if searchModel.userHasMore {
@@ -871,192 +871,9 @@ private struct SearchTextActionButton: View {
 
 private struct SearchTypeSegmentedControl: View {
     @Binding var selection: SearchResultTab
-    @State private var isPressing = false
-    @State private var isHovered = false
-    @State private var dragX: CGFloat?
-    @State private var animationTrigger = 0
-
-    private let outerPadding: CGFloat = 5
-    private let indicatorInset: CGFloat = 3
 
     var body: some View {
-        GeometryReader { proxy in
-            let size = proxy.size
-            let segmentWidth = max(1, (size.width - outerPadding * 2) / CGFloat(SearchResultTab.allCases.count))
-            let indicatorWidth = max(1, segmentWidth - indicatorInset * 2)
-            let indicatorHeight = max(1, size.height - outerPadding * 2)
-            let restingX = outerPadding + CGFloat(selectedIndex) * segmentWidth + indicatorInset
-            let draggingX = clampedIndicatorX(
-                centerX: dragX ?? restingX + indicatorWidth / 2,
-                indicatorWidth: indicatorWidth,
-                totalWidth: size.width
-            )
-            let indicatorX = isPressing ? draggingX : restingX
-
-            ZStack(alignment: .topLeading) {
-                SearchTypeLiquidIndicator(isPressing: isPressing, animationTrigger: animationTrigger)
-                    .frame(width: indicatorWidth, height: indicatorHeight)
-                    .offset(x: indicatorX, y: outerPadding)
-                    .animation(
-                        isPressing
-                        ? .interactiveSpring(response: 0.18, dampingFraction: 0.78, blendDuration: 0.02)
-                        : .spring(response: 0.34, dampingFraction: 0.58, blendDuration: 0.04),
-                        value: indicatorX
-                    )
-                    .animation(.spring(response: 0.22, dampingFraction: 0.62, blendDuration: 0.02), value: isPressing)
-
-                HStack(spacing: 0) {
-                    ForEach(SearchResultTab.allCases) { tab in
-                        Text(tab.title)
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(Color.black.opacity(selection == tab ? 0.92 : 0.82))
-                            .lineLimit(1)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: indicatorHeight)
-                            .offset(y: outerPadding)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                select(tab)
-                            }
-                    }
-                }
-            }
-            .contentShape(Capsule(style: .continuous))
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        if !isPressing {
-                            withAnimation(.spring(response: 0.18, dampingFraction: 0.68, blendDuration: 0.02)) {
-                                isPressing = true
-                            }
-                        }
-                        dragX = value.location.x
-                        updateSelection(for: value.location.x, segmentWidth: segmentWidth)
-                    }
-                    .onEnded { value in
-                        updateSelection(for: value.location.x, segmentWidth: segmentWidth)
-                        dragX = nil
-                        animationTrigger += 1
-                        withAnimation(.spring(response: 0.36, dampingFraction: 0.56, blendDuration: 0.04)) {
-                            isPressing = false
-                        }
-                    }
-            )
-        }
-        .frame(width: AppLayout.searchTypeToggleWidth, height: AppLayout.searchBarHeight)
-        .searchHeaderCapsuleChrome(isEmphasized: isPressing, isHovered: isHovered)
-        .contentShape(Capsule(style: .continuous))
-        .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.12)) {
-                isHovered = hovering
-            }
-        }
-    }
-
-    private var selectedIndex: Int {
-        SearchResultTab.allCases.firstIndex(of: selection) ?? 0
-    }
-
-    private func select(_ tab: SearchResultTab) {
-        guard selection != tab else {
-            animationTrigger += 1
-            return
-        }
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.58, blendDuration: 0.04)) {
-            selection = tab
-        }
-        animationTrigger += 1
-    }
-
-    private func updateSelection(for x: CGFloat, segmentWidth: CGFloat) {
-        let adjustedX = x - outerPadding
-        let index = min(
-            SearchResultTab.allCases.count - 1,
-            max(0, Int((adjustedX / segmentWidth).rounded(.down)))
-        )
-        let tab = SearchResultTab.allCases[index]
-        guard selection != tab else { return }
-        withAnimation(.interactiveSpring(response: 0.20, dampingFraction: 0.72, blendDuration: 0.02)) {
-            selection = tab
-        }
-    }
-
-    private func clampedIndicatorX(centerX: CGFloat, indicatorWidth: CGFloat, totalWidth: CGFloat) -> CGFloat {
-        let expandedOverflow = indicatorWidth * 0.08
-        return min(
-            totalWidth - outerPadding - indicatorWidth - expandedOverflow,
-            max(outerPadding + expandedOverflow, centerX - indicatorWidth / 2)
-        )
-    }
-}
-
-private struct SearchTypeLiquidIndicator: View {
-    let isPressing: Bool
-    let animationTrigger: Int
-
-    var body: some View {
-        Capsule(style: .continuous)
-            .fill(Color(red: 0.92, green: 0.92, blue: 0.93))
-            .glassEffect(.regular.interactive(), in: .capsule)
-            .phaseAnimator(
-                SearchTypeSelectionPhase.allCases,
-                trigger: animationTrigger
-            ) { content, phase in
-                content
-                    .scaleEffect(
-                        x: isPressing ? 1.12 : phase.xScale,
-                        y: isPressing ? 1.08 : phase.yScale
-                    )
-                    .blur(radius: isPressing ? 0.18 : phase.blurRadius)
-                    .shadow(
-                        color: .black.opacity(isPressing ? 0.08 : 0.025),
-                        radius: isPressing ? 8 : 3,
-                        x: 0,
-                        y: isPressing ? 3 : 1
-                    )
-            } animation: { phase in
-                phase.animation
-            }
-    }
-}
-
-private enum SearchTypeSelectionPhase: CaseIterable {
-    case resting
-    case droplet
-    case rebound
-    case settled
-
-    var xScale: CGFloat {
-        switch self {
-        case .resting, .settled: 1
-        case .droplet: 1.18
-        case .rebound: 0.96
-        }
-    }
-
-    var yScale: CGFloat {
-        switch self {
-        case .resting, .settled: 1
-        case .droplet: 0.90
-        case .rebound: 1.04
-        }
-    }
-
-    var blurRadius: CGFloat {
-        self == .droplet ? 0.2 : 0
-    }
-
-    var animation: Animation {
-        switch self {
-        case .resting:
-            .linear(duration: 0.01)
-        case .droplet:
-            .smooth(duration: 0.11)
-        case .rebound:
-            .spring(response: 0.18, dampingFraction: 0.58, blendDuration: 0.02)
-        case .settled:
-            .spring(response: 0.26, dampingFraction: 0.68, blendDuration: 0.04)
-        }
+        BiliLiquidSegmentedControl(selection: $selection, title: { $0.title })
     }
 }
 
@@ -2104,12 +1921,14 @@ private struct SearchBangumiCardTitle: View {
     }
 }
 
-private struct SearchUserRow: View {
+struct BiliUserCapsuleRow: View {
     let user: BiliSearchUser
 
     @State private var isHovered = false
 
-    private let signLineHeight: CGFloat = 18
+    private var trimmedSign: String {
+        user.sign.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         NavigationLink(
@@ -2138,26 +1957,22 @@ private struct SearchUserRow: View {
                             BiliUserLevelIcon(level: user.level, width: 24, height: 15)
                         }
                     }
-                    .frame(maxWidth: .infinity, minHeight: 20, maxHeight: 20, alignment: .leading)
 
                     Text("\(user.fans.compactCount) 粉丝")
                         .font(.system(size: 13))
                         .foregroundStyle(Color(red: 0.55, green: 0.55, blue: 0.58))
-                        .frame(maxWidth: .infinity, minHeight: signLineHeight, maxHeight: signLineHeight, alignment: .leading)
+                        .lineLimit(1)
 
-                    Text(user.sign.trimmingCharacters(in: .whitespacesAndNewlines))
-                        .font(.system(size: 13))
-                        .foregroundStyle(Color(red: 0.55, green: 0.55, blue: 0.58))
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .frame(
-                            maxWidth: .infinity,
-                            minHeight: signLineHeight * 2,
-                            maxHeight: signLineHeight * 2,
-                            alignment: .topLeading
-                        )
+                    if !trimmedSign.isEmpty {
+                        Text(trimmedSign)
+                            .font(.system(size: 13))
+                            .foregroundStyle(Color(red: 0.55, green: 0.55, blue: 0.58))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 18)
             .frame(maxWidth: .infinity)

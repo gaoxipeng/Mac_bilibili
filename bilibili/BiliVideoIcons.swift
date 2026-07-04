@@ -257,16 +257,21 @@ final class VideoPartMenuPressView: NSView {
         coordinator.pages = pages
 
         actionMenu.removeAllItems()
+        actionMenu.autoenablesItems = false
 
         let menuWidth = fittedEpisodeMenuWidth(for: pages)
         actionMenu.minimumWidth = menuWidth
 
         for (index, part) in pages.enumerated() {
-            let item = NSMenuItem()
-            item.view = EpisodeMenuItemView(part: part, menuWidth: menuWidth)
+            let item = NSMenuItem(
+                title: "",
+                action: #selector(VideoPartMenuPressOverlay.Coordinator.handleSelect(_:)),
+                keyEquivalent: ""
+            )
+            item.attributedTitle = episodeMenuAttributedTitle(for: part, menuWidth: menuWidth)
             item.target = coordinator
             item.tag = index
-            item.action = #selector(VideoPartMenuPressOverlay.Coordinator.handleSelect(_:))
+            item.isEnabled = true
             if part.cid == activeCID {
                 item.state = .on
             }
@@ -275,7 +280,7 @@ final class VideoPartMenuPressView: NSView {
     }
 
     private func fittedEpisodeMenuWidth(for pages: [BiliVideoPage]) -> CGFloat {
-        let menuFont = EpisodeMenuItemView.menuFont
+        let menuFont = NSFont.menuFont(ofSize: NSFont.systemFontSize)
         var width: CGFloat = 260
 
         for part in pages {
@@ -284,7 +289,7 @@ final class VideoPartMenuPressView: NSView {
             let durationWidth = part.duration > 0
                 ? (part.duration.episodeMenuDurationText as NSString).size(withAttributes: [.font: menuFont]).width
                 : 0
-            width = max(width, titleWidth + durationWidth + EpisodeMenuItemView.horizontalPadding * 2 + 32)
+            width = max(width, titleWidth + durationWidth + 44)
         }
 
         return min(ceil(width), 460)
@@ -295,73 +300,26 @@ final class VideoPartMenuPressView: NSView {
         let label = title.isEmpty ? "第\(part.page)话" : title
         return "\(part.page)  \(label)"
     }
-}
 
-@MainActor
-private final class EpisodeMenuItemView: NSView {
-    static let menuFont = NSFont.menuFont(ofSize: NSFont.systemFontSize)
-    static let horizontalPadding: CGFloat = 12
-    private static let rowHeight: CGFloat = 26
-    private let menuWidth: CGFloat
+    private func episodeMenuAttributedTitle(for part: BiliVideoPage, menuWidth: CGFloat) -> NSAttributedString {
+        let font = NSFont.menuFont(ofSize: NSFont.systemFontSize)
+        let mainTitle = episodeMainTitle(for: part)
+        guard part.duration > 0 else {
+            return NSAttributedString(string: mainTitle, attributes: [.font: font])
+        }
 
-    init(part: BiliVideoPage, menuWidth: CGFloat) {
-        self.menuWidth = menuWidth
-        super.init(frame: NSRect(x: 0, y: 0, width: menuWidth, height: Self.rowHeight))
-
-        let titleLabel = makeLabel()
-        let durationLabel = makeLabel()
-
-        let title = part.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let label = title.isEmpty ? "第\(part.page)话" : title
-        titleLabel.stringValue = "\(part.page)  \(label)"
-        durationLabel.stringValue = part.duration > 0 ? part.duration.episodeMenuDurationText : ""
-        durationLabel.alignment = .right
-
-        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        durationLabel.setContentHuggingPriority(.required, for: .horizontal)
-        durationLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
-
-        let row = NSStackView(views: [titleLabel, durationLabel])
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.distribution = .fill
-        row.spacing = 16
-        row.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(row)
-
-        NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: Self.rowHeight),
-            widthAnchor.constraint(equalToConstant: menuWidth),
-            row.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.horizontalPadding),
-            row.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.horizontalPadding),
-            row.topAnchor.constraint(equalTo: topAnchor),
-            row.bottomAnchor.constraint(equalTo: bottomAnchor),
-        ])
-    }
-
-    override var fittingSize: NSSize {
-        NSSize(width: menuWidth, height: Self.rowHeight)
-    }
-
-    private func makeLabel() -> NSTextField {
-        let field = NSTextField(labelWithString: "")
-        field.font = Self.menuFont
-        field.textColor = .labelColor
-        field.isBordered = false
-        field.isEditable = false
-        field.drawsBackground = false
-        field.lineBreakMode = .byTruncatingTail
-        field.cell?.truncatesLastVisibleLine = true
-        field.cell?.usesSingleLineMode = true
-        field.cell?.wraps = false
-        field.cell?.isScrollable = false
-        field.translatesAutoresizingMaskIntoConstraints = false
-        return field
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        nil
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.tabStops = [
+            NSTextTab(textAlignment: .right, location: max(menuWidth - 16, 180), options: [:])
+        ]
+        let text = "\(mainTitle)\t\(part.duration.episodeMenuDurationText)"
+        return NSAttributedString(
+            string: text,
+            attributes: [
+                .font: font,
+                .paragraphStyle: paragraph,
+            ]
+        )
     }
 }
 
@@ -380,6 +338,7 @@ private extension Int {
 
 struct AuthorFollowButton: View {
     let isFollowing: Bool
+    var followerMe = false
     let followerCount: Int64
     let isLoading: Bool
     var showsFollowerCount = true
@@ -404,10 +363,16 @@ struct AuthorFollowButton: View {
         usesProfileChromeSizing ? 9 : 6
     }
 
+    private var followLabel: String {
+        if isFollowing && followerMe { return "互相关注" }
+        if isFollowing { return "已关注" }
+        return "+ 关注"
+    }
+
     var body: some View {
         ZStack {
             HStack(spacing: usesProfileChromeSizing ? 8 : 6) {
-                Text(isFollowing ? "已关注" : "+ 关注")
+                Text(followLabel)
                 if showsFollowerCount {
                     Text(followerCount.compactCount)
                         .monospacedDigit()
@@ -425,6 +390,7 @@ struct AuthorFollowButton: View {
             .foregroundStyle(foregroundColor)
             .contentTransition(.interpolate)
             .animation(.easeInOut(duration: 0.2), value: isFollowing)
+            .animation(.easeInOut(duration: 0.2), value: followerMe)
             .animation(.easeInOut(duration: 0.18), value: isHovered)
             .allowsHitTesting(!isLoading)
 

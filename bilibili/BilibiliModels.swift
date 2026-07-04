@@ -156,6 +156,13 @@ struct BiliAuthorRelation: Hashable, Sendable {
     var followerMe = false
 }
 
+struct BiliUserCardSnapshot: Sendable, Equatable {
+    let sign: String
+    let level: Int
+    let followerCount: Int64
+    var relation: BiliAuthorRelation
+}
+
 enum BiliUserVideoSort: String, CaseIterable, Sendable {
     case latestPublish
     case mostPlayed
@@ -192,22 +199,97 @@ struct UserProfileRequest: Hashable, Sendable {
     }
 }
 
+struct BiliDynamicLink: Hashable, Sendable {
+    let title: String
+    let url: String
+    let coverURL: URL?
+    let desc: String
+}
+
+struct BiliDynamicOrigin: Hashable, Sendable {
+    let authorName: String
+    let text: String
+    let emoticons: [String: String]
+    let video: BiliVideo?
+    let imageURLs: [URL]
+    let link: BiliDynamicLink?
+}
+
+struct BiliDynamicItem: Identifiable, Hashable, Sendable {
+    let id: String
+    let text: String
+    let emoticons: [String: String]
+    let publishTimeSeconds: Int64
+    let video: BiliVideo?
+    let imageURLs: [URL]
+    let link: BiliDynamicLink?
+    let origin: BiliDynamicOrigin?
+    let authorMid: Int64
+    let authorName: String
+    let authorFaceURL: URL?
+    let authorLevel: Int
+    let ipLocation: String?
+    let commentOid: Int64
+    let commentType: Int
+    let dynamicType: String
+    let likeCount: Int64
+    let commentCount: Int64
+    let repostCount: Int64
+
+    var canOpenDetail: Bool {
+        commentOid > 0 && commentType > 0 && video == nil
+    }
+
+    var publishDate: Date? {
+        publishTimeSeconds > 0 ? Date(timeIntervalSince1970: TimeInterval(publishTimeSeconds)) : nil
+    }
+}
+
+struct BiliDynamicFeedPage: Sendable {
+    let items: [BiliDynamicItem]
+    let nextOffset: String?
+    let hasMore: Bool
+}
+
+struct DynamicDetailRequest: Hashable, Sendable {
+    let item: BiliDynamicItem
+}
+
 struct BiliHistoryItem: Identifiable, Hashable, Sendable {
     let id: String
     let kid: String
+    let business: BiliHistoryBusiness
     let video: BiliVideo
     let viewedAt: Date?
     let progressSeconds: Int
     let durationSeconds: Int
+    let epid: Int64
+    let webURI: URL?
+    let badge: String
+}
+
+enum BiliHistoryBusiness: String, Sendable, Hashable {
+    case archive
+    case pgc
+    case unknown
 }
 
 struct VideoPlaybackRequest: Hashable, Sendable {
     let video: BiliVideo
     let progressSeconds: Int
+    let epid: Int64
+    let refererURL: URL?
 
-    init(_ video: BiliVideo, progressSeconds: Int = 0) {
+    init(
+        _ video: BiliVideo,
+        progressSeconds: Int = 0,
+        epid: Int64 = 0,
+        refererURL: URL? = nil
+    ) {
         self.video = video
         self.progressSeconds = max(0, progressSeconds)
+        self.epid = max(0, epid)
+        self.refererURL = refererURL
     }
 }
 

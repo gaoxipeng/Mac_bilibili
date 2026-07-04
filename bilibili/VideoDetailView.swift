@@ -33,6 +33,8 @@ final class VideoDetailModel: ObservableObject {
     private var watchHistoryTask: Task<Void, Never>?
     private var watchHistoryContext: (aid: Int64, cid: Int64)?
     private let initialProgressSeconds: Int
+    private let playbackEpid: Int64
+    private let playbackRefererURL: URL?
     private var hasAppliedInitialProgress = false
     private var playerChangeSink: AnyCancellable?
     private var lifecycleGeneration = 0
@@ -47,24 +49,49 @@ final class VideoDetailModel: ObservableObject {
 
     @Published var videoRelation = BiliVideoRelation()
     @Published var authorSign = ""
+    @Published var authorLevel = 0
+    @Published var authorFollowerCount: Int64 = 0
+    @Published var authorRelation = BiliAuthorRelation()
+    @Published var authorFollowLoading = false
     @Published var onlineCount: Int64 = 0
     @Published var videoTags: [String] = []
     @Published var videoActionLoading = false
     @Published var actionMessage: String?
+    @Published var coinHintMessage: String?
     @Published var needsLoginPrompt = false
 
-    init(video: BiliVideo, credential: BilibiliCredential?, initialProgressSeconds: Int = 0) {
+    private var coinHintDismissTask: Task<Void, Never>?
+
+    init(
+        video: BiliVideo,
+        credential: BilibiliCredential?,
+        initialProgressSeconds: Int = 0,
+        playbackEpid: Int64 = 0,
+        playbackRefererURL: URL? = nil
+    ) {
         self.seedVideo = video
         self.credential = credential
         self.activeCID = video.cid
         self.initialProgressSeconds = max(0, initialProgressSeconds)
+        self.playbackEpid = max(0, playbackEpid)
+        self.playbackRefererURL = playbackRefererURL
         playerChangeSink = player.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
     }
 
+    var isBangumiPlayback: Bool {
+        playbackEpid > 0
+    }
+
     var displayVideo: BiliVideo {
         detail?.video ?? seedVideo
+    }
+
+    var showAuthorFollowControl: Bool {
+        guard let credential, displayVideo.authorMid > 0 else { return false }
+        let viewerMid = Int64(credential.dedeUserId) ?? 0
+        return viewerMid != displayVideo.authorMid
     }
 
     func load() async {
@@ -72,9 +99,30 @@ final class VideoDetailModel: ObservableObject {
         isLoadingDetail = true
         detailError = nil
         authorSign = ""
+        authorLevel = 0
+        authorFollowerCount = 0
+        authorRelation = BiliAuthorRelation()
         onlineCount = 0
         videoTags = []
         defer { isLoadingDetail = false }
+
+        if isBangumiPlayback {
+            detail = BiliVideoDetail(
+                video: seedVideo,
+                publishTime: nil,
+                replyCount: 0,
+                coinCount: 0,
+                favoriteCount: 0,
+                shareCount: 0,
+                pages: []
+            )
+            if activeCID <= 0 {
+                activeCID = seedVideo.cid
+            }
+            guard isLifecycleActive(generation), !Task.isCancelled else { return }
+            await loadPlayback()
+            return
+        }
 
         do {
             let loaded = try await api.videoDetail(bvid: seedVideo.bvid, credential: credential)
@@ -83,7 +131,7 @@ final class VideoDetailModel: ObservableObject {
             if activeCID <= 0 {
                 activeCID = loaded.video.cid
             }
-            async let authorSignTask = loadAuthorSign()
+            async let authorCardTask = loadAuthorCardInfo()
             async let onlineCountTask = loadOnlineCount()
             async let videoTagsTask = loadVideoTags()
             await loadVideoRelation()
@@ -91,7 +139,7 @@ final class VideoDetailModel: ObservableObject {
             await loadPlayback()
             guard isLifecycleActive(generation), !Task.isCancelled else { return }
             await scheduleInitialCommentsLoad()
-            await authorSignTask
+            await authorCardTask
             await onlineCountTask
             await videoTagsTask
         } catch {
@@ -100,13 +148,58 @@ final class VideoDetailModel: ObservableObject {
         }
     }
 
-    private func loadAuthorSign() async {
+    private func loadAuthorCardInfo() async {
         let mid = displayVideo.authorMid
         guard mid > 0 else {
             authorSign = ""
+            authorLevel = 0
+            authorFollowerCount = 0
+            authorRelation = BiliAuthorRelation()
             return
         }
-        authorSign = await api.userSign(mid: mid, credential: credential)
+        guard let snapshot = await api.userCardSnapshot(mid: mid, credential: credential) else {
+            authorSign = await api.userSign(mid: mid, credential: credential)
+            return
+        }
+        authorSign = snapshot.sign
+        authorLevel = snapshot.level
+        authorFollowerCount = snapshot.followerCount
+        authorRelation = snapshot.relation
+    }
+
+    func followAuthor() async {
+        guard showAuthorFollowControl, !authorFollowLoading, !authorRelation.following else { return }
+        guard let credential = requireCredential() else { return }
+
+        authorFollowLoading = true
+        defer { authorFollowLoading = false }
+
+        let mid = displayVideo.authorMid
+        do {
+            try await api.modifyFollow(mid: mid, follow: true, credential: credential)
+            authorRelation.following = true
+            actionMessage = nil
+        } catch {
+            actionMessage = error.localizedDescription
+        }
+    }
+
+    func unfollowAuthor() async {
+        guard showAuthorFollowControl, !authorFollowLoading, authorRelation.following else { return }
+        guard let credential = requireCredential() else { return }
+
+        authorFollowLoading = true
+        defer { authorFollowLoading = false }
+
+        let mid = displayVideo.authorMid
+        do {
+            try await api.modifyFollow(mid: mid, follow: false, credential: credential)
+            authorRelation.following = false
+            authorRelation.followerMe = false
+            actionMessage = nil
+        } catch {
+            actionMessage = error.localizedDescription
+        }
     }
 
     private func loadOnlineCount() async {
@@ -203,7 +296,7 @@ final class VideoDetailModel: ObservableObject {
         guard let credential = requireCredential() else { return }
 
         if videoRelation.coinCount >= 2 {
-            actionMessage = "已经投过币了"
+            showCoinHint("已经投过币了")
             return
         }
 
@@ -302,11 +395,21 @@ final class VideoDetailModel: ObservableObject {
 
     func prepareCoin() -> Bool {
         if videoRelation.coinCount >= 2 {
-            actionMessage = "已经投过币了"
+            showCoinHint("已经投过币了")
             return false
         }
         guard requireCredential() != nil else { return false }
         return true
+    }
+
+    func showCoinHint(_ message: String) {
+        coinHintDismissTask?.cancel()
+        coinHintMessage = message
+        coinHintDismissTask = Task {
+            try? await Task.sleep(for: .seconds(2))
+            guard !Task.isCancelled else { return }
+            coinHintMessage = nil
+        }
     }
 
     private func requireCredential() -> BilibiliCredential? {
@@ -399,9 +502,16 @@ final class VideoDetailModel: ObservableObject {
 
         let bvid = displayVideo.bvid
         let cid = activeCID > 0 ? activeCID : displayVideo.cid
-        guard !bvid.isEmpty, cid > 0 else {
-            playError = "无法确定视频分 P"
-            return
+        if isBangumiPlayback {
+            guard playbackEpid > 0, cid > 0 else {
+                playError = "无法确定番剧分集"
+                return
+            }
+        } else {
+            guard !bvid.isEmpty, cid > 0 else {
+                playError = "无法确定视频分 P"
+                return
+            }
         }
 
         isLoadingPlayback = true
@@ -409,27 +519,42 @@ final class VideoDetailModel: ObservableObject {
         defer { isLoadingPlayback = false }
 
         do {
-            var stream = try await api.playURL(bvid: bvid, cid: cid, credential: credential)
+            let stream: BiliPlayStream
+            if isBangumiPlayback {
+                stream = try await api.pgcPlayURL(
+                    epid: playbackEpid,
+                    cid: cid,
+                    credential: credential,
+                    referer: playbackRefererURL?.absoluteString ?? "https://www.bilibili.com"
+                )
+            } else {
+                stream = try await api.playURL(bvid: bvid, cid: cid, credential: credential)
+            }
             guard isLifecycleActive(generation), !Task.isCancelled else { return }
 
-            stream = BiliPlayStream(
+            let resolvedStream = BiliPlayStream(
                 videoURL: stream.videoURL,
                 audioURL: stream.audioURL,
-                aid: displayVideo.aid,
+                aid: displayVideo.aid > 0 ? displayVideo.aid : stream.aid,
                 cid: cid
             )
             let cookieHeader = await api.httpCookieHeader(credential: credential)
             guard isLifecycleActive(generation), !Task.isCancelled else { return }
 
-            try await player.load(stream: stream, cookieHeader: cookieHeader)
+            try await player.load(stream: resolvedStream, cookieHeader: cookieHeader)
             guard isLifecycleActive(generation) else {
                 player.stop()
                 return
             }
 
             applyInitialProgressIfNeeded()
-            startWatchHistoryReporting(aid: displayVideo.aid, cid: cid)
-            await loadDanmaku(cid: cid)
+            let reportAid = displayVideo.aid > 0 ? displayVideo.aid : resolvedStream.aid
+            startWatchHistoryReporting(aid: reportAid, cid: cid)
+            if !isBangumiPlayback {
+                await loadDanmaku(cid: cid)
+            } else {
+                danmakuItems = []
+            }
         } catch {
             guard isLifecycleActive(generation), !Task.isCancelled else { return }
             playError = error.localizedDescription
@@ -556,7 +681,13 @@ final class VideoDetailModel: ObservableObject {
         comments = []
         loadedCommentsKey = nil
         commentsLoadInFlight = false
+        coinHintDismissTask?.cancel()
+        coinHintDismissTask = nil
+        coinHintMessage = nil
         authorSign = ""
+        authorLevel = 0
+        authorFollowerCount = 0
+        authorRelation = BiliAuthorRelation()
         onlineCount = 0
         videoTags = []
     }
@@ -773,12 +904,20 @@ struct VideoDetailView: View {
     @EnvironmentObject private var appModel: AppModel
     @StateObject private var model: VideoDetailModel
 
-    init(video: BiliVideo, credential: BilibiliCredential?, initialProgressSeconds: Int = 0) {
+    init(
+        video: BiliVideo,
+        credential: BilibiliCredential?,
+        initialProgressSeconds: Int = 0,
+        playbackEpid: Int64 = 0,
+        playbackRefererURL: URL? = nil
+    ) {
         _model = StateObject(
             wrappedValue: VideoDetailModel(
                 video: video,
                 credential: credential,
-                initialProgressSeconds: initialProgressSeconds
+                initialProgressSeconds: initialProgressSeconds,
+                playbackEpid: playbackEpid,
+                playbackRefererURL: playbackRefererURL
             )
         )
     }
@@ -952,6 +1091,7 @@ struct VideoDetailView: View {
             favorited: model.videoRelation.favorited,
             canCoinTwo: model.videoRelation.coinCount == 0,
             canCoinMore: model.videoRelation.coinCount < 2,
+            coinHintMessage: $model.coinHintMessage,
             availableWidth: sidebarWidth,
             onCoinTap: { model.prepareCoin() },
             onLikeClick: {
@@ -961,7 +1101,7 @@ struct VideoDetailView: View {
                 Task { await model.tripleLike() }
             },
             onCoinBlocked: {
-                model.actionMessage = "已经投过币了"
+                model.showCoinHint("已经投过币了")
             },
             onCoinOne: {
                 Task { await model.coin(multiply: 1) }
@@ -978,7 +1118,6 @@ struct VideoDetailView: View {
         )
         .frame(maxWidth: .infinity)
         .videoDetailCard()
-        .clipped()
     }
 
     private var commentsCard: some View {
@@ -1061,43 +1200,15 @@ struct VideoDetailView: View {
     }
 
     private var authorRow: some View {
-        Group {
-            if model.displayVideo.authorMid > 0 {
-                NavigationLink(
-                    value: UserProfileRequest(
-                        mid: model.displayVideo.authorMid,
-                        seedName: model.displayVideo.authorName,
-                        seedFaceURL: model.displayVideo.authorFaceURL
-                    )
-                ) {
-                    authorRowContent
-                }
-                .buttonStyle(.plain)
-            } else {
-                authorRowContent
-            }
-        }
+        authorRowContent
     }
 
     private var authorRowContent: some View {
-        HStack(alignment: .top, spacing: 12) {
-            AsyncImage(url: model.displayVideo.authorFaceURL) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFill()
-                default:
-                    Image(systemName: "person.fill")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(width: 48, height: 48)
-            .clipShape(Circle())
+        HStack(alignment: .center, spacing: 12) {
+            authorAvatarLink
 
             VStack(alignment: .leading, spacing: 6) {
-                Text(model.displayVideo.authorName.ifEmpty("未知 UP 主"))
-                    .font(.system(size: 18, weight: .semibold))
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
+                authorNameLink
 
                 Text(authorSignSubtitle)
                     .font(.system(size: 13))
@@ -1107,8 +1218,86 @@ struct VideoDetailView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if model.showAuthorFollowControl {
+                AuthorFollowButton(
+                    isFollowing: model.authorRelation.following,
+                    followerCount: model.authorFollowerCount,
+                    isLoading: model.authorFollowLoading,
+                    onFollow: {
+                        Task { await model.followAuthor() }
+                    },
+                    onUnfollow: {
+                        Task { await model.unfollowAuthor() }
+                    }
+                )
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var authorAvatarLink: some View {
+        if model.displayVideo.authorMid > 0 {
+            NavigationLink(
+                value: UserProfileRequest(
+                    mid: model.displayVideo.authorMid,
+                    seedName: model.displayVideo.authorName,
+                    seedFaceURL: model.displayVideo.authorFaceURL
+                )
+            ) {
+                authorAvatar
+            }
+            .buttonStyle(.plain)
+        } else {
+            authorAvatar
+        }
+    }
+
+    private var authorAvatar: some View {
+        AsyncImage(url: model.displayVideo.authorFaceURL) { phase in
+            switch phase {
+            case .success(let image):
+                image.resizable().scaledToFill()
+            default:
+                Image(systemName: "person.fill")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(width: 48, height: 48)
+        .clipShape(Circle())
+    }
+
+    @ViewBuilder
+    private var authorNameLink: some View {
+        if model.displayVideo.authorMid > 0 {
+            NavigationLink(
+                value: UserProfileRequest(
+                    mid: model.displayVideo.authorMid,
+                    seedName: model.displayVideo.authorName,
+                    seedFaceURL: model.displayVideo.authorFaceURL
+                )
+            ) {
+                authorNameRow
+            }
+            .buttonStyle(.plain)
+        } else {
+            authorNameRow
+        }
+    }
+
+    private var authorNameRow: some View {
+        HStack(spacing: 6) {
+            Text(model.displayVideo.authorName.ifEmpty("未知 UP 主"))
+                .font(.system(size: 18, weight: .semibold))
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if model.authorLevel > 0 {
+                BiliUserLevelIcon(level: model.authorLevel, width: 28, height: 18)
+            }
+        }
     }
 
     private var authorSignSubtitle: String {

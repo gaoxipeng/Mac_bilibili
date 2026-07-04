@@ -5,9 +5,64 @@ actor BilibiliAPI {
     private var mixinKey: String?
     private var guestBuvid3: String?
     private var guestBuvid4: String?
+    private var warmUpTask: Task<Void, Never>?
 
     func httpCookieHeader(credential: BilibiliCredential?) async -> String {
         await buildCookieHeader(credential: credential) ?? ""
+    }
+
+    func warmUp(credential: BilibiliCredential? = nil) async {
+        loadPersistedGuestBuvid()
+        if mixinKey != nil, guestBuvid3 != nil { return }
+
+        if let warmUpTask {
+            await warmUpTask.value
+            return
+        }
+
+        let task = Task { await self.performWarmUp(credential: credential) }
+        warmUpTask = task
+        await task.value
+    }
+
+    private func performWarmUp(credential: BilibiliCredential?) async {
+        loadPersistedGuestBuvid()
+        if mixinKey != nil, guestBuvid3 != nil { return }
+
+        let needsBuvid = guestBuvid3 == nil
+        let needsMixin = mixinKey == nil
+
+        switch (needsBuvid, needsMixin) {
+        case (true, true):
+            async let buvid = Self.fetchGuestBuvid()
+            async let mixin = Self.fetchMixinKey(credential: credential)
+            let (b3, b4) = await buvid
+            if let b3 {
+                guestBuvid3 = b3
+            }
+            if let b4 {
+                guestBuvid4 = b4
+            }
+            persistGuestBuvid()
+            if let key = await mixin {
+                mixinKey = key
+            }
+        case (true, false):
+            let (b3, b4) = await Self.fetchGuestBuvid()
+            if let b3 {
+                guestBuvid3 = b3
+            }
+            if let b4 {
+                guestBuvid4 = b4
+            }
+            persistGuestBuvid()
+        case (false, true):
+            if let key = await Self.fetchMixinKey(credential: credential) {
+                mixinKey = key
+            }
+        case (false, false):
+            break
+        }
     }
 
     func homeRecommend(
@@ -178,18 +233,11 @@ actor BilibiliAPI {
     }
 
     func userSign(mid: Int64, credential: BilibiliCredential? = nil) async -> String {
-        let referer = "https://space.bilibili.com/\(mid)"
-        let cardJSON = try? await json(
-            url: "https://api.bilibili.com/x/web-interface/card",
-            params: ["mid": "\(mid)", "photo": "true"],
-            credential: credential,
-            referer: referer
-        )
-        if let sign = cardJSON.flatMap({ JSONParser.parseUserCardProfile(from: $0) })?.sign
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-            !sign.isEmpty {
-            return sign
+        if let snapshot = await userCardSnapshot(mid: mid, credential: credential) {
+            let sign = snapshot.sign.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !sign.isEmpty { return sign }
         }
+        let referer = "https://space.bilibili.com/\(mid)"
         let accJSON = try? await wbiJSON(
             url: "https://api.bilibili.com/x/space/wbi/acc/info",
             params: ["mid": "\(mid)"],
@@ -197,6 +245,24 @@ actor BilibiliAPI {
             referer: referer
         )
         return accJSON.flatMap { JSONParser.parseUserAccInfo(from: $0) }?.sign ?? ""
+    }
+
+    func userCardSnapshot(mid: Int64, credential: BilibiliCredential? = nil) async -> BiliUserCardSnapshot? {
+        let referer = "https://space.bilibili.com/\(mid)"
+        guard let json = try? await self.json(
+            url: "https://api.bilibili.com/x/web-interface/card",
+            params: ["mid": "\(mid)", "photo": "true"],
+            credential: credential,
+            referer: referer
+        ), var snapshot = JSONParser.parseUserCardSnapshot(from: json) else {
+            return nil
+        }
+
+        if let credential,
+           let relation = try? await userRelation(mid: mid, credential: credential) {
+            snapshot.relation = relation
+        }
+        return snapshot
     }
 
     func userProfile(mid: Int64, credential: BilibiliCredential? = nil) async throws -> BiliUserProfile {
@@ -276,6 +342,81 @@ actor BilibiliAPI {
         return JSONParser.parseUserVideoPage(from: json)
     }
 
+    func userSpaceDynamics(
+        mid: Int64,
+        offset: String? = nil,
+        credential: BilibiliCredential? = nil
+    ) async throws -> BiliDynamicFeedPage {
+        var params: [String: String] = [
+            "host_mid": "\(mid)",
+            "timezone_offset": "-480",
+            "platform": "web",
+            "gaia_source": "main_web",
+            "features": "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,forwardListHidden,decorationCard,commentsNewVersion,onlyfansAssetsV2,ugcDelete,onlyfansQaCard,endFooterHidden",
+            "web_location": "333.1365"
+        ]
+        if let offset, !offset.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            params["offset"] = offset
+        }
+        let json = try await json(
+            url: "https://api.bilibili.com/x/polymer/web-dynamic/v1/feed/space",
+            params: params,
+            credential: credential,
+            referer: "https://space.bilibili.com/\(mid)/dynamic",
+            extraHeaders: dynamicRequestHeaders()
+        )
+        return JSONParser.parseSpaceDynamicFeed(from: json)
+    }
+
+    func subjectComments(
+        oid: Int64,
+        type: Int,
+        sort: BiliCommentSort,
+        cursor: String? = nil,
+        referer: String,
+        credential: BilibiliCredential? = nil
+    ) async throws -> BiliCommentPage {
+        var params: [String: String] = [
+            "oid": "\(oid)",
+            "type": "\(type)",
+            "mode": "\(sort.mode)",
+            "plat": "1",
+            "web_location": "1315875"
+        ]
+        params["pagination_str"] = buildCommentPaginationStr(cursor: cursor)
+        let json = try await wbiJSON(
+            url: "https://api.bilibili.com/x/v2/reply/wbi/main",
+            params: params,
+            credential: credential,
+            referer: referer
+        )
+        return JSONParser.parseCommentPage(from: json)
+    }
+
+    func subjectCommentReplies(
+        oid: Int64,
+        type: Int,
+        rootID: Int64,
+        referer: String,
+        page: Int,
+        credential: BilibiliCredential? = nil
+    ) async throws -> BiliCommentReplyPage {
+        let json = try await json(
+            url: "https://api.bilibili.com/x/v2/reply/reply",
+            params: [
+                "type": "\(type)",
+                "oid": "\(oid)",
+                "root": "\(rootID)",
+                "pn": "\(page)",
+                "ps": "20",
+                "web_location": "1315875"
+            ],
+            credential: credential,
+            referer: referer
+        )
+        return JSONParser.parseCommentReplyPage(from: json)
+    }
+
     func userRelation(mid: Int64, credential: BilibiliCredential) async throws -> BiliAuthorRelation {
         let json = try await json(
             url: "https://api.bilibili.com/x/relation",
@@ -348,7 +489,8 @@ actor BilibiliAPI {
         cursorMax: Int64 = 0,
         viewAt: Int64 = 0,
         business: String = "",
-        pageSize: Int = 30
+        pageSize: Int = 30,
+        type: String = "all"
     ) async throws -> BiliHistoryPage {
         let json = try await json(
             url: "https://api.bilibili.com/x/web-interface/history/cursor",
@@ -356,13 +498,95 @@ actor BilibiliAPI {
                 "max": "\(cursorMax)",
                 "view_at": "\(viewAt)",
                 "business": business,
-                "type": "archive",
+                "type": type,
                 "ps": "\(min(max(pageSize, 1), 30))"
             ],
             credential: credential,
             referer: "https://www.bilibili.com/account/history"
         )
         return JSONParser.parseHistoryPage(from: json)
+    }
+
+    func pgcPlayURL(
+        epid: Int64,
+        cid: Int64,
+        credential: BilibiliCredential? = nil,
+        referer: String = "https://www.bilibili.com"
+    ) async throws -> BiliPlayStream {
+        guard epid > 0 || cid > 0 else {
+            throw APIError.message("无法确定番剧分集")
+        }
+
+        let primary = try await requestPGCPlayURL(
+            epid: epid,
+            cid: cid,
+            fnval: "4048",
+            credential: credential,
+            referer: referer,
+            useV2: true
+        )
+        if primary.isAVPlayerCompatible {
+            return primary
+        }
+
+        for fnval in ["16", "1"] {
+            if let fallback = try? await requestPGCPlayURL(
+                epid: epid,
+                cid: cid,
+                fnval: fnval,
+                credential: credential,
+                referer: referer,
+                useV2: false
+            ), fallback.isAVPlayerCompatible {
+                return fallback
+            }
+        }
+
+        throw APIError.message("当前番剧格式暂不支持播放，请稍后重试")
+    }
+
+    private func requestPGCPlayURL(
+        epid: Int64,
+        cid: Int64,
+        fnval: String,
+        credential: BilibiliCredential?,
+        referer: String,
+        useV2: Bool
+    ) async throws -> BiliPlayStream {
+        var params: [String: String] = [
+            "qn": "80",
+            "fnval": fnval,
+            "fnver": "0",
+            "fourk": "1",
+            "drm_tech_type": "2",
+            "from_client": "BROWSER"
+        ]
+        if epid > 0 {
+            params["ep_id"] = "\(epid)"
+        }
+        if cid > 0 {
+            params["cid"] = "\(cid)"
+        }
+
+        let url = useV2
+            ? "https://api.bilibili.com/pgc/player/web/v2/playurl"
+            : "https://api.bilibili.com/pgc/player/web/playurl"
+        let json = try await json(
+            url: url,
+            params: params,
+            credential: credential,
+            referer: referer
+        )
+        guard var stream = JSONParser.parsePlayStream(from: json) else {
+            throw APIError.message("无法获取番剧播放地址")
+        }
+        stream = BiliPlayStream(
+            videoURL: stream.videoURL,
+            audioURL: stream.audioURL,
+            aid: stream.aid,
+            cid: cid > 0 ? cid : stream.cid
+        )
+        return stream
     }
 
     func deleteWatchHistory(kid: String, credential: BilibiliCredential) async throws -> Bool {
@@ -858,6 +1082,8 @@ actor BilibiliAPI {
         credential: BilibiliCredential? = nil,
         referer: String = BilibiliEndpoints.home
     ) async throws -> Any {
+        await warmUp(credential: credential)
+
         var signed = params
         signed.removeValue(forKey: "w_rid")
         signed["wts"] = "\(Int(Date().timeIntervalSince1970))"
@@ -865,7 +1091,14 @@ actor BilibiliAPI {
             signed["web_location"] = "1550101"
         }
         signed["w_rid"] = WbiSigner.signature(params: signed, mixinKey: try await ensureMixinKey(credential: credential))
-        return try await json(url: url, params: signed, credential: credential, referer: referer, wbiEncoded: true)
+        return try await json(
+            url: url,
+            params: signed,
+            credential: credential,
+            referer: referer,
+            wbiEncoded: true,
+            skipWarmUp: true
+        )
     }
 
     private func ensureMixinKey(credential: BilibiliCredential? = nil) async throws -> String {
@@ -873,20 +1106,73 @@ actor BilibiliAPI {
             return mixinKey
         }
 
-        let nav = try await json(url: "https://api.bilibili.com/x/web-interface/nav", params: [:], credential: credential)
-        guard
-            let root = nav as? [String: Any],
-            let data = root["data"] as? [String: Any],
-            let wbi = data["wbi_img"] as? [String: Any],
-            let img = wbi["img_url"] as? String,
-            let sub = wbi["sub_url"] as? String
-        else {
-            throw APIError.message("无法获取 WBI 密钥")
+        if let key = await Self.fetchMixinKey(credential: credential) {
+            mixinKey = key
+            return key
         }
 
-        let key = WbiSigner.mixinKey(imgURL: img, subURL: sub)
-        mixinKey = key
-        return key
+        throw APIError.message("无法获取 WBI 密钥")
+    }
+
+    private func loadPersistedGuestBuvid() {
+        guard guestBuvid3 == nil, guestBuvid4 == nil else { return }
+        guard let session = GuestSessionStore.load() else { return }
+        guestBuvid3 = session.buvid3.nilIfEmpty
+        guestBuvid4 = session.buvid4.nilIfEmpty
+    }
+
+    private func persistGuestBuvid() {
+        guard let guestBuvid3, let guestBuvid4 else { return }
+        GuestSessionStore.save(buvid3: guestBuvid3, buvid4: guestBuvid4)
+    }
+
+    nonisolated private static func fetchMixinKey(credential: BilibiliCredential?) async -> String? {
+        guard let url = URL(string: "https://api.bilibili.com/x/web-interface/nav") else { return nil }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        request.setValue(BilibiliEndpoints.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(BilibiliEndpoints.home, forHTTPHeaderField: "Referer")
+        if let credential {
+            request.setValue(credential.cookieHeader, forHTTPHeaderField: "Cookie")
+        }
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let code = root["code"] as? Int, code == 0,
+              let payload = root["data"] as? [String: Any],
+              let wbi = payload["wbi_img"] as? [String: Any],
+              let img = wbi["img_url"] as? String,
+              let sub = wbi["sub_url"] as? String else {
+            return nil
+        }
+
+        return WbiSigner.mixinKey(imgURL: img, subURL: sub)
+    }
+
+    nonisolated private static func fetchGuestBuvid() async -> (String?, String?) {
+        guard let url = URL(string: "https://api.bilibili.com/x/frontend/finger/spi") else {
+            return (nil, nil)
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        request.setValue(BilibiliEndpoints.userAgent, forHTTPHeaderField: "User-Agent")
+
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = root["data"] as? [String: Any] else {
+            return (nil, nil)
+        }
+
+        return (
+            (payload["b_3"] as? String)?.nilIfEmpty,
+            (payload["b_4"] as? String)?.nilIfEmpty
+        )
     }
 
     private func postForm(
@@ -984,8 +1270,13 @@ actor BilibiliAPI {
         credential: BilibiliCredential? = nil,
         referer: String = BilibiliEndpoints.home,
         extraHeaders: [String: String] = [:],
-        wbiEncoded: Bool = false
+        wbiEncoded: Bool = false,
+        skipWarmUp: Bool = false
     ) async throws -> Any {
+        if !skipWarmUp {
+            await warmUp(credential: credential)
+        }
+
         let requestURL = try requestURL(base: url, params: params, wbiEncoded: wbiEncoded)
 
         var request = URLRequest(url: requestURL)
@@ -1062,19 +1353,13 @@ actor BilibiliAPI {
 
     private func ensureGuestBuvid() async {
         if guestBuvid3 != nil || guestBuvid4 != nil { return }
-        guard let url = URL(string: "https://api.bilibili.com/x/frontend/finger/spi") else { return }
-        var request = URLRequest(url: url)
-        request.setValue(BilibiliEndpoints.userAgent, forHTTPHeaderField: "User-Agent")
+        loadPersistedGuestBuvid()
+        if guestBuvid3 != nil || guestBuvid4 != nil { return }
 
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              let http = response as? HTTPURLResponse,
-              (200..<300).contains(http.statusCode),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let payload = root["data"] as? [String: Any] else {
-            return
-        }
-        guestBuvid3 = (payload["b_3"] as? String)?.nilIfEmpty
-        guestBuvid4 = (payload["b_4"] as? String)?.nilIfEmpty
+        let (b3, b4) = await Self.fetchGuestBuvid()
+        guestBuvid3 = b3
+        guestBuvid4 = b4
+        persistGuestBuvid()
     }
 
     private func dynamicRequestHeaders() -> [String: String] {
@@ -1082,6 +1367,32 @@ actor BilibiliAPI {
             "x-bili-device-req-json": #"{"platform":"android","device":"phone","mobi_app":"android","build":8510300}"#,
             "x-bili-web-req-json": #"{"spm_id":"333.1365"}"#
         ]
+    }
+}
+
+private struct GuestSessionStore {
+    struct Session: Codable {
+        var buvid3: String
+        var buvid4: String
+    }
+
+    private static var fileURL: URL {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let appDirectory = support.appendingPathComponent("gaoxipeng.bilibili", isDirectory: true)
+        return appDirectory.appendingPathComponent("guest-session.json")
+    }
+
+    static func load() -> Session? {
+        guard let data = try? Data(contentsOf: fileURL) else { return nil }
+        return try? JSONDecoder().decode(Session.self, from: data)
+    }
+
+    static func save(buvid3: String, buvid4: String) {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let appDirectory = support.appendingPathComponent("gaoxipeng.bilibili", isDirectory: true)
+        try? FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
+        guard let data = try? JSONEncoder().encode(Session(buvid3: buvid3, buvid4: buvid4)) else { return }
+        try? data.write(to: fileURL, options: .atomic)
     }
 }
 

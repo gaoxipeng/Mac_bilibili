@@ -3,9 +3,36 @@ import SwiftUI
 
 enum BiliTheme {
     static let blue = Color(red: 0, green: 174 / 255, blue: 236 / 255)
+    static let blueHover = Color(red: 128 / 255, green: 210 / 255, blue: 245 / 255)
     static let pink = Color(red: 251 / 255, green: 114 / 255, blue: 153 / 255)
     static let actionInactive = Color(red: 153 / 255, green: 153 / 255, blue: 153 / 255)
     static let videoControlBorder = Color(red: 153 / 255, green: 153 / 255, blue: 153 / 255).opacity(0.5)
+}
+
+enum BiliMenuPopUpAnchor {
+    static let gapBelowButton: CGFloat = 10
+
+    static func popUp(_ menu: NSMenu, in view: NSView) {
+        let menuWidth = fittedWidth(for: menu)
+        if menuWidth > 0 {
+            menu.minimumWidth = menuWidth
+        }
+        let bounds = view.bounds
+        let point = NSPoint(
+            x: bounds.midX - menuWidth / 2,
+            y: bounds.minY - gapBelowButton
+        )
+        menu.popUp(positioning: nil, at: point, in: view)
+    }
+
+    private static func fittedWidth(for menu: NSMenu) -> CGFloat {
+        let font = NSFont.menuFont(ofSize: NSFont.systemFontSize)
+        return menu.items.reduce(0) { width, item in
+            let textWidth = (item.title as NSString).size(withAttributes: [.font: font]).width
+            let chrome: CGFloat = item.image == nil ? 28 : 48
+            return max(width, ceil(textWidth + chrome))
+        }
+    }
 }
 
 enum BiliIcon: String {
@@ -105,10 +132,7 @@ final class CoinMenuPressView: NSView {
         }
         guard onPrepare?() == true else { return }
         guard !actionMenu.items.isEmpty else { return }
-
-        let gapBelowButton: CGFloat = 10
-        let anchor = NSPoint(x: bounds.midX, y: bounds.minY - gapBelowButton)
-        actionMenu.popUp(positioning: nil, at: anchor, in: self)
+        BiliMenuPopUpAnchor.popUp(actionMenu, in: self)
     }
 
     func configure(
@@ -149,6 +173,199 @@ final class CoinMenuPressView: NSView {
 
     private static func coinMenuIcon() -> NSImage? {
         NSImage(named: BiliIcon.coin.rawValue)
+    }
+}
+
+struct AuthorFollowButton: View {
+    let isFollowing: Bool
+    let followerCount: Int64
+    let isLoading: Bool
+    var showsFollowerCount = true
+    var overlayOnCover = false
+    var coverIsLight = true
+    let onFollow: () -> Void
+    let onUnfollow: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        ZStack {
+            HStack(spacing: 6) {
+                Text(isFollowing ? "已关注" : "+ 关注")
+                if showsFollowerCount {
+                    Text(followerCount.compactCount)
+                        .monospacedDigit()
+                }
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(backgroundColor, in: Capsule(style: .continuous))
+            .overlay {
+                Capsule(style: .continuous)
+                    .stroke(borderColor, lineWidth: 0.5)
+            }
+            .foregroundStyle(foregroundColor)
+            .contentTransition(.interpolate)
+            .animation(.easeInOut(duration: 0.2), value: isFollowing)
+            .animation(.easeInOut(duration: 0.18), value: isHovered)
+            .allowsHitTesting(!isLoading)
+
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+            }
+
+            if isFollowing {
+                AuthorUnfollowMenuOverlay(onUnfollow: onUnfollow)
+            } else {
+                AuthorFollowTapOverlay(onFollow: onFollow)
+            }
+        }
+        .fixedSize()
+        .onHover { isHovered = $0 }
+    }
+
+    private var foregroundColor: Color {
+        if isFollowing {
+            if overlayOnCover && !coverIsLight {
+                return Color(red: 224 / 255, green: 224 / 255, blue: 224 / 255)
+            }
+            return Color(red: 117 / 255, green: 117 / 255, blue: 117 / 255)
+        }
+        if overlayOnCover && !coverIsLight {
+            return BiliTheme.blue
+        }
+        return isHovered ? BiliTheme.blueHover : BiliTheme.blue
+    }
+
+    private var backgroundColor: Color {
+        if isFollowing {
+            if overlayOnCover && !coverIsLight {
+                return Color.white.opacity(0.92)
+            }
+            return Color(red: 245 / 255, green: 245 / 255, blue: 245 / 255)
+        }
+        if overlayOnCover && !coverIsLight {
+            return Color.white.opacity(isHovered ? 0.98 : 0.94)
+        }
+        if overlayOnCover && coverIsLight {
+            return isHovered ? BiliTheme.blue.opacity(0.18) : Color.white.opacity(0.92)
+        }
+        return isHovered ? BiliTheme.blue.opacity(0.16) : BiliTheme.blue.opacity(0.1)
+    }
+
+    private var borderColor: Color {
+        if isFollowing {
+            if overlayOnCover && !coverIsLight {
+                return Color.white.opacity(0.35)
+            }
+            return Color.black.opacity(0.06)
+        }
+        if overlayOnCover && !coverIsLight {
+            return Color.white.opacity(isHovered ? 0.55 : 0.42)
+        }
+        if overlayOnCover && coverIsLight {
+            return Color.black.opacity(isHovered ? 0.1 : 0.06)
+        }
+        return isHovered ? BiliTheme.blueHover.opacity(0.45) : BiliTheme.blue.opacity(0.22)
+    }
+}
+
+private struct AuthorFollowTapOverlay: NSViewRepresentable {
+    let onFollow: () -> Void
+
+    func makeNSView(context: Context) -> AuthorFollowTapView {
+        let view = AuthorFollowTapView()
+        view.onFollow = onFollow
+        return view
+    }
+
+    func updateNSView(_ nsView: AuthorFollowTapView, context: Context) {
+        nsView.onFollow = onFollow
+    }
+}
+
+@MainActor
+private final class AuthorFollowTapView: NSView {
+    var onFollow: (() -> Void)?
+
+    override var isOpaque: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onFollow?()
+    }
+}
+
+private struct AuthorUnfollowMenuOverlay: NSViewRepresentable {
+    let onUnfollow: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onUnfollow: onUnfollow)
+    }
+
+    func makeNSView(context: Context) -> AuthorUnfollowMenuView {
+        let view = AuthorUnfollowMenuView()
+        view.configure(coordinator: context.coordinator)
+        return view
+    }
+
+    func updateNSView(_ nsView: AuthorUnfollowMenuView, context: Context) {
+        nsView.configure(coordinator: context.coordinator)
+    }
+
+    final class Coordinator: NSObject {
+        var onUnfollow: () -> Void
+
+        init(onUnfollow: @escaping () -> Void) {
+            self.onUnfollow = onUnfollow
+        }
+
+        @objc func handleUnfollow(_ sender: NSMenuItem) {
+            onUnfollow()
+        }
+    }
+}
+
+@MainActor
+private final class AuthorUnfollowMenuView: NSView {
+    private let actionMenu = NSMenu()
+    private weak var coordinator: AuthorUnfollowMenuOverlay.Coordinator?
+
+    override var isOpaque: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard !actionMenu.items.isEmpty else { return }
+        BiliMenuPopUpAnchor.popUp(actionMenu, in: self)
+    }
+
+    func configure(coordinator: AuthorUnfollowMenuOverlay.Coordinator) {
+        self.coordinator = coordinator
+        actionMenu.removeAllItems()
+
+        let unfollowItem = NSMenuItem(
+            title: "取消关注",
+            action: #selector(AuthorUnfollowMenuOverlay.Coordinator.handleUnfollow(_:)),
+            keyEquivalent: ""
+        )
+        unfollowItem.target = coordinator
+        actionMenu.addItem(unfollowItem)
     }
 }
 
@@ -205,6 +422,7 @@ struct VideoDetailActionBar: View {
     var favorited = false
     var canCoinTwo = true
     var canCoinMore = true
+    @Binding var coinHintMessage: String?
     var availableWidth: CGFloat = 320
     var onCoinTap: () -> Bool = { true }
     var onLikeClick: () -> Void = {}
@@ -224,11 +442,11 @@ struct VideoDetailActionBar: View {
     private let tripleHoldDuration: TimeInterval = 2
 
     var body: some View {
-        HStack(spacing: metrics.columnSpacing) {
+        HStack(alignment: .top, spacing: metrics.columnSpacing) {
             actionColumn(
                 icon: .likeFilled,
                 label: likeCount.compactCount,
-                tint: liked ? BiliTheme.blue : BiliTheme.actionInactive,
+                isActive: liked,
                 ringProgress: holdProgress,
                 onTap: onLikeClick,
                 onLongPress: onTripleClick,
@@ -238,7 +456,7 @@ struct VideoDetailActionBar: View {
             actionColumn(
                 icon: .favorite,
                 label: favoriteCount.compactCount,
-                tint: favorited ? BiliTheme.blue : BiliTheme.actionInactive,
+                isActive: favorited,
                 ringProgress: holdProgress,
                 onTap: onFavoriteClick
             )
@@ -251,22 +469,26 @@ struct VideoDetailActionBar: View {
     private func actionColumn(
         icon: BiliIcon,
         label: String,
-        tint: Color,
+        isActive: Bool,
         ringProgress: CGFloat,
         onTap: @escaping () -> Void,
         onLongPress: (() -> Void)? = nil,
         onHoldProgress: ((CGFloat) -> Void)? = nil
     ) -> some View {
-        VideoDetailActionItem(horizontalPadding: metrics.itemPaddingH) {
+        VideoDetailActionItem(horizontalPadding: metrics.itemPaddingH) { isHovered in
+            let tint = isActive || isHovered ? BiliTheme.blue : BiliTheme.actionInactive
             VStack(spacing: 4) {
                 actionIconVisual(icon: icon, tint: tint, ringProgress: ringProgress)
                 Text(label)
                     .font(.system(size: metrics.labelFontSize, weight: .medium))
-                    .foregroundStyle(tint == BiliTheme.blue ? BiliTheme.blue : .primary)
+                    .foregroundStyle(tint)
+                    .contentTransition(.interpolate)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
             }
             .frame(maxWidth: .infinity)
+            .animation(.easeInOut(duration: 0.18), value: isHovered)
+            .animation(.easeInOut(duration: 0.18), value: isActive)
         } pressOverlay: {
             ActionPressOverlay(
                 longPressDuration: tripleHoldDuration,
@@ -278,20 +500,23 @@ struct VideoDetailActionBar: View {
     }
 
     private var shareColumn: some View {
-        VideoDetailActionItem(horizontalPadding: metrics.itemPaddingH) {
+        VideoDetailActionItem(horizontalPadding: metrics.itemPaddingH) { isHovered in
+            let tint = isHovered ? BiliTheme.blue : BiliTheme.actionInactive
             VStack(spacing: 4) {
                 actionIconVisual(
                     icon: .share,
-                    tint: BiliTheme.actionInactive,
+                    tint: tint,
                     ringProgress: 0
                 )
                 Text(shareCount.compactCount)
                     .font(.system(size: metrics.labelFontSize, weight: .medium))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(tint)
+                    .contentTransition(.interpolate)
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
             }
             .frame(maxWidth: .infinity)
+            .animation(.easeInOut(duration: 0.18), value: isHovered)
         } pressOverlay: {
             ActionPressOverlay(
                 onTap: {},
@@ -301,30 +526,48 @@ struct VideoDetailActionBar: View {
     }
 
     private var coinColumn: some View {
-        VideoDetailActionItem(horizontalPadding: metrics.itemPaddingH) {
-            VStack(spacing: 4) {
-                actionIconVisual(
-                    icon: .coin,
-                    tint: coined ? BiliTheme.blue : BiliTheme.actionInactive,
-                    ringProgress: 0
-                )
-                Text(coinCount.compactCount)
-                    .font(.system(size: metrics.labelFontSize, weight: .medium))
-                    .foregroundStyle(coined ? BiliTheme.blue : .primary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
+        VStack(spacing: 2) {
+            VideoDetailActionItem(horizontalPadding: metrics.itemPaddingH) { isHovered in
+                let tint = coined || isHovered ? BiliTheme.blue : BiliTheme.actionInactive
+                VStack(spacing: 4) {
+                    actionIconVisual(
+                        icon: .coin,
+                        tint: tint,
+                        ringProgress: 0
+                    )
+                    Text(coinCount.compactCount)
+                        .font(.system(size: metrics.labelFontSize, weight: .medium))
+                        .foregroundStyle(tint)
+                        .contentTransition(.interpolate)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+                .frame(maxWidth: .infinity)
+                .animation(.easeInOut(duration: 0.18), value: isHovered)
+                .animation(.easeInOut(duration: 0.18), value: coined)
+            } pressOverlay: {
+                if canCoinMore {
+                    CoinMenuPressOverlay(
+                        canCoinTwo: canCoinTwo,
+                        canCoinMore: canCoinMore,
+                        onPrepare: onCoinTap,
+                        onBlocked: onCoinBlocked,
+                        onCoinOne: onCoinOne,
+                        onCoinTwo: onCoinTwo
+                    )
+                } else {
+                    ActionPressOverlay(onTap: onCoinBlocked)
+                }
             }
-            .frame(maxWidth: .infinity)
-        } pressOverlay: {
-            CoinMenuPressOverlay(
-                canCoinTwo: canCoinTwo,
-                canCoinMore: canCoinMore,
-                onPrepare: onCoinTap,
-                onBlocked: onCoinBlocked,
-                onCoinOne: onCoinOne,
-                onCoinTwo: onCoinTwo
-            )
+
+            if let message = coinHintMessage, !message.isEmpty {
+                VideoDetailCoinHint(message: message)
+                    .frame(maxWidth: .infinity)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
+        .frame(maxWidth: .infinity)
+        .animation(.easeInOut(duration: 0.2), value: coinHintMessage)
     }
 
     private func actionIconVisual(
@@ -343,6 +586,25 @@ struct VideoDetailActionBar: View {
 
     private func updateHoldProgress(_ progress: CGFloat) {
         holdProgress = progress
+    }
+}
+
+private struct VideoDetailCoinHint: View {
+    let message: String
+
+    var body: some View {
+        Text(message)
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.primary)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.black.opacity(0.08), lineWidth: 0.5)
+            }
+            .shadow(color: .black.opacity(0.1), radius: 8, y: 3)
     }
 }
 
@@ -387,7 +649,7 @@ private struct VideoDetailActionBarMetrics {
 private struct VideoDetailActionItem<Content: View, PressOverlay: View>: View {
     var showsChrome = false
     var horizontalPadding: CGFloat = 6
-    @ViewBuilder var content: () -> Content
+    @ViewBuilder var content: (_ isHovered: Bool) -> Content
     @ViewBuilder var pressOverlay: () -> PressOverlay
 
     @State private var isHovered = false
@@ -397,7 +659,7 @@ private struct VideoDetailActionItem<Content: View, PressOverlay: View>: View {
     }
 
     var body: some View {
-        content()
+        content(isHovered)
             .padding(.horizontal, horizontalPadding)
             .padding(.vertical, 6)
             .frame(minWidth: 0, maxWidth: .infinity)

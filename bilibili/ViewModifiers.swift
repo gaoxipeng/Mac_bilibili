@@ -36,6 +36,10 @@ enum AppLayout {
     static let searchUserResultColumnSpacing: CGFloat = 12
     static let searchUserResultsHorizontalInset: CGFloat = 32
 
+    static func feedContentWidth(viewportWidth: CGFloat) -> CGFloat {
+        max(0, viewportWidth - feedHorizontalInset * 2)
+    }
+
     static func searchUserResultLayout(contentWidth: CGFloat) -> SearchUserResultLayout {
         let minWidthForTwoColumns = searchUserResultCapsuleWidth * 2 + searchUserResultColumnSpacing
         if contentWidth >= minWidthForTwoColumns {
@@ -342,9 +346,7 @@ final class GlassMorePopUpButtonView: NSView, NSMenuDelegate {
 
     override func mouseDown(with event: NSEvent) {
         guard !actionMenu.items.isEmpty else { return }
-        let gapBelowButton: CGFloat = 10
-        let anchor = NSPoint(x: bounds.midX, y: bounds.minY - gapBelowButton)
-        actionMenu.popUp(positioning: nil, at: anchor, in: self)
+        BiliMenuPopUpAnchor.popUp(actionMenu, in: self)
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
@@ -375,11 +377,11 @@ final class GlassMorePopUpButtonView: NSView, NSMenuDelegate {
         let image = NSImage(size: NSSize(width: buttonSize, height: buttonSize))
         image.lockFocus()
 
-        let dotRadius: CGFloat = 2.1
-        let spacing: CGFloat = 4.6
+        let dotRadius: CGFloat = 1.5
+        let centerSpacing: CGFloat = 6.2
         let center = CGPoint(x: buttonSize / 2, y: buttonSize / 2)
         NSColor.labelColor.setFill()
-        for offset in [-spacing, 0, spacing] {
+        for offset in [-centerSpacing, 0, centerSpacing] {
             let rect = NSRect(
                 x: center.x + offset - dotRadius,
                 y: center.y - dotRadius,
@@ -435,6 +437,17 @@ final class GlassMorePopUpButtonView: NSView, NSMenuDelegate {
     }
 }
 
+private struct FeedViewportWidthKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
+extension EnvironmentValues {
+    var feedViewportWidth: CGFloat {
+        get { self[FeedViewportWidthKey.self] }
+        set { self[FeedViewportWidthKey.self] = newValue }
+    }
+}
+
 struct AppScrollView<Content: View>: View {
     @ViewBuilder private var content: () -> Content
 
@@ -443,13 +456,17 @@ struct AppScrollView<Content: View>: View {
     }
 
     var body: some View {
-        ScrollView {
-            content()
-                .padding(.horizontal, AppLayout.feedHorizontalInset)
-                .padding(.vertical, AppLayout.feedVerticalInset)
+        GeometryReader { geometry in
+            ScrollView {
+                content()
+                    .padding(.horizontal, AppLayout.feedHorizontalInset)
+                    .padding(.vertical, AppLayout.feedVerticalInset)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .environment(\.feedViewportWidth, geometry.size.width)
+            }
+            .scrollClipDisabled()
+            .background(MacOverlayScrollConfigurator())
         }
-        .scrollClipDisabled()
-        .background(MacOverlayScrollConfigurator())
     }
 }
 

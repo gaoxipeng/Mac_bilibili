@@ -19,13 +19,15 @@ final class AppModel: ObservableObject {
     @Published var favoriteLoadingMore = false
     @Published var account: BiliAccount?
     @Published var profile: BiliUserProfile?
-    @Published var isLoading = false
+    @Published private(set) var loadingSections = Set<AppSection>()
     @Published var errorMessage: String?
     @Published var loginMessage: String?
     @Published private(set) var searchFocusRequest = 0
     @Published private(set) var pendingSearchQuery: String?
     @Published var isSearchShowingResults = false
     @Published private(set) var exitSearchResultsRequest = 0
+
+    var profilePageHandlers: ProfilePageHandlers?
 
     private var followingOffset: String?
     private var homeFreshIdx = 1
@@ -37,11 +39,17 @@ final class AppModel: ObservableObject {
     private let api = BilibiliAPI()
     private let accountStore = AccountStore()
     private var didLoadInitialData = false
+    private var reloadGeneration = 0
+
+    func isSectionLoading(_ section: AppSection) -> Bool {
+        loadingSections.contains(section)
+    }
 
     func loadInitialData() async {
         guard !didLoadInitialData else { return }
         didLoadInitialData = true
         account = accountStore.load()
+        Task { await api.warmUp(credential: account?.credential) }
         await reloadSelected()
     }
 
@@ -83,20 +91,25 @@ final class AppModel: ObservableObject {
         exitSearchResultsRequest += 1
     }
 
+    func clearProfilePageHandlers() {
+        profilePageHandlers = nil
+    }
+
     func reloadSelected() async {
+        reloadGeneration += 1
+        let generation = reloadGeneration
+        let section = selectedSection
+
         errorMessage = nil
-        let showLoading = shouldShowLoadingIndicator
-        if showLoading {
-            isLoading = true
-        }
+        loadingSections.insert(section)
         defer {
-            if showLoading {
-                isLoading = false
+            if generation == reloadGeneration {
+                loadingSections.remove(section)
             }
         }
 
         do {
-            switch selectedSection {
+            switch section {
             case .search:
                 break
             case .home:
@@ -104,6 +117,7 @@ final class AppModel: ObservableObject {
                 homeFetchRow = 1
                 homeLastShowList = ""
                 let page = try await api.homeRecommend(credential: account?.credential)
+                guard generation == reloadGeneration, selectedSection == section else { return }
                 homeVideos = page.videos
                 homeFreshIdx = page.nextFreshIdx
                 homeFetchRow = page.nextFetchRow
@@ -111,36 +125,44 @@ final class AppModel: ObservableObject {
                 homeHasMore = page.hasMore
             case .following:
                 guard let credential = account?.credential else {
+                    guard generation == reloadGeneration else { return }
                     followingVideos = []
                     followingOffset = nil
                     followingHasMore = false
                     throw APIError.message("登录后查看关注内容")
                 }
                 let page = try await api.followingFeed(credential: credential)
+                guard generation == reloadGeneration, selectedSection == section else { return }
                 followingVideos = page.videos
                 followingOffset = page.nextOffset
                 followingHasMore = page.hasMore
             case .hot:
-                hotVideos = try await api.ranking(credential: account?.credential)
+                let videos = try await api.ranking(credential: account?.credential)
+                guard generation == reloadGeneration, selectedSection == section else { return }
+                hotVideos = videos
             case .history:
                 guard let credential = account?.credential else {
+                    guard generation == reloadGeneration else { return }
                     historyCursor = nil
                     historyHasMore = false
                     throw APIError.message("登录后查看观看历史")
                 }
                 historyCursor = nil
                 let page = try await api.history(credential: credential)
+                guard generation == reloadGeneration, selectedSection == section else { return }
                 historyItems = page.items
                 historyCursor = page.cursor
                 historyHasMore = page.hasMore
             case .favorites:
                 guard let credential = account?.credential else {
+                    guard generation == reloadGeneration else { return }
                     favoritePage = 1
                     favoriteHasMore = false
                     throw APIError.message("登录后查看收藏")
                 }
                 favoritePage = 1
                 let page = try await api.favoriteVideos(page: 1, credential: credential)
+                guard generation == reloadGeneration, selectedSection == section else { return }
                 favoriteVideos = page.videos
                 favoritePage = page.page
                 favoriteHasMore = page.hasMore
@@ -150,6 +172,7 @@ final class AppModel: ObservableObject {
                 }
             }
         } catch {
+            guard generation == reloadGeneration else { return }
             errorMessage = error.localizedDescription
         }
     }
@@ -162,17 +185,6 @@ final class AppModel: ObservableObject {
             await refreshHistoryQuietly()
         default:
             break
-        }
-    }
-
-    private var shouldShowLoadingIndicator: Bool {
-        switch selectedSection {
-        case .home: homeVideos.isEmpty
-        case .following: followingVideos.isEmpty
-        case .hot: hotVideos.isEmpty
-        case .history: historyItems.isEmpty
-        case .favorites: favoriteVideos.isEmpty
-        case .search, .mine: false
         }
     }
 
@@ -219,7 +231,7 @@ final class AppModel: ObservableObject {
               let credential = account?.credential,
               let cursor = historyCursor,
               historyHasMore,
-              !isLoading,
+              !isSectionLoading(.history),
               !historyLoadingMore else {
             return
         }
@@ -248,7 +260,7 @@ final class AppModel: ObservableObject {
     func loadMoreHome() async {
         guard selectedSection == .home,
               homeHasMore,
-              !isLoading,
+              !isSectionLoading(.home),
               !homeLoadingMore else {
             return
         }
@@ -280,7 +292,7 @@ final class AppModel: ObservableObject {
         guard selectedSection == .following,
               let credential = account?.credential,
               followingHasMore,
-              !isLoading,
+              !isSectionLoading(.following),
               !followingLoadingMore else {
             return
         }
@@ -305,7 +317,7 @@ final class AppModel: ObservableObject {
         guard selectedSection == .favorites,
               let credential = account?.credential,
               favoriteHasMore,
-              !isLoading,
+              !isSectionLoading(.favorites),
               !favoriteLoadingMore else {
             return
         }
@@ -330,8 +342,8 @@ final class AppModel: ObservableObject {
     func login(credential: BilibiliCredential) async -> Bool {
         loginMessage = nil
         errorMessage = nil
-        isLoading = true
-        defer { isLoading = false }
+        loadingSections.insert(.mine)
+        defer { loadingSections.remove(.mine) }
 
         do {
             let account = try await api.validate(credential: credential)
@@ -440,4 +452,10 @@ private struct AccountStore {
     func clear() {
         try? FileManager.default.removeItem(at: fileURL)
     }
+}
+
+@MainActor
+struct ProfilePageHandlers {
+    let follow: () -> Void
+    let unfollow: () -> Void
 }

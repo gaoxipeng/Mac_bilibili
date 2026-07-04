@@ -401,6 +401,7 @@ struct SearchDashboard: View {
                         }
                     }
                     .animation(.easeOut(duration: 0.20), value: searchModel.isShowingResults)
+                    .environment(\.feedViewportWidth, geometry.size.width)
                 }
                 .zIndex(0)
             }

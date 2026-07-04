@@ -239,6 +239,18 @@ enum JSONParser {
         )
     }
 
+    nonisolated static func parseUserCardSnapshot(from object: Any) -> BiliUserCardSnapshot? {
+        let data = dictionary(object)["data"] as? [String: Any] ?? [:]
+        guard let profile = parseUserCardProfile(from: object) else { return nil }
+        let followerCount = int64(data, "follower").ifZero(profile.follower)
+        return BiliUserCardSnapshot(
+            sign: profile.sign,
+            level: profile.level,
+            followerCount: followerCount,
+            relation: BiliAuthorRelation(following: boolish(data["following"]))
+        )
+    }
+
     nonisolated static func parseUserUpstatLikes(from object: Any) -> Int64 {
         let data = dictionary(object)["data"] as? [String: Any] ?? [:]
         return int64(data, "likes")
@@ -344,12 +356,32 @@ enum JSONParser {
 
     nonisolated private static func parseHistoryItem(_ item: [String: Any]) -> BiliHistoryItem? {
         let history = item["history"] as? [String: Any]
-        if let history, string(history, "business") != "archive", !string(history, "business").isEmpty {
+        let businessRaw = string(history ?? item, "business")
+        guard businessRaw == "archive" || businessRaw == "pgc" else { return nil }
+
+        let business = BiliHistoryBusiness(rawValue: businessRaw) ?? .unknown
+        let bvid = string(item, "bvid").ifEmpty(history.map { string($0, "bvid") } ?? "")
+        let epid = history.map { int64($0, "epid") } ?? 0
+        let historyCid = history.map { int64($0, "cid") } ?? 0
+        let aid = int64(item, "aid").ifZero(history.map { int64($0, "oid", "aid") } ?? 0)
+        let cid = int64(item, "cid").ifZero(historyCid)
+
+        if business == .archive {
+            guard !bvid.isEmpty else { return nil }
+        } else if epid <= 0, cid <= 0 {
             return nil
         }
-        let bvid = string(item, "bvid").ifEmpty(history.map { string($0, "bvid") } ?? "")
-        guard !bvid.isEmpty else { return nil }
-        let historyCid = history.map { int64($0, "cid") } ?? 0
+
+        let primaryTitle = string(item, "title", "show_title").htmlStripped
+        let episodeTitle = string(item, "show_title", "long_title").htmlStripped
+        let displayTitle: String = {
+            if business == .pgc, !episodeTitle.isEmpty, episodeTitle != primaryTitle {
+                return primaryTitle.isEmpty ? episodeTitle : "\(primaryTitle) · \(episodeTitle)"
+            }
+            return primaryTitle.ifEmpty(episodeTitle)
+        }()
+        guard !displayTitle.isEmpty else { return nil }
+
         let author = item["author"] as? [String: Any]
             ?? item["owner"] as? [String: Any]
             ?? item["upper"] as? [String: Any]
@@ -361,11 +393,21 @@ enum JSONParser {
             .ifZero(author.map { int64($0, "mid") } ?? 0)
         let coverRaw = string(item, "cover", "pic")
             .ifEmpty((item["covers"] as? [String])?.first ?? "")
+        let badge = string(item, "badge").htmlStripped
+        let uriRaw = string(item, "uri")
+        let webURI = normalizedURL(uriRaw)
+        let videoID: String = {
+            if !bvid.isEmpty { return bvid }
+            if epid > 0 { return "pgc:\(epid)" }
+            if cid > 0 { return "pgc-cid:\(cid)" }
+            return "pgc-aid:\(aid)"
+        }()
+
         let video = BiliVideo(
-            id: bvid,
+            id: videoID,
             bvid: bvid,
-            aid: int64(item, "aid").ifZero(history.map { int64($0, "oid", "aid") } ?? 0),
-            title: string(item, "title", "show_title").htmlStripped,
+            aid: aid,
+            title: displayTitle,
             coverURL: normalizedURL(coverRaw),
             authorName: authorName,
             authorFaceURL: normalizedURL(authorFaceRaw),
@@ -375,19 +417,42 @@ enum JSONParser {
             likeCount: 0,
             duration: duration(from: item),
             description: string(item, "desc"),
-            cid: int64(item, "cid").ifZero(historyCid)
+            cid: cid
         )
         let viewedAtSeconds = int64(item, "view_at")
         let progressSeconds = max(0, Int(int64(item, "progress")))
         let durationSeconds = max(0, duration(from: item))
-        let aid = video.aid
+        let kidValue = int64(item, "kid")
+        let kid: String = {
+            guard kidValue > 0 else { return "" }
+            switch business {
+            case .archive:
+                return "archive_\(kidValue)"
+            case .pgc:
+                return "pgc_\(kidValue)"
+            case .unknown:
+                return ""
+            }
+        }()
+        let itemID: String = {
+            if business == .pgc {
+                let anchor = epid > 0 ? epid : (cid > 0 ? cid : aid)
+                return "pgc-\(anchor)-\(viewedAtSeconds)"
+            }
+            return "\(bvid)-\(viewedAtSeconds)"
+        }()
+
         return BiliHistoryItem(
-            id: "\(bvid)-\(viewedAtSeconds)",
-            kid: aid > 0 ? "archive_\(aid)" : "",
+            id: itemID,
+            kid: kid,
+            business: business,
             video: video,
             viewedAt: viewedAtSeconds > 0 ? Date(timeIntervalSince1970: TimeInterval(viewedAtSeconds)) : nil,
             progressSeconds: progressSeconds,
-            durationSeconds: durationSeconds
+            durationSeconds: durationSeconds,
+            epid: epid,
+            webURI: webURI,
+            badge: badge
         )
     }
 
@@ -600,8 +665,24 @@ enum JSONParser {
     }
 
     nonisolated static func parsePlayStream(from object: Any) -> BiliPlayStream? {
-        let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
+        let root = dictionary(object)
+        if let result = root["result"] as? [String: Any] {
+            if let videoInfo = result["video_info"] as? [String: Any],
+               let stream = parsePlayStreamPayload(from: videoInfo) {
+                return stream
+            }
+            if let stream = parsePlayStreamPayload(from: result) {
+                return stream
+            }
+        }
+        if let data = root["data"] as? [String: Any],
+           let stream = parsePlayStreamPayload(from: data) {
+            return stream
+        }
+        return parsePlayStreamPayload(from: root)
+    }
 
+    private nonisolated static func parsePlayStreamPayload(from data: [String: Any]) -> BiliPlayStream? {
         if let durlStream = parseDurlStream(from: data), durlStream.isAVPlayerCompatible {
             return durlStream
         }
@@ -1041,6 +1122,608 @@ enum JSONParser {
             return value.isEmpty ? nil : value
         }
         return trimmed
+    }
+
+    nonisolated static func parseSpaceDynamicFeed(from object: Any) -> BiliDynamicFeedPage {
+        let data = dictionary(object)["data"] as? [String: Any] ?? [:]
+        let items = data["items"] as? [[String: Any]] ?? []
+        let parsed = items.compactMap(parseSpaceDynamicItem)
+        let offsetRaw = string(data, "offset")
+        let nextOffset = offsetRaw.isEmpty ? nil : offsetRaw
+        let hasMore = (data["has_more"] as? Bool) ?? (nextOffset != nil && !parsed.isEmpty)
+        return BiliDynamicFeedPage(items: parsed, nextOffset: nextOffset, hasMore: hasMore)
+    }
+
+    private nonisolated static func parseSpaceDynamicItem(_ item: [String: Any]) -> BiliDynamicItem? {
+        let id = string(item, "id_str").ifEmpty(string(item, "id"))
+        guard !id.isEmpty else { return nil }
+        guard let modules = item["modules"] as? [String: Any] else { return nil }
+
+        let origItem = (item["orig"] as? [String: Any]).flatMap { orig in
+            (orig["modules"] as? [String: Any]) != nil ? orig : nil
+        }
+        let dynamicType = string(item, "type")
+        let isForward = dynamicType == "DYNAMIC_TYPE_FORWARD" || origItem != nil
+        let stat = modules["module_stat"] as? [String: Any]
+        let meta = parseDynamicItemMeta(item: item, modules: modules, dynamicType: dynamicType)
+        let publishTime = int64(
+            (modules["module_author"] as? [String: Any]) ?? [:],
+            "pub_ts"
+        ).ifZero(int64(item, "pub_ts"))
+
+        if isForward, let origItem, let origModules = origItem["modules"] as? [String: Any] {
+            let forwardRich = parseDynamicDesc(modules)
+            let originBody = parseDynamicBody(item: origItem, modules: origModules)
+            let origin = BiliDynamicOrigin(
+                authorName: parseModuleAuthorName(origModules),
+                text: originBody.text,
+                emoticons: originBody.emoticons,
+                video: originBody.video,
+                imageURLs: originBody.imageURLs,
+                link: originBody.link
+            )
+            return BiliDynamicItem(
+                id: id,
+                text: forwardRich.text,
+                emoticons: forwardRich.emoticons,
+                publishTimeSeconds: publishTime,
+                video: nil,
+                imageURLs: [],
+                link: nil,
+                origin: origin,
+                authorMid: meta.authorMid,
+                authorName: meta.authorName,
+                authorFaceURL: meta.authorFaceURL,
+                authorLevel: meta.authorLevel,
+                ipLocation: meta.ipLocation,
+                commentOid: meta.commentOid,
+                commentType: meta.commentType,
+                dynamicType: meta.dynamicType,
+                likeCount: parseDynamicStatCount(stat, key: "like"),
+                commentCount: parseDynamicStatCount(stat, key: "comment"),
+                repostCount: parseDynamicStatCount(stat, key: "forward")
+            )
+        }
+
+        let body = parseDynamicBody(item: item, modules: modules)
+        return BiliDynamicItem(
+            id: id,
+            text: body.text,
+            emoticons: body.emoticons,
+            publishTimeSeconds: publishTime,
+            video: body.video,
+            imageURLs: body.imageURLs,
+            link: body.link,
+            origin: nil,
+            authorMid: meta.authorMid,
+            authorName: meta.authorName,
+            authorFaceURL: meta.authorFaceURL,
+            authorLevel: meta.authorLevel,
+            ipLocation: meta.ipLocation,
+            commentOid: meta.commentOid,
+            commentType: meta.commentType,
+            dynamicType: meta.dynamicType,
+            likeCount: parseDynamicStatCount(stat, key: "like"),
+            commentCount: parseDynamicStatCount(stat, key: "comment"),
+            repostCount: parseDynamicStatCount(stat, key: "forward")
+        )
+    }
+
+    private struct DynamicRichText: Sendable {
+        var text = ""
+        var emoticons: [String: String] = [:]
+    }
+
+    private struct DynamicBody: Sendable {
+        var text = ""
+        var emoticons: [String: String] = [:]
+        var video: BiliVideo?
+        var imageURLs: [URL] = []
+        var link: BiliDynamicLink?
+    }
+
+    private struct DynamicItemMeta: Sendable {
+        var authorMid: Int64 = 0
+        var authorName = ""
+        var authorFaceURL: URL?
+        var authorLevel = 0
+        var ipLocation: String?
+        var commentOid: Int64 = 0
+        var commentType = 0
+        var dynamicType = ""
+    }
+
+    private nonisolated static func parseDynamicItemMeta(
+        item: [String: Any],
+        modules: [String: Any],
+        dynamicType: String
+    ) -> DynamicItemMeta {
+        let author = modules["module_author"] as? [String: Any]
+        let basic = item["basic"] as? [String: Any]
+        var commentType = Int(int64(basic ?? [:], "comment_type"))
+        var commentOid = int64(basic ?? [:], "comment_id_str").ifZero(int64(basic ?? [:], "rid_str"))
+        if commentType <= 0 {
+            commentType = fallbackDynamicCommentType(dynamicType)
+        }
+        if commentOid <= 0 {
+            commentOid = fallbackDynamicCommentOid(item: item, dynamicType: dynamicType)
+        }
+        let badge = author?["badge"] as? [String: Any]
+        let level = Int(int64(badge ?? [:], "level")).ifZero(Int(int64(author ?? [:], "level")))
+        return DynamicItemMeta(
+            authorMid: int64(author ?? [:], "mid"),
+            authorName: parseModuleAuthorName(modules),
+            authorFaceURL: normalizedURL(author.map { string($0, "face") } ?? ""),
+            authorLevel: level,
+            ipLocation: normalizeIpLocation(string(author ?? [:], "pub_location", "location")),
+            commentOid: commentOid,
+            commentType: commentType,
+            dynamicType: dynamicType
+        )
+    }
+
+    private nonisolated static func fallbackDynamicCommentType(_ dynamicType: String) -> Int {
+        switch dynamicType {
+        case "DYNAMIC_TYPE_WORD", "DYNAMIC_TYPE_FORWARD", "DYNAMIC_TYPE_LIVE_RCMD", "DYNAMIC_TYPE_OPUS":
+            return 17
+        case "DYNAMIC_TYPE_DRAW":
+            return 11
+        case "DYNAMIC_TYPE_AV", "DYNAMIC_TYPE_UGC_SEASON":
+            return 1
+        case "DYNAMIC_TYPE_ARTICLE":
+            return 12
+        default:
+            return 0
+        }
+    }
+
+    private nonisolated static func fallbackDynamicCommentOid(item: [String: Any], dynamicType: String) -> Int64 {
+        let id = Int64(string(item, "id_str").ifEmpty(string(item, "id"))) ?? 0
+        let basic = item["basic"] as? [String: Any]
+        let rid = int64(basic ?? [:], "rid_str")
+        switch dynamicType {
+        case "DYNAMIC_TYPE_WORD", "DYNAMIC_TYPE_FORWARD", "DYNAMIC_TYPE_LIVE_RCMD", "DYNAMIC_TYPE_OPUS":
+            return id
+        case "DYNAMIC_TYPE_DRAW":
+            return rid > 0 ? rid : id
+        default:
+            return rid > 0 ? rid : id
+        }
+    }
+
+    private nonisolated static func parseDynamicBody(item: [String: Any], modules: [String: Any]) -> DynamicBody {
+        let moduleDynamic = modules["module_dynamic"] as? [String: Any]
+        let descRich = parseDynamicDesc(modules)
+        var text = descRich.text
+        var emoticons = descRich.emoticons
+        var video: BiliVideo?
+        var imageURLs = parseRichTextImages(moduleDynamic?["desc"] as? [String: Any])
+        var link: BiliDynamicLink?
+
+        if let major = moduleDynamic?["major"] as? [String: Any] {
+            let parsed = parseDynamicMajor(major, modules: modules)
+            if !parsed.text.isEmpty, !isDuplicateDynamicText(text, parsed.text) {
+                text = mergeDynamicText(text, parsed.text)
+            }
+            emoticons.merge(parsed.emoticons) { _, new in new }
+            video = parsed.video
+            if !parsed.imageURLs.isEmpty { imageURLs = parsed.imageURLs }
+            link = parsed.link
+        }
+
+        if let additional = parseDynamicAdditional(moduleDynamic: moduleDynamic, modules: modules) {
+            if !additional.text.isEmpty, !isDuplicateDynamicText(text, additional.text) {
+                text = mergeDynamicText(text, additional.text)
+            }
+            emoticons.merge(additional.emoticons) { _, new in new }
+            if video == nil { video = additional.video }
+            if link == nil { link = additional.link }
+            if imageURLs.isEmpty { imageURLs = additional.imageURLs }
+        }
+
+        if video == nil, imageURLs.isEmpty, link == nil {
+            if let fallback = parseDynamicItemFallback(item: item, modules: modules) {
+                if !fallback.text.isEmpty, !isDuplicateDynamicText(text, fallback.text) {
+                    text = mergeDynamicText(text, fallback.text)
+                }
+                emoticons.merge(fallback.emoticons) { _, new in new }
+                if imageURLs.isEmpty { imageURLs = fallback.imageURLs }
+                if link == nil { link = fallback.link }
+            }
+        }
+
+        if video == nil {
+            video = parseDynamicVideoItem(item)
+        }
+
+        if video != nil {
+            link = nil
+        } else if let currentLink = link, !shouldShowDynamicLink(text: text, link: currentLink, imageURLs: imageURLs) {
+            link = nil
+        }
+
+        return DynamicBody(
+            text: text,
+            emoticons: emoticons,
+            video: video,
+            imageURLs: imageURLs,
+            link: link
+        )
+    }
+
+    private nonisolated static func parseDynamicAdditional(
+        moduleDynamic: [String: Any]?,
+        modules: [String: Any]
+    ) -> DynamicBody? {
+        guard let additional = moduleDynamic?["additional"] as? [String: Any] else { return nil }
+
+        if let ugc = additional["ugc"] as? [String: Any],
+           let video = parseAdditionalUgcVideo(ugc, modules: modules) {
+            return DynamicBody(video: video)
+        }
+
+        switch string(additional, "type") {
+        case "ADDITIONAL_TYPE_UGC":
+            guard let ugc = additional["ugc"] as? [String: Any],
+                  let video = parseAdditionalUgcVideo(ugc, modules: modules) else { return nil }
+            return DynamicBody(video: video)
+        case "ADDITIONAL_TYPE_COMMON":
+            guard let common = additional["common"] as? [String: Any] else { return nil }
+            let desc = [string(common, "desc1"), string(common, "desc2")]
+                .filter { !$0.isEmpty }
+                .joined(separator: " · ")
+            let jumpURL = normalizeJumpURL(string(common, "jump_url"))
+            guard !jumpURL.isEmpty else { return nil }
+            return DynamicBody(
+                link: BiliDynamicLink(
+                    title: string(common, "title"),
+                    url: jumpURL,
+                    coverURL: normalizedURL(string(common, "cover")),
+                    desc: desc
+                )
+            )
+        default:
+            return nil
+        }
+    }
+
+    private nonisolated static func parseAdditionalUgcVideo(
+        _ ugc: [String: Any],
+        modules: [String: Any]
+    ) -> BiliVideo? {
+        let bvid = string(ugc, "bvid")
+        guard !bvid.isEmpty else { return nil }
+        let author = modules["module_author"] as? [String: Any]
+        return BiliVideo(
+            id: bvid,
+            bvid: bvid,
+            aid: int64(ugc, "aid"),
+            title: string(ugc, "title"),
+            coverURL: normalizedURL(string(ugc, "cover")),
+            authorName: author.map { string($0, "name") } ?? "",
+            authorFaceURL: normalizedURL(author.map { string($0, "face") } ?? ""),
+            authorMid: author.map { int64($0, "mid") } ?? 0,
+            viewCount: looseCount(string(ugc, "play")),
+            danmakuCount: 0,
+            likeCount: 0,
+            duration: parseDurationText(string(ugc, "duration_text")),
+            description: "",
+            cid: 0
+        )
+    }
+
+    private nonisolated static func parseDynamicItemFallback(
+        item: [String: Any],
+        modules: [String: Any]
+    ) -> DynamicBody? {
+        if let moduleDynamic = modules["module_dynamic"] as? [String: Any],
+           let ugc = moduleDynamic["additional"] as? [String: Any],
+           let ugcBody = ugc["ugc"] as? [String: Any],
+           let video = parseAdditionalUgcVideo(ugcBody, modules: modules) {
+            return DynamicBody(video: video)
+        }
+
+        if let moduleDynamic = modules["module_dynamic"] as? [String: Any],
+           let major = moduleDynamic["major"] as? [String: Any], !major.isEmpty {
+            let inferred = parseDynamicMajor(major, modules: modules)
+            if inferred.video != nil || !inferred.imageURLs.isEmpty || inferred.link != nil {
+                return inferred
+            }
+        }
+
+        return nil
+    }
+
+    private nonisolated static func shouldShowDynamicLink(
+        text: String,
+        link: BiliDynamicLink,
+        imageURLs: [URL]
+    ) -> Bool {
+        let linkText = [link.title, link.desc].filter { !$0.isEmpty }.joined(separator: "\n")
+        if linkText.isEmpty, link.coverURL == nil { return false }
+        if !imageURLs.isEmpty {
+            if !text.isEmpty {
+                if !link.desc.isEmpty, isDuplicateDynamicText(text, link.desc) { return false }
+                if !linkText.isEmpty, isDuplicateDynamicText(text, linkText) { return false }
+            }
+            if link.coverURL != nil, link.title.isEmpty { return false }
+        }
+        if text.isEmpty { return true }
+        if linkText.isEmpty { return link.coverURL != nil && imageURLs.isEmpty }
+        return !isDuplicateDynamicText(text, linkText)
+    }
+
+    private nonisolated static func normalizeJumpURL(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        if trimmed.hasPrefix("//") { return "https:\(trimmed)" }
+        return trimmed
+    }
+
+    private nonisolated static func parseDynamicDesc(_ modules: [String: Any]) -> DynamicRichText {
+        let moduleDynamic = modules["module_dynamic"] as? [String: Any]
+        let descRich = parseDynamicRichText(moduleDynamic?["desc"] as? [String: Any])
+        if !descRich.text.isEmpty || !descRich.emoticons.isEmpty {
+            return descRich
+        }
+        if let moduleDesc = modules["module_desc"] as? [String: Any] {
+            let rich = parseDynamicRichText(moduleDesc["text"] as? [String: Any])
+            if !rich.text.isEmpty || !rich.emoticons.isEmpty {
+                return rich
+            }
+        }
+        return DynamicRichText()
+    }
+
+    private nonisolated static func parseDynamicRichText(_ obj: [String: Any]?) -> DynamicRichText {
+        guard let obj else { return DynamicRichText() }
+        var emoticons = parseEmoteMap(obj)
+        if let nodes = obj["rich_text_nodes"] as? [[String: Any]], !nodes.isEmpty {
+            var textBuilder = ""
+            for node in nodes {
+                let nodeType = string(node, "type")
+                if nodeType == "RICH_TEXT_NODE_TYPE_EMOJI" {
+                    let phrase = string(node, "text")
+                        .ifEmpty(string(node, "orig_text"))
+                        .ifEmpty(string((node["emoji"] as? [String: Any]) ?? [:], "text"))
+                    let url = normalizedURL(string((node["emoji"] as? [String: Any]) ?? [:], "icon_url"))?.absoluteString ?? ""
+                    if !phrase.isEmpty, !url.isEmpty {
+                        emoticons[phrase] = url
+                    }
+                    if !phrase.isEmpty {
+                        textBuilder += phrase
+                    }
+                } else if nodeType != "RICH_TEXT_NODE_TYPE_IMAGE" {
+                    textBuilder += string(node, "text").ifEmpty(string(node, "orig_text"))
+                }
+            }
+            return DynamicRichText(text: textBuilder.trimmingCharacters(in: .whitespacesAndNewlines), emoticons: emoticons)
+        }
+        return DynamicRichText(text: string(obj, "text").trimmingCharacters(in: .whitespacesAndNewlines), emoticons: emoticons)
+    }
+
+    private nonisolated static func parseRichTextImages(_ obj: [String: Any]?) -> [URL] {
+        guard let nodes = obj?["rich_text_nodes"] as? [[String: Any]] else { return [] }
+        return nodes.compactMap { node -> URL? in
+            guard string(node, "type") == "RICH_TEXT_NODE_TYPE_IMAGE" else { return nil }
+            return normalizedURL(string(node, "url").ifEmpty(string(node, "src")))
+        }
+    }
+
+    private nonisolated static func parseDynamicMajor(_ major: [String: Any], modules: [String: Any]) -> DynamicBody {
+        let majorType = inferDynamicMajorType(major)
+        var text = ""
+        var emoticons: [String: String] = [:]
+        var video: BiliVideo?
+        var imageURLs: [URL] = []
+        var link: BiliDynamicLink?
+
+        switch majorType {
+        case "MAJOR_TYPE_ARCHIVE":
+            video = parseDynamicArchiveVideo(major, modules: modules)
+            if video == nil {
+                link = parseDynamicArchiveLink(major)
+            }
+        case "MAJOR_TYPE_DRAW":
+            imageURLs = parseDynamicDrawImages(major)
+        case "MAJOR_TYPE_OPUS":
+            let opus = major["opus"] as? [String: Any]
+            let summaryRich = parseDynamicRichText(opus?["summary"] as? [String: Any])
+            text = summaryRich.text
+            emoticons = summaryRich.emoticons
+            imageURLs = parseDynamicOpusImages(major)
+            if imageURLs.isEmpty {
+                imageURLs = parseRichTextImages(opus?["summary"] as? [String: Any])
+            }
+            let opusTitle = string(opus ?? [:], "title")
+            if text.isEmpty, !opusTitle.isEmpty {
+                text = opusTitle
+            }
+            if imageURLs.isEmpty {
+                link = parseDynamicGenericLink(major, majorType: majorType)
+            }
+            let jumpURL = normalizeJumpURL(string(opus ?? [:], "jump_url"))
+            if let bvid = extractBvid(from: jumpURL), !bvid.isEmpty {
+                let author = modules["module_author"] as? [String: Any]
+                video = BiliVideo(
+                    id: bvid,
+                    bvid: bvid,
+                    aid: 0,
+                    title: opusTitle,
+                    coverURL: imageURLs.first,
+                    authorName: author.map { string($0, "name") } ?? "",
+                    authorFaceURL: normalizedURL(author.map { string($0, "face") } ?? ""),
+                    authorMid: author.map { int64($0, "mid") } ?? 0,
+                    viewCount: 0,
+                    danmakuCount: 0,
+                    likeCount: 0,
+                    duration: 0,
+                    description: "",
+                    cid: 0
+                )
+                link = nil
+            }
+        case "MAJOR_TYPE_LIVE_RCMD":
+            let liveContent = string((major["live_rcmd"] as? [String: Any]) ?? [:], "content")
+            if let liveJSON = liveContent.data(using: .utf8),
+               let live = try? JSONSerialization.jsonObject(with: liveJSON) as? [String: Any] {
+                link = parseDynamicLiveLink(live)
+            }
+        case "MAJOR_TYPE_LIVE":
+            link = parseDynamicLiveLink(major["live"] as? [String: Any])
+        case "MAJOR_TYPE_MUSIC":
+            link = parseDynamicMusicLink(major["music"] as? [String: Any])
+        case "MAJOR_TYPE_NONE":
+            text = string((major["none"] as? [String: Any]) ?? [:], "tips")
+        default:
+            link = parseDynamicGenericLink(major, majorType: majorType)
+        }
+
+        return DynamicBody(text: text, emoticons: emoticons, video: video, imageURLs: imageURLs, link: link)
+    }
+
+    private nonisolated static func inferDynamicMajorType(_ major: [String: Any]) -> String {
+        let explicit = string(major, "type")
+        if !explicit.isEmpty { return explicit }
+        if major["archive"] != nil { return "MAJOR_TYPE_ARCHIVE" }
+        if major["draw"] != nil { return "MAJOR_TYPE_DRAW" }
+        if major["opus"] != nil { return "MAJOR_TYPE_OPUS" }
+        if major["article"] != nil { return "MAJOR_TYPE_ARTICLE" }
+        if major["live"] != nil { return "MAJOR_TYPE_LIVE" }
+        return "MAJOR_TYPE_NONE"
+    }
+
+    private nonisolated static func parseDynamicArchiveVideo(_ major: [String: Any], modules: [String: Any]) -> BiliVideo? {
+        guard let archive = major["archive"] as? [String: Any] else { return nil }
+        let bvid = string(archive, "bvid")
+        guard !bvid.isEmpty else { return nil }
+        let author = modules["module_author"] as? [String: Any]
+        let stat = archive["stat"] as? [String: Any] ?? [:]
+        let like = (modules["module_stat"] as? [String: Any])?["like"] as? [String: Any] ?? [:]
+        return BiliVideo(
+            id: bvid,
+            bvid: bvid,
+            aid: int64(archive, "aid"),
+            title: string(archive, "title"),
+            coverURL: normalizedURL(string(archive, "cover")),
+            authorName: author.map { string($0, "name") } ?? "",
+            authorFaceURL: normalizedURL(author.map { string($0, "face") } ?? ""),
+            authorMid: author.map { int64($0, "mid") } ?? 0,
+            viewCount: looseCount(string(stat, "play")),
+            danmakuCount: looseCount(string(stat, "danmaku")),
+            likeCount: int64(like, "count"),
+            duration: parseDurationText(string(archive, "duration_text")),
+            description: string(archive, "desc"),
+            cid: 0
+        )
+    }
+
+    private nonisolated static func parseDynamicArchiveLink(_ major: [String: Any]) -> BiliDynamicLink? {
+        guard let archive = major["archive"] as? [String: Any] else { return nil }
+        let jumpURL = string(archive, "jump_url")
+        guard !jumpURL.isEmpty else { return nil }
+        return BiliDynamicLink(
+            title: string(archive, "title"),
+            url: jumpURL,
+            coverURL: normalizedURL(string(archive, "cover")),
+            desc: string(archive, "desc")
+        )
+    }
+
+    private nonisolated static func parseDynamicDrawImages(_ major: [String: Any]) -> [URL] {
+        guard let items = (major["draw"] as? [String: Any])?["items"] as? [[String: Any]] else { return [] }
+        return items.compactMap { normalizedURL(string($0, "src").ifEmpty(string($0, "url"))) }
+    }
+
+    private nonisolated static func parseDynamicOpusImages(_ major: [String: Any]) -> [URL] {
+        guard let pics = (major["opus"] as? [String: Any])?["pics"] as? [[String: Any]] else { return [] }
+        return pics.compactMap { normalizedURL(string($0, "url").ifEmpty(string($0, "src"))) }
+    }
+
+    private nonisolated static func parseDynamicLiveLink(_ live: [String: Any]?) -> BiliDynamicLink? {
+        guard let live else { return nil }
+        let url = normalizeJumpURL(string(live, "jump_url"))
+        guard !url.isEmpty else { return nil }
+        return BiliDynamicLink(
+            title: string(live, "title"),
+            url: url,
+            coverURL: normalizedURL(string(live, "cover")),
+            desc: ""
+        )
+    }
+
+    private nonisolated static func parseDynamicMusicLink(_ music: [String: Any]?) -> BiliDynamicLink? {
+        guard let music else { return nil }
+        let url = normalizeJumpURL(string(music, "jump_url"))
+        guard !url.isEmpty else { return nil }
+        return BiliDynamicLink(
+            title: string(music, "title"),
+            url: url,
+            coverURL: normalizedURL(string(music, "cover")),
+            desc: string(music, "desc")
+        )
+    }
+
+    private nonisolated static func extractBvid(from url: String) -> String? {
+        guard !url.isEmpty else { return nil }
+        if let range = url.range(of: #"BV[0-9A-Za-z]+"#, options: .regularExpression) {
+            return String(url[range])
+        }
+        return nil
+    }
+
+    private nonisolated static func parseDynamicGenericLink(_ major: [String: Any], majorType: String) -> BiliDynamicLink? {
+        switch majorType {
+        case "MAJOR_TYPE_ARTICLE":
+            guard let article = major["article"] as? [String: Any] else { return nil }
+            let url = string(article, "jump_url")
+            guard !url.isEmpty else { return nil }
+            return BiliDynamicLink(
+                title: string(article, "title"),
+                url: url,
+                coverURL: normalizedURL(string(article, "covers").split(separator: ",").first.map(String.init) ?? ""),
+                desc: string(article, "desc")
+            )
+        case "MAJOR_TYPE_LIVE":
+            guard let live = major["live"] as? [String: Any] else { return nil }
+            let url = string(live, "jump_url")
+            guard !url.isEmpty else { return nil }
+            return BiliDynamicLink(
+                title: string(live, "title"),
+                url: url,
+                coverURL: normalizedURL(string(live, "cover")),
+                desc: ""
+            )
+        default:
+            return nil
+        }
+    }
+
+    private nonisolated static func parseModuleAuthorName(_ modules: [String: Any]) -> String {
+        let author = modules["module_author"] as? [String: Any] ?? [:]
+        return string(author, "name").ifEmpty(string(author, "uname"))
+    }
+
+    private nonisolated static func parseDynamicStatCount(_ stat: [String: Any]?, key: String) -> Int64 {
+        guard let bucket = stat?[key] as? [String: Any] else { return 0 }
+        return int64(bucket, "count").ifZero(looseCount(string(bucket, "count")))
+    }
+
+    private nonisolated static func mergeDynamicText(_ parts: String...) -> String {
+        parts.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private nonisolated static func isDuplicateDynamicText(_ primary: String, _ secondary: String) -> Bool {
+        let a = primary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let b = secondary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !a.isEmpty, !b.isEmpty else { return false }
+        if a == b { return true }
+        let compactA = a.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
+        let compactB = b.replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
+        if compactA == compactB { return true }
+        return compactA.contains(compactB) || compactB.contains(compactA)
     }
 }
 

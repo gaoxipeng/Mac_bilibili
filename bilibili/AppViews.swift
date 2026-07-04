@@ -137,10 +137,7 @@ enum VideoCardLayout {
         columnWidth: CGFloat,
         metrics: RowLayoutMetrics
     ) -> CGFloat {
-        let fallback = titleLineHeight(for: metrics)
-        return titles
-            .map { titleAreaHeight(for: $0, columnWidth: columnWidth, metrics: metrics) }
-            .max() ?? fallback
+        titleLineHeight(for: metrics) * 2
     }
 
     static func coverHeight(columnWidth: CGFloat) -> CGFloat {
@@ -266,7 +263,7 @@ struct VideoFeedGrid<Trailing: View>: View {
     var showsLikeCount = true
     var maxColumnCount: Int? = nil
     @ViewBuilder var trailing: () -> Trailing
-    @State private var availableWidth: CGFloat = 0
+    @Environment(\.feedViewportWidth) private var feedViewportWidth
 
     init(
         videos: [BiliVideo],
@@ -290,7 +287,7 @@ struct VideoFeedGrid<Trailing: View>: View {
         let metrics = VideoCardLayout.RowLayoutMetrics.feed(largeTypography: largeTypography)
         let rows = VideoCardLayout.rowChunks(videos, columnCount: columnCount)
 
-        VStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
+        LazyVStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
             ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                 let titleAreaHeight = VideoCardLayout.rowTitleAreaHeight(
                     titles: row.map(\.title),
@@ -320,31 +317,14 @@ struct VideoFeedGrid<Trailing: View>: View {
             trailing()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            GeometryReader { geometry in
-                Color.clear
-                    .preference(key: FeedAvailableWidthPreferenceKey.self, value: geometry.size.width)
-            }
-        }
-        .onPreferenceChange(FeedAvailableWidthPreferenceKey.self) { width in
-            guard width > 0, abs(width - availableWidth) > 0.5 else { return }
-            availableWidth = width
-        }
     }
 
     private var resolvedLayoutWidth: CGFloat {
-        if availableWidth > 0 {
-            return availableWidth
+        let width = AppLayout.feedContentWidth(viewportWidth: feedViewportWidth)
+        if width > 0 {
+            return width
         }
         return VideoCardLayout.minWidth * 2 + VideoCardLayout.gridSpacing
-    }
-}
-
-private struct FeedAvailableWidthPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
     }
 }
 
@@ -378,6 +358,7 @@ struct FollowingView: View {
                     )
 
                     VideoFeedGrid(videos: videos, largeTypography: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
                     if hasMore, !videos.isEmpty {
                         FeedLoadMoreFooter(
@@ -423,6 +404,7 @@ struct FavoritesView: View {
                     )
 
                     VideoFeedGrid(videos: videos, largeTypography: true, showsLikeCount: false)
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
                     if hasMore, !videos.isEmpty {
                         FeedLoadMoreFooter(
@@ -460,6 +442,7 @@ struct VideoGridView: View {
                 StateBanner(loading: loading, error: error, isEmpty: videos.isEmpty, emptyTitle: emptyTitle)
 
                 VideoFeedGrid(videos: videos)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 if hasMore, !videos.isEmpty {
                     FeedLoadMoreFooter(
@@ -587,7 +570,7 @@ private struct HistoryDateSection: View {
 private struct HistoryItemsGrid: View {
     let items: [BiliHistoryItem]
     let onDelete: (BiliHistoryItem) -> Void
-    @State private var availableWidth: CGFloat = 0
+    @Environment(\.feedViewportWidth) private var feedViewportWidth
 
     var body: some View {
         let layoutWidth = resolvedLayoutWidth
@@ -614,21 +597,13 @@ private struct HistoryItemsGrid: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            GeometryReader { geometry in
-                Color.clear
-                    .preference(key: FeedAvailableWidthPreferenceKey.self, value: geometry.size.width)
-            }
-        }
-        .onPreferenceChange(FeedAvailableWidthPreferenceKey.self) { width in
-            guard width > 0, abs(width - availableWidth) > 0.5 else { return }
-            availableWidth = width
-        }
     }
 
     private var resolvedLayoutWidth: CGFloat {
-        if availableWidth > 0 {
-            return availableWidth
+        let contentWidth = AppLayout.feedContentWidth(viewportWidth: feedViewportWidth)
+        let historyWidth = max(0, contentWidth - HistoryLayout.sectionLabelWidth - 16)
+        if historyWidth > 0 {
+            return historyWidth
         }
         return VideoCardLayout.minWidth * 2 + VideoCardLayout.gridSpacing
     }
@@ -664,6 +639,28 @@ private struct HistoryVideoCard: View {
         return min(1, Double(item.progressSeconds) / Double(duration))
     }
 
+    private var playbackRequest: VideoPlaybackRequest {
+        VideoPlaybackRequest(
+            video,
+            progressSeconds: item.progressSeconds,
+            epid: item.epid,
+            refererURL: item.webURI
+        )
+    }
+
+    private var authorDisplayName: String {
+        if !video.authorName.isEmpty {
+            return video.authorName
+        }
+        if !item.badge.isEmpty {
+            return item.badge
+        }
+        if item.business == .pgc {
+            return "番剧"
+        }
+        return video.authorName
+    }
+
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: VideoCardLayout.cornerRadius, style: .continuous)
         VStack(alignment: .leading, spacing: 0) {
@@ -688,7 +685,7 @@ private struct HistoryVideoCard: View {
     }
 
     private func coverSection(shape: RoundedRectangle) -> some View {
-        NavigationLink(value: VideoPlaybackRequest(video, progressSeconds: item.progressSeconds)) {
+        NavigationLink(value: playbackRequest) {
             ZStack(alignment: .bottomTrailing) {
                 RemoteCover(
                     url: video.coverURL,
@@ -735,7 +732,7 @@ private struct HistoryVideoCard: View {
                 title: video.title,
                 font: .title3.weight(.medium),
                 areaHeight: titleAreaHeight,
-                destination: VideoPlaybackRequest(video, progressSeconds: item.progressSeconds)
+                destination: playbackRequest
             )
 
             authorRow
@@ -790,7 +787,7 @@ private struct HistoryVideoCard: View {
 
     private var authorIdentityContent: some View {
         FeedCardAuthorLabel(
-            name: video.authorName,
+            name: authorDisplayName,
             font: .body,
             avatarURL: video.authorFaceURL,
             avatarSize: 26
@@ -890,23 +887,13 @@ struct StateBanner: View {
     let emptyTitle: String
 
     var body: some View {
-        if loading {
-            HStack(spacing: 10) {
-                ProgressView()
-                    .controlSize(.small)
-                Text("正在加载")
-                    .foregroundStyle(.secondary)
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .materialPanel()
-        } else if let error {
+        if let error {
             Label(error, systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.orange)
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .materialPanel()
-        } else if isEmpty {
+        } else if isEmpty, !loading {
             ContentUnavailableView(emptyTitle, systemImage: "tray")
                 .padding(40)
                 .materialPanel()

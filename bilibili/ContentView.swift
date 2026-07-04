@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var navigationPath = NavigationPath()
     @State private var detailChrome: VideoDetailChromeInfo?
     @State private var detailChromeHeight: CGFloat = 0
+    @State private var profileChrome: UserProfileChromeInfo?
 
     var body: some View {
         HStack(spacing: 0) {
@@ -51,7 +52,9 @@ struct ContentView: View {
                         VideoDetailView(
                             video: request.video,
                             credential: model.account?.credential,
-                            initialProgressSeconds: request.progressSeconds
+                            initialProgressSeconds: request.progressSeconds,
+                            playbackEpid: request.epid,
+                            playbackRefererURL: request.refererURL
                         )
                     }
                     .navigationDestination(for: UserProfileRequest.self) { request in
@@ -62,11 +65,19 @@ struct ContentView: View {
                             credential: model.account?.credential,
                             viewerMid: model.account.flatMap { Int64($0.uid) }
                         )
+                        .environmentObject(model)
+                    }
+                    .navigationDestination(for: DynamicDetailRequest.self) { request in
+                        DynamicDetailView(
+                            item: request.item,
+                            credential: model.account?.credential
+                        )
                     }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onPreferenceChange(VideoDetailChromePreferenceKey.self) { detailChrome = $0 }
             .onPreferenceChange(VideoDetailChromeMeasuredHeightKey.self) { detailChromeHeight = $0 }
+            .onPreferenceChange(UserProfileChromePreferenceKey.self) { profileChrome = $0 }
             .environment(\.videoDetailChromeHeight, detailChromeHeight)
 
             DetailFloatingChrome(
@@ -77,6 +88,7 @@ struct ContentView: View {
                     && navigationPath.isEmpty
                     && model.selectedSection == .search,
                 detailChrome: detailChrome,
+                profileChrome: profileChrome,
                 onExitSearchResults: {
                     model.requestExitSearchResults()
                 }
@@ -86,6 +98,8 @@ struct ContentView: View {
             if count == 0 {
                 detailChrome = nil
                 detailChromeHeight = 0
+                profileChrome = nil
+                model.clearProfilePageHandlers()
                 VideoFullscreenPresenter.restoreMainWindowAppearance()
                 MediaPlaybackCoordinator.shared.stopAll()
                 Task { await model.refreshSectionAfterReturningFromDetail() }
@@ -117,7 +131,7 @@ struct ContentView: View {
         case .home:
             VideoGridView(
                 videos: model.homeVideos,
-                loading: model.isLoading,
+                loading: model.isSectionLoading(.home),
                 error: model.errorMessage,
                 emptyTitle: "暂无推荐内容",
                 compactHeader: true,
@@ -131,7 +145,7 @@ struct ContentView: View {
         case .following:
             FollowingView(
                 videos: model.followingVideos,
-                loading: model.isLoading,
+                loading: model.isSectionLoading(.following),
                 loadingMore: model.followingLoadingMore,
                 hasMore: model.followingHasMore,
                 error: model.errorMessage,
@@ -143,7 +157,7 @@ struct ContentView: View {
         case .hot:
             VideoGridView(
                 videos: model.hotVideos,
-                loading: model.isLoading,
+                loading: model.isSectionLoading(.hot),
                 error: model.errorMessage,
                 emptyTitle: "排行榜为空",
                 showsPageHeader: false
@@ -151,7 +165,7 @@ struct ContentView: View {
         case .history:
             HistoryView(
                 items: model.historyItems,
-                loading: model.isLoading,
+                loading: model.isSectionLoading(.history),
                 loadingMore: model.historyLoadingMore,
                 hasMore: model.historyHasMore,
                 error: model.errorMessage,
@@ -166,7 +180,7 @@ struct ContentView: View {
         case .favorites:
             FavoritesView(
                 videos: model.favoriteVideos,
-                loading: model.isLoading,
+                loading: model.isSectionLoading(.favorites),
                 loadingMore: model.favoriteLoadingMore,
                 hasMore: model.favoriteHasMore,
                 error: model.errorMessage,
@@ -198,46 +212,21 @@ private struct DetailFloatingChrome: View {
     let canGoBack: Bool
     let canExitSearchResults: Bool
     let detailChrome: VideoDetailChromeInfo?
+    let profileChrome: UserProfileChromeInfo?
     let onExitSearchResults: () -> Void
 
-    /// UP 主等页面在 banner 内嵌返回；此处仅负责视频详情与搜索退出。
     private var showsFloatingBackButton: Bool {
-        canExitSearchResults || (canGoBack && detailChrome != nil)
+        canExitSearchResults || (canGoBack && (detailChrome != nil || profileChrome != nil))
     }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            if showsFloatingBackButton {
-                GlassBackButton {
-                    if canGoBack {
-                        if !navigationPath.isEmpty {
-                            navigationPath.removeLast()
-                        }
-                    } else {
-                        onExitSearchResults()
-                    }
-                }
-            }
-
+        Group {
             if let detailChrome {
-                VideoDetailChromeHeaderView(info: detailChrome)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                if let webURL = detailChrome.webURL {
-                    GlassMoreButton(webURL: webURL)
-                }
+                detailChromeRow(detailChrome)
+            } else if let profileChrome {
+                profileChromeRow(profileChrome)
             } else {
-                if !showsFloatingBackButton {
-                    Spacer()
-                }
-
-                if !showsFloatingBackButton {
-                    GlassRefreshButton {
-                        Task { await model.reloadSelected() }
-                    }
-                    .disabled(model.isLoading)
-                    .opacity(model.isLoading ? 0.45 : 1)
-                }
+                defaultChromeRow
             }
         }
         .padding(.horizontal, AppLayout.floatingChromeInset)
@@ -247,13 +236,93 @@ private struct DetailFloatingChrome: View {
             GeometryReader { geometry in
                 Color.clear.preference(
                     key: VideoDetailChromeMeasuredHeightKey.self,
-                    value: detailChrome == nil ? 0 : geometry.size.height
+                    value: (detailChrome == nil && profileChrome == nil) ? 0 : geometry.size.height
                 )
             }
         }
         .animation(.easeOut(duration: 0.26), value: showsFloatingBackButton)
         .animation(.easeOut(duration: 0.26), value: canGoBack)
         .animation(.easeOut(duration: 0.26), value: detailChrome?.title)
+        .animation(.easeOut(duration: 0.26), value: profileChrome?.coverIsLight)
+    }
+
+    @ViewBuilder
+    private func detailChromeRow(_ detailChrome: VideoDetailChromeInfo) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            if showsFloatingBackButton {
+                profileBackButton
+            }
+
+            VideoDetailChromeHeaderView(info: detailChrome)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let webURL = detailChrome.webURL {
+                GlassMoreButton(webURL: webURL)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func profileChromeRow(_ profileChrome: UserProfileChromeInfo) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            if showsFloatingBackButton {
+                profileBackButton
+                    .padding(.top, 10)
+            }
+
+            UserProfileChromeHeaderView(info: profileChrome)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            profileChromeActions(profileChrome)
+                .padding(.top, 10)
+        }
+    }
+
+    @ViewBuilder
+    private func profileChromeActions(_ profileChrome: UserProfileChromeInfo) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            if profileChrome.showFollowButton {
+                AuthorFollowButton(
+                    isFollowing: profileChrome.isFollowing,
+                    followerCount: profileChrome.followerCount,
+                    isLoading: profileChrome.followLoading,
+                    onFollow: { model.profilePageHandlers?.follow() },
+                    onUnfollow: { model.profilePageHandlers?.unfollow() }
+                )
+            }
+
+            GlassMoreButton(webURL: profileChrome.webURL)
+        }
+    }
+
+    @ViewBuilder
+    private var defaultChromeRow: some View {
+        HStack(alignment: .top, spacing: 12) {
+            if !showsFloatingBackButton {
+                Spacer()
+            }
+
+            if !showsFloatingBackButton {
+                GlassRefreshButton {
+                    Task { await model.reloadSelected() }
+                }
+                .disabled(model.isSectionLoading(model.selectedSection))
+                .opacity(model.isSectionLoading(model.selectedSection) ? 0.45 : 1)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var profileBackButton: some View {
+        GlassBackButton {
+            if canGoBack {
+                if !navigationPath.isEmpty {
+                    navigationPath.removeLast()
+                }
+            } else {
+                onExitSearchResults()
+            }
+        }
     }
 }
 

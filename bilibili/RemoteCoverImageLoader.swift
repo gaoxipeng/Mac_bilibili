@@ -18,6 +18,7 @@ final class RemoteCoverImageLoader: ObservableObject {
         return cache
     }()
     private static let maxPixelLength = 720
+    static let fullscreenMaxPixelLength = 4096
     private static let loadGate = ImageLoadGate(limit: 4)
 
     func load(url: URL?, targetSize: CGSize, scale: CGFloat) {
@@ -25,13 +26,13 @@ final class RemoteCoverImageLoader: ObservableObject {
         load(url: url, maxPixelLength: maxPixel)
     }
 
-    func load(url: URL?, maxPixelLength: Int) {
+    func load(url: URL?, maxPixelLength: Int, pixelCap: Int = RemoteCoverImageLoader.maxPixelLength) {
         guard let url else {
             resetForMissingURL()
             return
         }
 
-        let maxPixel = Self.normalizedPixelLength(maxPixelLength)
+        let maxPixel = Self.normalizedPixelLength(maxPixelLength, cap: pixelCap)
         let key = Self.cacheKey(url: url, maxPixelLength: maxPixel)
         guard key != currentKey else { return }
         currentKey = key
@@ -88,14 +89,14 @@ final class RemoteCoverImageLoader: ObservableObject {
         return normalizedPixelLength(max(240, pixels))
     }
 
-    static func cachedImage(url: URL?, maxPixelLength: Int) -> NSImage? {
+    static func cachedImage(url: URL?, maxPixelLength: Int, pixelCap: Int = maxPixelLength) -> NSImage? {
         guard let url else { return nil }
-        let maxPixel = normalizedPixelLength(maxPixelLength)
+        let maxPixel = normalizedPixelLength(maxPixelLength, cap: pixelCap)
         return cache.object(forKey: cacheKey(url: url, maxPixelLength: maxPixel) as NSString)
     }
 
-    private static func normalizedPixelLength(_ pixelLength: Int) -> Int {
-        min(maxPixelLength, max(120, pixelLength))
+    private static func normalizedPixelLength(_ pixelLength: Int, cap: Int = maxPixelLength) -> Int {
+        min(cap, max(120, pixelLength))
     }
 
     private static func cacheKey(url: URL, maxPixelLength: Int) -> String {

@@ -137,7 +137,10 @@ enum VideoCardLayout {
         columnWidth: CGFloat,
         metrics: RowLayoutMetrics
     ) -> CGFloat {
-        titleLineHeight(for: metrics) * 2
+        let fallback = titleLineHeight(for: metrics)
+        return titles
+            .map { titleAreaHeight(for: $0, columnWidth: columnWidth, metrics: metrics) }
+            .max() ?? fallback
     }
 
     static func coverHeight(columnWidth: CGFloat) -> CGFloat {
@@ -239,6 +242,8 @@ struct FeedLoadMoreFooter: View {
     let loadingMore: Bool
     let onLoadMore: () -> Void
 
+    @State private var requestedWhileVisible = false
+
     var body: some View {
         ZStack {
             Color.clear
@@ -253,10 +258,13 @@ struct FeedLoadMoreFooter: View {
         }
         .frame(maxWidth: .infinity, minHeight: 24)
         .padding(.vertical, 8)
-        .id("feed-load-more-\(anchorID)")
         .onAppear {
-            guard hasMore, !loadingMore else { return }
+            guard hasMore, !loadingMore, !requestedWhileVisible else { return }
+            requestedWhileVisible = true
             onLoadMore()
+        }
+        .onDisappear {
+            requestedWhileVisible = false
         }
     }
 }
@@ -688,7 +696,7 @@ struct HistoryView: View {
                         .zIndex(0)
 
                     ScrollView {
-                        VStack(alignment: .leading, spacing: HistoryLayout.sectionSpacing) {
+                        LazyVStack(alignment: .leading, spacing: HistoryLayout.sectionSpacing) {
                             StateBanner(
                                 loading: loading,
                                 error: error,
@@ -1786,6 +1794,7 @@ struct RemoteCover: View {
     var height: CGFloat?
     var appliesCornerClip = true
     var allowsOverflow = false
+    var placeholderSystemImage = "play.rectangle"
     @StateObject private var imageLoader = RemoteCoverImageLoader()
     @Environment(\.displayScale) private var displayScale
 
@@ -1827,9 +1836,9 @@ struct RemoteCover: View {
                     .resizable()
                     .scaledToFill()
             } else if imageLoader.failed {
-                placeholder(systemImage: "photo")
+                placeholder(systemImage: placeholderSystemImage)
             } else {
-                placeholder(systemImage: "play.rectangle")
+                placeholder(systemImage: placeholderSystemImage)
             }
         }
     }

@@ -291,13 +291,25 @@ final class AppModel: ObservableObject {
                 credential: credential,
                 cursorMax: cursor.max,
                 viewAt: cursor.viewAt,
-                business: cursor.business
+                business: cursor.business,
+                pageSize: cursor.ps > 0 ? cursor.ps : 30
             )
             let merged = JSONParser.deduplicatedHistoryItems(historyItems + page.items)
             let addedCount = merged.count - historyItems.count
+            let cursorAdvanced = page.cursor.map { next in
+                next.max != cursor.max
+                    || next.viewAt != cursor.viewAt
+                    || next.business != cursor.business
+            } ?? false
             historyItems = merged
             historyCursor = page.cursor
-            historyHasMore = page.hasMore && addedCount > 0
+            if !page.hasMore || page.items.isEmpty {
+                historyHasMore = false
+            } else if addedCount > 0 || cursorAdvanced {
+                historyHasMore = true
+            } else {
+                historyHasMore = false
+            }
         } catch {
             errorMessage = error.localizedDescription
         }

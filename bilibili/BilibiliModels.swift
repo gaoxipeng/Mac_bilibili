@@ -27,7 +27,7 @@ struct BiliHistoryCursor: Sendable {
     let ps: Int
 
     var hasMore: Bool {
-        ps > 0 && max > 0
+        ps > 0
     }
 }
 
@@ -486,6 +486,30 @@ enum BiliCommentSort: String, CaseIterable, Sendable {
     }
 }
 
+struct BiliCommentPicture: Hashable, Sendable {
+    let url: URL
+    let width: Int
+    let height: Int
+
+    var aspectRatio: CGFloat {
+        guard width > 0, height > 0 else { return 1 }
+        return CGFloat(width) / CGFloat(height)
+    }
+
+    func thumbnailSize(maxWidth: CGFloat = 168, maxHeight: CGFloat = 126) -> CGSize {
+        guard width > 0, height > 0 else {
+            return CGSize(width: min(maxWidth, 120), height: min(maxWidth, 120))
+        }
+        var fittedWidth = min(maxWidth, CGFloat(width))
+        var fittedHeight = fittedWidth / aspectRatio
+        if fittedHeight > maxHeight {
+            fittedHeight = maxHeight
+            fittedWidth = fittedHeight * aspectRatio
+        }
+        return CGSize(width: max(1, fittedWidth), height: max(1, fittedHeight))
+    }
+}
+
 struct BiliCommentItem: Identifiable, Hashable, Sendable {
     let id: Int64
     let authorMid: Int64
@@ -498,6 +522,7 @@ struct BiliCommentItem: Identifiable, Hashable, Sendable {
     let publishTime: Date?
     let ipLocation: String?
     let emoticons: [String: String]
+    let pictures: [BiliCommentPicture]
     let replies: [BiliCommentItem]
     var loadedReplies: [BiliCommentItem]
     var repliesEnd: Bool
@@ -515,6 +540,7 @@ struct BiliCommentItem: Identifiable, Hashable, Sendable {
         publishTime: Date?,
         ipLocation: String?,
         emoticons: [String: String] = [:],
+        pictures: [BiliCommentPicture] = [],
         replies: [BiliCommentItem] = [],
         loadedReplies: [BiliCommentItem]? = nil,
         repliesEnd: Bool = false,
@@ -531,6 +557,7 @@ struct BiliCommentItem: Identifiable, Hashable, Sendable {
         self.publishTime = publishTime
         self.ipLocation = ipLocation
         self.emoticons = emoticons
+        self.pictures = pictures
         self.replies = replies
         self.loadedReplies = loadedReplies ?? replies
         self.repliesEnd = repliesEnd

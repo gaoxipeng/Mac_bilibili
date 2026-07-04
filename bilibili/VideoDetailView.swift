@@ -930,6 +930,7 @@ final class VideoDetailModel: ObservableObject {
                 publishTime: comment.publishTime,
                 ipLocation: comment.ipLocation,
                 emoticons: comment.emoticons,
+                pictures: comment.pictures,
                 replies: comment.replies,
                 loadedReplies: merged,
                 repliesEnd: page.isEnd,
@@ -949,6 +950,35 @@ struct VideoDetailChromeInfo: Equatable {
     let publishTime: Date?
     let onlineCount: Int64
     let webURL: URL?
+    let authorFaceURL: URL?
+    let authorName: String?
+    let authorLevel: Int
+
+    init(
+        title: String,
+        viewCount: Int64,
+        danmakuCount: Int64,
+        publishTime: Date?,
+        onlineCount: Int64,
+        webURL: URL?,
+        authorFaceURL: URL? = nil,
+        authorName: String? = nil,
+        authorLevel: Int = 0
+    ) {
+        self.title = title
+        self.viewCount = viewCount
+        self.danmakuCount = danmakuCount
+        self.publishTime = publishTime
+        self.onlineCount = onlineCount
+        self.webURL = webURL
+        self.authorFaceURL = authorFaceURL
+        self.authorName = authorName
+        self.authorLevel = authorLevel
+    }
+
+    var showsAuthorHeader: Bool {
+        authorName != nil
+    }
 }
 
 struct VideoDetailChromePreferenceKey: PreferenceKey {
@@ -963,6 +993,54 @@ struct VideoDetailChromeHeaderView: View {
     let info: VideoDetailChromeInfo
 
     var body: some View {
+        if info.showsAuthorHeader {
+            authorHeader
+        } else {
+            videoHeader
+        }
+    }
+
+    private var authorHeader: some View {
+        HStack(alignment: .center, spacing: 12) {
+            AsyncImage(url: info.authorFaceURL) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFill()
+                default:
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: 40, height: 40)
+            .background(Color.black.opacity(0.06), in: Circle())
+            .clipShape(Circle())
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text(info.authorName ?? "用户")
+                        .font(.title2.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+
+                    if info.authorLevel > 0 {
+                        BiliUserLevelIcon(level: info.authorLevel, width: 26, height: 16)
+                    }
+                }
+
+                if let publishTime = info.publishTime {
+                    Text(BiliCommentFormats.formatTime(publishTime))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var videoHeader: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(info.title)
                 .font(.title)
@@ -1018,6 +1096,7 @@ struct VideoDetailView: View {
     @State private var showLogin = false
     @StateObject private var webSession = BilibiliWebSession()
     @State private var publishesFloatingChrome = false
+    @State private var commentFullscreenPictureURL: URL?
 
     private func updateFloatingChrome() {
         if publishesFloatingChrome {
@@ -1110,6 +1189,7 @@ struct VideoDetailView: View {
                 }
             }
         }
+        .commentImageFullscreenOverlay(imageURL: $commentFullscreenPictureURL)
     }
 
     private func playerMaxHeight(
@@ -1243,14 +1323,15 @@ struct VideoDetailView: View {
 
             GeometryReader { geometry in
                 ScrollViewReader { proxy in
-                    MacOverlayScrollView(usesOverlayScrollers: false) {
+                    MacOverlayScrollView(usesOverlayScrollers: false, clipsContent: true) {
                         Color.clear
                             .frame(height: 0)
                             .id(CommentsScrollAnchor.top)
 
                         VideoCommentsPanel(
                             model: model,
-                            contentMinHeight: geometry.size.height
+                            contentMinHeight: geometry.size.height,
+                            onPictureSelect: { commentFullscreenPictureURL = $0 }
                         )
                         .padding(.horizontal, AppLayout.videoDetailCardPadding)
                         .padding(.bottom, AppLayout.videoDetailCardPadding)
@@ -2278,6 +2359,7 @@ private enum CommentsScrollAnchor {
 private struct VideoCommentsPanel: View {
     @ObservedObject var model: VideoDetailModel
     var contentMinHeight: CGFloat = 0
+    var onPictureSelect: (URL) -> Void = { _ in }
 
     var body: some View {
         Group {
@@ -2343,18 +2425,20 @@ private struct VideoCommentsPanel: View {
     }
 
     private var commentList: some View {
-        LazyVStack(alignment: .leading, spacing: 4) {
+        LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(model.comments) { comment in
                 CommentRow(
                     comment: comment,
                     nested: false,
-                    videoAuthorMid: model.displayVideo.authorMid
+                    videoAuthorMid: model.displayVideo.authorMid,
+                    onPictureSelect: onPictureSelect
                 )
                 ForEach(comment.loadedReplies) { reply in
                     CommentRow(
                         comment: reply,
                         nested: true,
-                        videoAuthorMid: model.displayVideo.authorMid
+                        videoAuthorMid: model.displayVideo.authorMid,
+                        onPictureSelect: onPictureSelect
                     )
                 }
                 if comment.replyCount > Int64(comment.loadedReplies.count), !comment.repliesEnd {
@@ -2369,7 +2453,7 @@ private struct VideoCommentsPanel: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.leading, nestedReplyIndent)
                             .padding(.top, 2)
-                            .padding(.bottom, 6)
+                            .padding(.bottom, 2)
                     }
                     .buttonStyle(.plain)
                 }
@@ -2415,6 +2499,7 @@ private struct CommentRow: View {
     let comment: BiliCommentItem
     let nested: Bool
     let videoAuthorMid: Int64
+    let onPictureSelect: (URL) -> Void
 
     private var isVideoAuthor: Bool {
         videoAuthorMid > 0 && comment.authorMid == videoAuthorMid
@@ -2439,7 +2524,7 @@ private struct CommentRow: View {
             .frame(width: nested ? 28 : 34, height: nested ? 28 : 34)
             .clipShape(Circle())
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .center, spacing: 6) {
                     Text(comment.authorName.ifEmpty("用户"))
                         .font(.system(size: nested ? 14 : 15, weight: .semibold))
@@ -2468,12 +2553,16 @@ private struct CommentRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
+                if !comment.pictures.isEmpty {
+                    CommentPictureAttachments(pictures: comment.pictures, onSelect: onPictureSelect)
+                }
+
                 commentMetaRow
             }
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, nested ? 8 : 12)
+        .padding(.vertical, nested ? 4 : 6)
     }
 
     private var commentMetaRow: some View {

@@ -511,3 +511,205 @@ private struct BiliCommentSortLinesIcon: View {
         }
     }
 }
+
+struct CommentPictureAttachments: View {
+    let pictures: [BiliCommentPicture]
+    var onSelect: (URL) -> Void
+
+    var body: some View {
+        if !pictures.isEmpty {
+            FlowLayout(spacing: 8) {
+                ForEach(pictures, id: \.self) { picture in
+                    CommentPictureThumbnail(picture: picture) {
+                        onSelect(picture.url)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 2)
+        }
+    }
+}
+
+private struct CommentPictureThumbnail: View {
+    let picture: BiliCommentPicture
+    let onTap: () -> Void
+
+    @State private var isHovered = false
+
+    private var size: CGSize {
+        picture.thumbnailSize()
+    }
+
+    var body: some View {
+        Button(action: onTap) {
+            RemoteCover(
+                url: picture.url,
+                aspectRatio: picture.aspectRatio,
+                width: size.width,
+                height: size.height,
+                appliesCornerClip: true,
+                placeholderSystemImage: "photo"
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(Color.black.opacity(isHovered ? 0.14 : 0.08), lineWidth: 0.8)
+            }
+            .shadow(color: .black.opacity(isHovered ? 0.08 : 0.04), radius: isHovered ? 6 : 3, y: 2)
+            .scaleEffect(isHovered ? 1.02 : 1)
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovered = $0 }
+        .animation(.easeOut(duration: 0.16), value: isHovered)
+    }
+}
+
+struct CommentImageFullscreenOverlay: ViewModifier {
+    @Binding var imageURL: URL?
+
+    func body(content: Content) -> some View {
+        ZStack {
+            content
+
+            if let imageURL {
+                CommentImageFullscreenView(url: imageURL) {
+                    self.imageURL = nil
+                }
+                .transition(.opacity)
+                .zIndex(1000)
+            }
+        }
+        .animation(.easeOut(duration: 0.18), value: imageURL?.absoluteString)
+    }
+}
+
+extension View {
+    func commentImageFullscreenOverlay(imageURL: Binding<URL?>) -> some View {
+        modifier(CommentImageFullscreenOverlay(imageURL: imageURL))
+    }
+}
+
+private struct CommentImageFullscreenView: View {
+    let url: URL
+    let onDismiss: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.96)
+                .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onDismiss)
+
+            CommentFullscreenImage(url: url)
+                .padding(32)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            VStack {
+                HStack {
+                    Spacer()
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .frame(width: 32, height: 32)
+                            .background(Color.white.opacity(0.12), in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer()
+            }
+            .padding(20)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(CommentImageFullscreenEscapeHandler(onDismiss: onDismiss))
+        .onExitCommand(perform: onDismiss)
+    }
+}
+
+private struct CommentFullscreenImage: View {
+    let url: URL
+    @StateObject private var imageLoader = RemoteCoverImageLoader()
+
+    var body: some View {
+        Group {
+            if let image = imageLoader.image {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if imageLoader.failed {
+                ContentUnavailableView("无法加载图片", systemImage: "photo")
+                    .foregroundStyle(.white.opacity(0.86))
+            } else {
+                ProgressView()
+                    .controlSize(.large)
+                    .tint(.white)
+            }
+        }
+        .task(id: url.absoluteString) {
+            imageLoader.load(
+                url: url,
+                maxPixelLength: RemoteCoverImageLoader.fullscreenMaxPixelLength,
+                pixelCap: RemoteCoverImageLoader.fullscreenMaxPixelLength
+            )
+        }
+        .onDisappear {
+            imageLoader.cancel()
+        }
+    }
+}
+
+private struct CommentImageFullscreenEscapeHandler: NSViewRepresentable {
+    let onDismiss: () -> Void
+
+    func makeNSView(context: Context) -> CommentImageFullscreenEscapeView {
+        let view = CommentImageFullscreenEscapeView()
+        view.onDismiss = onDismiss
+        return view
+    }
+
+    func updateNSView(_ nsView: CommentImageFullscreenEscapeView, context: Context) {
+        nsView.onDismiss = onDismiss
+    }
+}
+
+private final class CommentImageFullscreenEscapeView: NSView {
+    var onDismiss: (() -> Void)?
+    private var keyMonitor: Any?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            installMonitorIfNeeded()
+            window?.makeFirstResponder(self)
+        } else {
+            tearDownMonitor()
+        }
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 {
+            onDismiss?()
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    private func installMonitorIfNeeded() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard event.keyCode == 53 else { return event }
+            self?.onDismiss?()
+            return nil
+        }
+    }
+
+    private func tearDownMonitor() {
+        if let keyMonitor {
+            NSEvent.removeMonitor(keyMonitor)
+            self.keyMonitor = nil
+        }
+    }
+}

@@ -1116,7 +1116,8 @@ enum JSONParser {
         let content = item["content"] as? [String: Any] ?? [:]
         let message = string(content, "message")
         let emoticons = parseEmoteMap(content)
-        if message.isEmpty, emoticons.isEmpty, !includeInlineReplies { return nil }
+        let pictures = parseCommentPictures(content: content, item: item)
+        if message.isEmpty, emoticons.isEmpty, pictures.isEmpty, !includeInlineReplies { return nil }
         let nested = (item["replies"] as? [[String: Any]] ?? []).compactMap {
             parseCommentItem($0, includeInlineReplies: false)
         }
@@ -1133,6 +1134,7 @@ enum JSONParser {
             publishTime: ctime > 0 ? Date(timeIntervalSince1970: TimeInterval(ctime)) : nil,
             ipLocation: normalizeIPLocation((item["reply_control"] as? [String: Any])?["location"] as? String),
             emoticons: emoticons,
+            pictures: pictures,
             replies: includeInlineReplies ? nested : [],
             isPinned: isPinned
         )
@@ -1141,6 +1143,22 @@ enum JSONParser {
     private nonisolated static func normalizeIPLocation(_ raw: String?) -> String? {
         guard let raw, !raw.isEmpty else { return nil }
         return raw.replacingOccurrences(of: "IP属地：", with: "")
+    }
+
+    private nonisolated static func parseCommentPictures(content: [String: Any], item: [String: Any]) -> [BiliCommentPicture] {
+        var rawPictures = content["pictures"] as? [[String: Any]] ?? []
+        if rawPictures.isEmpty {
+            rawPictures = item["pictures"] as? [[String: Any]] ?? []
+        }
+        return rawPictures.compactMap(parseCommentPicture)
+    }
+
+    private nonisolated static func parseCommentPicture(_ picture: [String: Any]) -> BiliCommentPicture? {
+        let src = string(picture, "img_src", "src", "url", "imgSrc")
+        guard !src.isEmpty, let url = normalizedURL(src) else { return nil }
+        let width = Int(int64(picture, "img_width", "width"))
+        let height = Int(int64(picture, "img_height", "height"))
+        return BiliCommentPicture(url: url, width: width, height: height)
     }
 
     private nonisolated static func parseEmoteMap(_ content: [String: Any]) -> [String: String] {

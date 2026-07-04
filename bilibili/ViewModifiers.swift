@@ -868,6 +868,7 @@ private struct VideoDetailCardModifier: ViewModifier {
                 .padding(.trailing, 0)
                 .padding(.vertical, padding)
                 .background(Color.white, in: flushShape)
+                .clipShape(flushShape)
                 .overlay {
                     flushShape.stroke(Color.black.opacity(0.06), lineWidth: 0.6)
                 }
@@ -875,6 +876,7 @@ private struct VideoDetailCardModifier: ViewModifier {
             content
                 .padding(padding)
                 .background(Color.white, in: regularShape)
+                .clipShape(regularShape)
                 .overlay {
                     regularShape.stroke(Color.black.opacity(0.06), lineWidth: 0.6)
                 }

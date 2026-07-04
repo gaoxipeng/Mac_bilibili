@@ -569,7 +569,7 @@ struct SearchDashboard: View {
         let hotBlockWidth = AppLayout.searchDiscoveryContentWidth
         let chipWidth = (hotBlockWidth - 10) / 2
 
-        return VStack(alignment: .leading, spacing: 32) {
+        return VStack(alignment: .leading, spacing: 16) {
             searchHistorySection
             hotSearchSection(chipWidth: chipWidth)
         }

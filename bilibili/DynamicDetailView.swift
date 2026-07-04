@@ -154,6 +154,7 @@ final class DynamicDetailModel: ObservableObject {
                 publishTime: comment.publishTime,
                 ipLocation: comment.ipLocation,
                 emoticons: comment.emoticons,
+                pictures: comment.pictures,
                 replies: comment.replies,
                 loadedReplies: merged,
                 repliesEnd: page.isEnd
@@ -170,6 +171,7 @@ struct DynamicDetailView: View {
     @EnvironmentObject private var appModel: AppModel
     @StateObject private var model: DynamicDetailModel
     @State private var publishesFloatingChrome = false
+    @State private var commentFullscreenPictureURL: URL?
 
     init(item: BiliDynamicItem, credential: BilibiliCredential?) {
         _model = StateObject(wrappedValue: DynamicDetailModel(item: item, credential: credential))
@@ -177,25 +179,33 @@ struct DynamicDetailView: View {
 
     private var dynamicChromeInfo: VideoDetailChromeInfo {
         VideoDetailChromeInfo(
-            title: "动态详情",
+            title: "",
             viewCount: 0,
             danmakuCount: 0,
             publishTime: model.item.publishDate,
             onlineCount: 0,
-            webURL: URL(string: model.referer)
+            webURL: URL(string: model.referer),
+            authorFaceURL: model.item.authorFaceURL,
+            authorName: model.item.authorName.ifEmpty("用户"),
+            authorLevel: model.item.authorLevel
         )
     }
 
     var body: some View {
         GeometryReader { geometry in
             let topInset = AppLayout.videoDetailPlayerTopInset(chromeHeight: chromeHeight)
+            let contentHeight = max(0, geometry.size.height - topInset - 24)
+            let leftWidth = geometry.size.width * 0.62
+            let rightWidth = geometry.size.width * 0.34
 
             HStack(alignment: .top, spacing: AppLayout.videoDetailSectionSpacing) {
-                dynamicContentColumn
-                    .frame(width: geometry.size.width * 0.62, alignment: .leading)
+                MacOverlayScrollView(usesOverlayScrollers: false, clipsContent: true) {
+                    dynamicBodyCard
+                }
+                .frame(width: leftWidth, height: contentHeight, alignment: .topLeading)
 
                 commentsCard
-                    .frame(width: geometry.size.width * 0.34, alignment: .leading)
+                    .frame(width: rightWidth, height: contentHeight, alignment: .topLeading)
             }
             .padding(.leading, AppLayout.videoDetailLeadingInset)
             .padding(.trailing, AppLayout.videoDetailTrailingInset)
@@ -216,51 +226,16 @@ struct DynamicDetailView: View {
             appModel.resignVideoFloatingChrome()
             MediaPlaybackCoordinator.shared.notifyObscuringPageHidden()
         }
-    }
-
-    private var dynamicContentColumn: some View {
-        VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
-            dynamicBodyCard
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .commentImageFullscreenOverlay(imageURL: $commentFullscreenPictureURL)
     }
 
     private var dynamicBodyCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 12) {
-                AsyncImage(url: model.item.authorFaceURL) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    default:
-                        Image(systemName: "person.fill")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(width: 44, height: 44)
-                .clipShape(Circle())
-
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 6) {
-                        Text(model.item.authorName.ifEmpty("用户"))
-                            .font(.system(size: 16, weight: .semibold))
-                        if model.item.authorLevel > 0 {
-                            BiliUserLevelIcon(level: model.item.authorLevel, width: 24, height: 15)
-                        }
-                    }
-                    if let date = model.item.publishDate {
-                        Text(BiliCommentFormats.formatTime(date))
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-
+        VStack(alignment: .leading, spacing: 16) {
             if !model.item.text.isEmpty {
                 BiliCommentText(
                     text: model.item.text,
                     emoticons: model.item.emoticons,
-                    fontSize: 15
+                    fontSize: 17
                 )
             }
 
@@ -274,7 +249,7 @@ struct DynamicDetailView: View {
 
             if let ip = model.item.ipLocation, !ip.isEmpty {
                 Text("IP属地：\(ip)")
-                    .font(.system(size: 12))
+                    .font(.system(size: 13))
                     .foregroundStyle(.secondary)
             }
         }
@@ -284,14 +259,14 @@ struct DynamicDetailView: View {
 
     @ViewBuilder
     private func dynamicOriginBlock(_ origin: BiliDynamicOrigin) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             if !origin.authorName.isEmpty {
                 Text("@\(origin.authorName)")
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
             if !origin.text.isEmpty {
-                BiliCommentText(text: origin.text, emoticons: origin.emoticons, fontSize: 14)
+                BiliCommentText(text: origin.text, emoticons: origin.emoticons, fontSize: 16)
             }
             if !origin.imageURLs.isEmpty {
                 dynamicImageGrid(origin.imageURLs)
@@ -340,14 +315,15 @@ struct DynamicDetailView: View {
 
             GeometryReader { geometry in
                 ScrollViewReader { proxy in
-                    MacOverlayScrollView(usesOverlayScrollers: false) {
+                    MacOverlayScrollView(usesOverlayScrollers: false, clipsContent: true) {
                         Color.clear
                             .frame(height: 0)
                             .id(DynamicCommentsScrollAnchor.top)
 
                         DynamicCommentsPanel(
                             model: model,
-                            contentMinHeight: geometry.size.height
+                            contentMinHeight: geometry.size.height,
+                            onPictureSelect: { commentFullscreenPictureURL = $0 }
                         )
                         .padding(.horizontal, AppLayout.videoDetailCardPadding)
                         .padding(.bottom, AppLayout.videoDetailCardPadding)
@@ -371,6 +347,7 @@ private enum DynamicCommentsScrollAnchor {
 private struct DynamicCommentsPanel: View {
     @ObservedObject var model: DynamicDetailModel
     var contentMinHeight: CGFloat = 0
+    var onPictureSelect: (URL) -> Void = { _ in }
 
     var body: some View {
         Group {
@@ -442,11 +419,19 @@ private struct DynamicCommentsPanel: View {
     }
 
     private var commentList: some View {
-        LazyVStack(alignment: .leading, spacing: 4) {
+        LazyVStack(alignment: .leading, spacing: 0) {
             ForEach(model.comments) { comment in
-                DynamicCommentRow(comment: comment, nested: false)
+                DynamicCommentRow(
+                    comment: comment,
+                    nested: false,
+                    onPictureSelect: onPictureSelect
+                )
                 ForEach(comment.loadedReplies) { reply in
-                    DynamicCommentRow(comment: reply, nested: true)
+                    DynamicCommentRow(
+                        comment: reply,
+                        nested: true,
+                        onPictureSelect: onPictureSelect
+                    )
                 }
                 if comment.replyCount > Int64(comment.loadedReplies.count), !comment.repliesEnd {
                     Button {
@@ -460,7 +445,7 @@ private struct DynamicCommentsPanel: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.leading, 44)
                             .padding(.top, 2)
-                            .padding(.bottom, 6)
+                            .padding(.bottom, 2)
                     }
                     .buttonStyle(.plain)
                 }
@@ -498,6 +483,7 @@ private struct DynamicCommentsPanel: View {
 private struct DynamicCommentRow: View {
     let comment: BiliCommentItem
     let nested: Bool
+    let onPictureSelect: (URL) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -518,7 +504,7 @@ private struct DynamicCommentRow: View {
             .frame(width: nested ? 28 : 34, height: nested ? 28 : 34)
             .clipShape(Circle())
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(comment.authorName.ifEmpty("用户"))
                         .font(.system(size: nested ? 14 : 15, weight: .semibold))
@@ -539,6 +525,10 @@ private struct DynamicCommentRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
+                if !comment.pictures.isEmpty {
+                    CommentPictureAttachments(pictures: comment.pictures, onSelect: onPictureSelect)
+                }
+
                 HStack(spacing: 10) {
                     let timeText = BiliCommentFormats.formatTime(comment.publishTime)
                     if !timeText.isEmpty {
@@ -555,6 +545,6 @@ private struct DynamicCommentRow: View {
             .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, nested ? 8 : 12)
+        .padding(.vertical, nested ? 4 : 6)
     }
 }

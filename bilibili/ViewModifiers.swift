@@ -1110,6 +1110,8 @@ private enum HoverScrollInvalidationCenter {
     }
 
     private static func handleScrollBoundsChanged(in scrollView: NSScrollView?) {
+        deactivateAllHoveredViews()
+
         guard let scrollView else {
             scheduleRecheck(in: nil, allowsActivation: true)
             return
@@ -1127,6 +1129,12 @@ private enum HoverScrollInvalidationCenter {
         }
         scrollIdleWorkItems[id] = idleWorkItem
         DispatchQueue.main.asyncAfter(deadline: .now() + scrollHoverSettleDelay, execute: idleWorkItem)
+    }
+
+    private static func deactivateAllHoveredViews() {
+        for view in trackedViews.allObjects {
+            view.forceDeactivateHover()
+        }
     }
 
     private static func scheduleRecheck(in scrollView: NSScrollView?, allowsActivation: Bool) {
@@ -1264,48 +1272,51 @@ final class ReliableHoverTrackingView: NSView {
 
     func recheckHoverState(mouseInWindow providedMouseInWindow: NSPoint? = nil, allowsActivation: Bool = true) {
         guard let window else {
-            setHovering(false)
+            forceDeactivateHover()
             return
         }
         guard bounds.width > 0, bounds.height > 0 else {
-            setHovering(false)
+            forceDeactivateHover()
             return
         }
 
         let mouseInWindow = providedMouseInWindow ?? window.mouseLocationOutsideOfEventStream
-        guard allowsActivation || isHovering else { return }
+        if !allowsActivation {
+            if isHovering {
+                let hovering = isMouseInsideCover(mouseInWindow: mouseInWindow)
+                setHovering(hovering)
+            }
+            return
+        }
+
         guard isHovering || mayContainMouse(mouseInWindow: mouseInWindow) else { return }
         let hovering = isMouseInsideCover(mouseInWindow: mouseInWindow)
         setHovering(hovering)
     }
 
+    func forceDeactivateHover() {
+        setHovering(false)
+    }
+
     private func mayContainMouse(mouseInWindow: NSPoint) -> Bool {
-        if let scrollView = hoverScrollView(), let documentView = scrollView.documentView {
-            let coverFrameInDocument = convert(bounds, to: documentView)
-            guard coverFrameInDocument.width > 0, coverFrameInDocument.height > 0 else { return false }
-
-            let mouseInDocument = documentView.convert(mouseInWindow, from: nil)
-            return coverFrameInDocument.insetBy(dx: -8, dy: -8).contains(mouseInDocument)
-        }
-
-        let localPoint = convert(mouseInWindow, from: nil)
-        return bounds.insetBy(dx: -8, dy: -8).contains(localPoint)
+        let coverFrameInWindow = convert(bounds, to: nil)
+        guard coverFrameInWindow.width > 0, coverFrameInWindow.height > 0 else { return false }
+        return coverFrameInWindow.insetBy(dx: -8, dy: -8).contains(mouseInWindow)
     }
 
     private func isMouseInsideCover(mouseInWindow: NSPoint) -> Bool {
-        if let scrollView = hoverScrollView(), let documentView = scrollView.documentView {
-            let coverFrameInDocument = convert(bounds, to: documentView)
-            guard coverFrameInDocument.width > 0, coverFrameInDocument.height > 0 else { return false }
+        let coverFrameInWindow = convert(bounds, to: nil)
+        guard coverFrameInWindow.width > 0, coverFrameInWindow.height > 0 else { return false }
 
-            let mouseInDocument = documentView.convert(mouseInWindow, from: nil)
-            let visibleDocumentRect = scrollView.documentVisibleRect
-            let visibleCover = coverFrameInDocument.intersection(visibleDocumentRect)
+        if let scrollView = hoverScrollView() {
+            let clipView = scrollView.contentView
+            let visibleInWindow = clipView.convert(clipView.bounds, to: nil)
+            let visibleCover = coverFrameInWindow.intersection(visibleInWindow)
             guard visibleCover.width > 0, visibleCover.height > 0 else { return false }
-            return visibleCover.contains(mouseInDocument)
+            return visibleCover.contains(mouseInWindow)
         }
 
-        let localPoint = convert(mouseInWindow, from: nil)
-        return bounds.contains(localPoint)
+        return coverFrameInWindow.contains(mouseInWindow)
     }
 
     private func setHovering(_ hovering: Bool) {

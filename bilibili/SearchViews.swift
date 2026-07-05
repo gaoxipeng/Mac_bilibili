@@ -1817,6 +1817,7 @@ private struct SearchBangumiCard: View {
             }
         }
         .videoCoverHover(isHovered: $isCoverHovered)
+        .onDisappear { isCoverHovered = false }
     }
 
     private func coverContent(shape: RoundedRectangle) -> some View {

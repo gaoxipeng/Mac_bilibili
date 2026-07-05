@@ -2,8 +2,9 @@ import AppKit
 import SwiftUI
 
 enum VideoCardLayout {
-    static let minWidth: CGFloat = 288
-    static let gridSpacing: CGFloat = 14
+    static let minWidth: CGFloat = 280
+    static let gridSpacing: CGFloat = 22
+    static let maxColumnCount = 5
     static let coverAspect: CGFloat = 16.0 / 9.0
     static let cornerRadius: CGFloat = 10
     static let cardBorderColor = Color(red: 232 / 255, green: 232 / 255, blue: 232 / 255)
@@ -19,7 +20,8 @@ enum VideoCardLayout {
 
     static func columnCount(for width: CGFloat) -> Int {
         guard width > 0 else { return 1 }
-        return max(1, Int((width + gridSpacing) / (minWidth + gridSpacing)))
+        let natural = max(1, Int((width + gridSpacing) / (minWidth + gridSpacing)))
+        return min(maxColumnCount, natural)
     }
 
     static func columnWidth(for totalWidth: CGFloat, columnCount: Int) -> CGFloat {
@@ -529,7 +531,6 @@ private enum HistoryCardLayout {
 }
 
 private enum HistoryLayout {
-    static let maxColumnCount = 5
     static let sectionSpacing: CGFloat = 28
     static let timelineGutterWidth: CGFloat = 68
     static let timelineTrackColumnWidth: CGFloat = 16
@@ -953,7 +954,7 @@ private struct HistoryItemsGrid: View {
 
     var body: some View {
         let layoutWidth = resolvedLayoutWidth
-        let columnCount = min(HistoryLayout.maxColumnCount, VideoCardLayout.columnCount(for: layoutWidth))
+        let columnCount = VideoCardLayout.columnCount(for: layoutWidth)
         let columnWidth = VideoCardLayout.columnWidth(for: layoutWidth, columnCount: columnCount)
         let rows = VideoCardLayout.rowChunks(items, columnCount: columnCount)
 
@@ -1107,6 +1108,7 @@ private struct HistoryVideoCard: View {
         }
         .buttonStyle(.plain)
         .videoCoverHover(isHovered: $isCoverHovered)
+        .onDisappear { isCoverHovered = false }
     }
 
     private var metadataSection: some View {
@@ -1383,6 +1385,7 @@ struct VideoCard: View {
         }
         .buttonStyle(.plain)
         .videoCoverHover(isHovered: $isCoverHovered)
+        .onDisappear { isCoverHovered = false }
     }
 
     private var metadataSection: some View {

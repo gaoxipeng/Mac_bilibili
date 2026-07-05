@@ -52,6 +52,7 @@ final class RemoteCoverImageLoader: ObservableObject {
         task = Task { [weak self] in
             await Self.loadGate.acquire()
             defer { Task { await Self.loadGate.release() } }
+            guard !Task.isCancelled else { return }
 
             guard let loaded = await Self.fetchImage(url: url, maxPixelLength: maxPixel) else {
                 guard !Task.isCancelled else { return }
@@ -104,28 +105,26 @@ final class RemoteCoverImageLoader: ObservableObject {
     }
 
     private nonisolated static func fetchImage(url: URL, maxPixelLength: Int) async -> NSImage? {
-        await Task.detached(priority: .utility) {
-            do {
-                var request = URLRequest(url: url)
-                request.cachePolicy = .returnCacheDataElseLoad
-                request.setValue("https://www.bilibili.com/", forHTTPHeaderField: "Referer")
-                request.setValue(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
-                    forHTTPHeaderField: "User-Agent"
-                )
-                request.setValue("image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        do {
+            var request = URLRequest(url: url)
+            request.cachePolicy = .returnCacheDataElseLoad
+            request.setValue("https://www.bilibili.com/", forHTTPHeaderField: "Referer")
+            request.setValue(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+                forHTTPHeaderField: "User-Agent"
+            )
+            request.setValue("image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
 
-                let (data, response) = try await URLSession.shared.data(for: request)
-                if let httpResponse = response as? HTTPURLResponse,
-                   !(200..<300).contains(httpResponse.statusCode) {
-                    return nil
-                }
-                guard !Task.isCancelled else { return nil }
-                return downsample(data: data, maxPixelLength: maxPixelLength)
-            } catch {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let httpResponse = response as? HTTPURLResponse,
+               !(200..<300).contains(httpResponse.statusCode) {
                 return nil
             }
-        }.value
+            try Task.checkCancellation()
+            return downsample(data: data, maxPixelLength: maxPixelLength)
+        } catch {
+            return nil
+        }
     }
 
     private nonisolated static func downsample(data: Data, maxPixelLength: Int) -> NSImage? {

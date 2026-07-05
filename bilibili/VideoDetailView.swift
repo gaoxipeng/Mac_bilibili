@@ -454,7 +454,8 @@ final class VideoDetailModel: ObservableObject {
                     likeCount: likeCount,
                     duration: video.duration,
                     description: video.description,
-                    cid: video.cid
+                    cid: video.cid,
+                    publishTime: video.publishTime
                 ),
                 publishTime: current.publishTime,
                 replyCount: current.replyCount,
@@ -621,7 +622,8 @@ final class VideoDetailModel: ObservableObject {
             likeCount: video.likeCount,
             duration: context.duration > 0 ? context.duration : video.duration,
             description: context.evaluate.ifEmpty(video.description),
-            cid: context.cid
+            cid: context.cid,
+            publishTime: video.publishTime
         )
     }
 

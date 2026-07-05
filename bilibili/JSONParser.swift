@@ -603,7 +603,8 @@ enum JSONParser {
             likeCount: 0,
             duration: duration(from: item),
             description: string(item, "desc"),
-            cid: cid
+            cid: cid,
+            publishTime: parsePublishTime(from: item)
         )
         let viewedAtSeconds = int64(item, "view_at")
         let progressSeconds = max(0, Int(int64(item, "progress")))
@@ -730,7 +731,8 @@ enum JSONParser {
                 likeCount: video.likeCount,
                 duration: video.duration,
                 description: video.description,
-                cid: firstCid
+                cid: firstCid,
+                publishTime: video.publishTime
             )
         }
         let stat = data["stat"] as? [String: Any] ?? [:]
@@ -893,7 +895,8 @@ enum JSONParser {
             likeCount: int64(cntInfo, "thumb_up", "like"),
             duration: Int(int64(item, "duration")),
             description: "",
-            cid: 0
+            cid: 0,
+            publishTime: parsePublishTime(from: item, extras: [upper])
         )
     }
 
@@ -1238,8 +1241,31 @@ enum JSONParser {
             likeCount: int64(like, "count"),
             duration: parseDurationText(string(archive, "duration_text")),
             description: string(archive, "desc"),
-            cid: 0
+            cid: 0,
+            publishTime: parsePublishTime(from: archive)
         )
+    }
+
+    private nonisolated static func parsePublishTime(
+        from item: [String: Any],
+        extras: [[String: Any]] = []
+    ) -> Date? {
+        for dictionary in [item] + extras {
+            let seconds = int64(
+                dictionary,
+                "pubdate",
+                "pub_time",
+                "pubtime",
+                "ctime",
+                "created",
+                "publish_time",
+                "upper_ctime"
+            )
+            if seconds > 0 {
+                return Date(timeIntervalSince1970: TimeInterval(seconds))
+            }
+        }
+        return nil
     }
 
     private nonisolated static func parseVideo(_ item: [String: Any]) -> BiliVideo? {
@@ -1269,7 +1295,8 @@ enum JSONParser {
             likeCount: int64(item, "like").ifZero(stat.map { int64($0, "like") } ?? 0),
             duration: duration(from: item),
             description: string(item, "desc", "description").htmlStripped,
-            cid: int64(item, "cid")
+            cid: int64(item, "cid"),
+            publishTime: parsePublishTime(from: item, extras: [owner ?? [:]])
         )
     }
 
@@ -1736,7 +1763,8 @@ enum JSONParser {
             likeCount: 0,
             duration: parseDurationText(string(ugc, "duration_text")),
             description: "",
-            cid: 0
+            cid: 0,
+            publishTime: parsePublishTime(from: ugc)
         )
     }
 
@@ -1887,7 +1915,8 @@ enum JSONParser {
                     likeCount: 0,
                     duration: 0,
                     description: "",
-                    cid: 0
+                    cid: 0,
+                    publishTime: nil
                 )
                 link = nil
             }
@@ -1945,7 +1974,8 @@ enum JSONParser {
             likeCount: int64(like, "count"),
             duration: parseDurationText(string(archive, "duration_text")),
             description: string(archive, "desc"),
-            cid: 0
+            cid: 0,
+            publishTime: parsePublishTime(from: archive)
         )
     }
 

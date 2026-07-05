@@ -1012,7 +1012,7 @@ private struct VideoDetailCardModifier: ViewModifier {
 extension View {
     func videoCoverHover(isHovered: Binding<Bool>) -> some View {
         overlay {
-            ReliableHoverDetector(isHovered: isHovered)
+            VideoCoverHoverDetector(isHovered: isHovered)
         }
     }
 
@@ -1052,54 +1052,57 @@ struct VideoCoverDurationBadge: View {
     }
 }
 
-/// AppKit tracking area hover detection — only enter/exit events, unlike `onContinuousHover`.
-struct ReliableHoverDetector: NSViewRepresentable {
+/// AppKit tracking area hover detection with scroll-driven reset for stationary pointers.
+struct VideoCoverHoverDetector: NSViewRepresentable {
     @Binding var isHovered: Bool
 
-    func makeNSView(context: Context) -> ReliableHoverTrackingView {
-        let view = ReliableHoverTrackingView()
+    func makeNSView(context: Context) -> VideoCoverHoverTrackingView {
+        let view = VideoCoverHoverTrackingView()
         view.onHoverChanged = { isHovered = $0 }
         return view
     }
 
-    func updateNSView(_ nsView: ReliableHoverTrackingView, context: Context) {
+    func updateNSView(_ nsView: VideoCoverHoverTrackingView, context: Context) {
         nsView.onHoverChanged = { isHovered = $0 }
     }
 }
 
 @MainActor
-private enum HoverScrollInvalidationCenter {
-    private static var trackedViews = NSHashTable<ReliableHoverTrackingView>.weakObjects()
-    private static var scrollBoundsObservations: [ObjectIdentifier: NSKeyValueObservation] = [:]
+private enum VideoCoverHoverScrollCenter {
+    private static var trackedViewsByScrollView: [ObjectIdentifier: NSHashTable<VideoCoverHoverTrackingView>] = [:]
+    private static var activeViews = NSHashTable<VideoCoverHoverTrackingView>.weakObjects()
+    private static var scrollBoundsObservers: [ObjectIdentifier: NSObjectProtocol] = [:]
     private static var scrollIdleWorkItems: [ObjectIdentifier: DispatchWorkItem] = [:]
+    private static var scrollRecheckWorkItems: [ObjectIdentifier: DispatchWorkItem] = [:]
+    private static var lastScrollRecheckTimes: [ObjectIdentifier: CFTimeInterval] = [:]
     private static var activeScrollDeadlines: [ObjectIdentifier: CFTimeInterval] = [:]
-    private static var recheckScheduled = false
-    private static var scheduledAllowsActivation = false
-    private static var lastRecheckTime: CFTimeInterval = 0
-    private static let minimumRecheckInterval: CFTimeInterval = 1.0 / 45.0
-    private static let scrollHoverSettleDelay: TimeInterval = 0.12
+    private static let minimumScrollRecheckInterval: CFTimeInterval = 1.0 / 165.0
+    private static let scrollSettleDelay: TimeInterval = 0.10
 
-    static func track(_ view: ReliableHoverTrackingView) {
-        trackedViews.add(view)
+    static func prepare(_ view: VideoCoverHoverTrackingView) {
         if let scrollView = view.hoverScrollView() {
-            view.cachedScrollView = scrollView
+            track(view, in: scrollView)
             registerScrollViewIfNeeded(scrollView)
         }
     }
 
-    static func untrack(_ view: ReliableHoverTrackingView) {
-        trackedViews.remove(view)
+    static func untrack(_ view: VideoCoverHoverTrackingView) {
+        activeViews.remove(view)
+        if let scrollView = view.cachedScrollView {
+            trackedViewsByScrollView[ObjectIdentifier(scrollView)]?.remove(view)
+        }
     }
 
-    static func scheduleRecheck(for view: ReliableHoverTrackingView? = nil) {
-        if let view {
-            trackedViews.add(view)
-            if let scrollView = view.hoverScrollView() {
-                view.cachedScrollView = scrollView
-                registerScrollViewIfNeeded(scrollView)
-            }
+    static func activate(_ view: VideoCoverHoverTrackingView) {
+        activeViews.add(view)
+        if let scrollView = view.hoverScrollView() {
+            track(view, in: scrollView)
+            registerScrollViewIfNeeded(scrollView)
         }
-        scheduleRecheck(in: view?.hoverScrollView(), allowsActivation: true)
+    }
+
+    static func deactivate(_ view: VideoCoverHoverTrackingView) {
+        activeViews.remove(view)
     }
 
     static func isActivelyScrolling(_ scrollView: NSScrollView?) -> Bool {
@@ -1109,83 +1112,82 @@ private enum HoverScrollInvalidationCenter {
         return CACurrentMediaTime() < deadline
     }
 
-    private static func handleScrollBoundsChanged(in scrollView: NSScrollView?) {
-        deactivateAllHoveredViews()
-
-        guard let scrollView else {
-            scheduleRecheck(in: nil, allowsActivation: true)
-            return
-        }
-
+    private static func track(_ view: VideoCoverHoverTrackingView, in scrollView: NSScrollView) {
         let id = ObjectIdentifier(scrollView)
-        activeScrollDeadlines[id] = CACurrentMediaTime() + scrollHoverSettleDelay
-        scheduleRecheck(in: scrollView, allowsActivation: false)
-
-        scrollIdleWorkItems[id]?.cancel()
-        let idleWorkItem = DispatchWorkItem {
-            activeScrollDeadlines[id] = nil
-            scrollIdleWorkItems[id] = nil
-            scheduleRecheck(in: scrollView, allowsActivation: true)
-        }
-        scrollIdleWorkItems[id] = idleWorkItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + scrollHoverSettleDelay, execute: idleWorkItem)
-    }
-
-    private static func deactivateAllHoveredViews() {
-        for view in trackedViews.allObjects {
-            view.forceDeactivateHover()
-        }
-    }
-
-    private static func scheduleRecheck(in scrollView: NSScrollView?, allowsActivation: Bool) {
-        if recheckScheduled {
-            scheduledAllowsActivation = scheduledAllowsActivation || allowsActivation
-            return
-        }
-
-        recheckScheduled = true
-        scheduledAllowsActivation = allowsActivation
-        let now = CACurrentMediaTime()
-        let delay = max(0, minimumRecheckInterval - (now - lastRecheckTime))
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-            lastRecheckTime = CACurrentMediaTime()
-            recheckScheduled = false
-            let allowsActivation = scheduledAllowsActivation
-            scheduledAllowsActivation = false
-            if let scrollView {
-                recheckTrackedViews(in: scrollView, allowsActivation: allowsActivation)
-            } else {
-                recheckAllTrackedViews(allowsActivation: allowsActivation)
-            }
-        }
-    }
-
-    private static func recheckAllTrackedViews(allowsActivation: Bool) {
-        let mouseInWindow = trackedViews.allObjects.first?.window?.mouseLocationOutsideOfEventStream
-        for view in trackedViews.allObjects {
-            view.recheckHoverState(mouseInWindow: mouseInWindow, allowsActivation: allowsActivation)
-        }
-    }
-
-    private static func recheckTrackedViews(in scrollView: NSScrollView, allowsActivation: Bool) {
-        let mouseInWindow = scrollView.window?.mouseLocationOutsideOfEventStream
-        for view in trackedViews.allObjects where view.hoverScrollView() === scrollView {
-            view.recheckHoverState(mouseInWindow: mouseInWindow, allowsActivation: allowsActivation)
-        }
+        let views = trackedViewsByScrollView[id] ?? NSHashTable<VideoCoverHoverTrackingView>.weakObjects()
+        views.add(view)
+        trackedViewsByScrollView[id] = views
     }
 
     private static func registerScrollViewIfNeeded(_ scrollView: NSScrollView) {
         let id = ObjectIdentifier(scrollView)
-        guard scrollBoundsObservations[id] == nil else { return }
+        guard scrollBoundsObservers[id] == nil else { return }
 
         let clipView = scrollView.contentView
         clipView.postsBoundsChangedNotifications = true
         let scrollViewBox = WeakScrollViewBox(scrollView)
-        scrollBoundsObservations[id] = clipView.observe(\.bounds, options: [.new]) { _, _ in
-            DispatchQueue.main.async {
+        scrollBoundsObservers[id] = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clipView,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
                 handleScrollBoundsChanged(in: scrollViewBox.value)
             }
+        }
+    }
+
+    private static func handleScrollBoundsChanged(in scrollView: NSScrollView?) {
+        guard let scrollView else { return }
+
+        let id = ObjectIdentifier(scrollView)
+        activeScrollDeadlines[id] = CACurrentMediaTime() + scrollSettleDelay
+
+        scrollIdleWorkItems[id]?.cancel()
+        let idleWorkItem = DispatchWorkItem {
+            MainActor.assumeIsolated {
+                activeScrollDeadlines[id] = nil
+                scrollIdleWorkItems[id] = nil
+            }
+        }
+        scrollIdleWorkItems[id] = idleWorkItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + scrollSettleDelay, execute: idleWorkItem)
+
+        scheduleHoverRecheck(in: scrollView)
+    }
+
+    private static func scheduleHoverRecheck(in scrollView: NSScrollView) {
+        let id = ObjectIdentifier(scrollView)
+        guard scrollRecheckWorkItems[id] == nil else { return }
+
+        let now = CACurrentMediaTime()
+        let last = lastScrollRecheckTimes[id] ?? 0
+        let delay = max(0, minimumScrollRecheckInterval - (now - last))
+        let scrollViewBox = WeakScrollViewBox(scrollView)
+        let workItem = DispatchWorkItem {
+            MainActor.assumeIsolated {
+                scrollRecheckWorkItems[id] = nil
+                guard let scrollView = scrollViewBox.value else { return }
+                lastScrollRecheckTimes[id] = CACurrentMediaTime()
+                recheckTrackedViews(in: scrollView)
+            }
+        }
+        scrollRecheckWorkItems[id] = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
+    private static func recheckTrackedViews(in scrollView: NSScrollView) {
+        guard let mouseInWindow = scrollView.window?.mouseLocationOutsideOfEventStream else {
+            for view in activeViews.allObjects where view.hoverScrollView() === scrollView {
+                view.forceDeactivateHover()
+            }
+            return
+        }
+
+        let trackedInScrollView = trackedViewsByScrollView[ObjectIdentifier(scrollView)]?.allObjects ?? []
+        for view in trackedInScrollView {
+            guard view.needsScrollHoverRecheck(mouseInWindow: mouseInWindow) else { continue }
+            view.recheckHoverState(mouseInWindow: mouseInWindow)
         }
     }
 }
@@ -1198,7 +1200,7 @@ private final class WeakScrollViewBox: @unchecked Sendable {
     }
 }
 
-final class ReliableHoverTrackingView: NSView {
+final class VideoCoverHoverTrackingView: NSView {
     var onHoverChanged: ((Bool) -> Void)?
     weak var cachedScrollView: NSScrollView?
     private var isHovering = false
@@ -1211,17 +1213,18 @@ final class ReliableHoverTrackingView: NSView {
         super.viewDidMoveToWindow()
         updateTrackingAreas()
         if window != nil {
-            HoverScrollInvalidationCenter.track(self)
-            HoverScrollInvalidationCenter.scheduleRecheck(for: self)
+            MainActor.assumeIsolated {
+                VideoCoverHoverScrollCenter.prepare(self)
+            }
         }
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
         super.viewWillMove(toWindow: newWindow)
         if newWindow == nil {
-            HoverScrollInvalidationCenter.untrack(self)
+            VideoCoverHoverScrollCenter.untrack(self)
             cachedScrollView = nil
-            setHovering(false)
+            forceDeactivateHover()
         }
     }
 
@@ -1244,14 +1247,12 @@ final class ReliableHoverTrackingView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        if HoverScrollInvalidationCenter.isActivelyScrolling(hoverScrollView()) {
-            return
-        }
+        guard !VideoCoverHoverScrollCenter.isActivelyScrolling(hoverScrollView()) else { return }
         setHovering(true)
     }
 
     override func mouseExited(with event: NSEvent) {
-        setHovering(false)
+        forceDeactivateHover()
     }
 
     func hoverScrollView() -> NSScrollView? {
@@ -1270,38 +1271,27 @@ final class ReliableHoverTrackingView: NSView {
         return nil
     }
 
-    func recheckHoverState(mouseInWindow providedMouseInWindow: NSPoint? = nil, allowsActivation: Bool = true) {
+    func forceDeactivateHover() {
+        setHovering(false)
+    }
+
+    func recheckHoverState(mouseInWindow providedMouseInWindow: NSPoint? = nil) {
         guard let window else {
             forceDeactivateHover()
             return
         }
-        guard bounds.width > 0, bounds.height > 0 else {
-            forceDeactivateHover()
-            return
-        }
-
         let mouseInWindow = providedMouseInWindow ?? window.mouseLocationOutsideOfEventStream
-        if !allowsActivation {
-            if isHovering {
-                let hovering = isMouseInsideCover(mouseInWindow: mouseInWindow)
-                setHovering(hovering)
-            }
-            return
-        }
-
-        guard isHovering || mayContainMouse(mouseInWindow: mouseInWindow) else { return }
-        let hovering = isMouseInsideCover(mouseInWindow: mouseInWindow)
-        setHovering(hovering)
+        setHovering(isMouseInsideCover(mouseInWindow: mouseInWindow))
     }
 
-    func forceDeactivateHover() {
-        setHovering(false)
+    func needsScrollHoverRecheck(mouseInWindow: NSPoint) -> Bool {
+        isHovering || mayContainMouse(mouseInWindow: mouseInWindow)
     }
 
     private func mayContainMouse(mouseInWindow: NSPoint) -> Bool {
         let coverFrameInWindow = convert(bounds, to: nil)
         guard coverFrameInWindow.width > 0, coverFrameInWindow.height > 0 else { return false }
-        return coverFrameInWindow.insetBy(dx: -8, dy: -8).contains(mouseInWindow)
+        return coverFrameInWindow.insetBy(dx: -6, dy: -6).contains(mouseInWindow)
     }
 
     private func isMouseInsideCover(mouseInWindow: NSPoint) -> Bool {
@@ -1322,6 +1312,11 @@ final class ReliableHoverTrackingView: NSView {
     private func setHovering(_ hovering: Bool) {
         guard isHovering != hovering else { return }
         isHovering = hovering
+        if hovering {
+            VideoCoverHoverScrollCenter.activate(self)
+        } else {
+            VideoCoverHoverScrollCenter.deactivate(self)
+        }
         onHoverChanged?(hovering)
     }
 }

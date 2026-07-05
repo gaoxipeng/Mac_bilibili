@@ -7,10 +7,9 @@ enum VideoCardLayout {
     static let maxColumnCount = 5
     static let coverAspect: CGFloat = 16.0 / 9.0
     static let cornerRadius: CGFloat = 10
-    static let cardBorderColor = Color(red: 232 / 255, green: 232 / 255, blue: 232 / 255)
-    static let coverHoverScale: CGFloat = 1.035
-    static let coverHoverAnimation = Animation.interactiveSpring(response: 0.18, dampingFraction: 0.82, blendDuration: 0.04)
-    static let coverHoverExitAnimation = Animation.easeOut(duration: 0.14)
+    static let coverHoverScale: CGFloat = 1.04
+    static let coverHoverEnterAnimation = Animation.easeOut(duration: 0.09)
+    static let coverHoverExitAnimation = Animation.easeOut(duration: 0.07)
     static let statsAuthorSpacing: CGFloat = 4
     static let metadataPadding = EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
     /// Feed 封面解码目标像素，避免滚动时为每个 cell 做 GeometryReader 测量。
@@ -66,11 +65,9 @@ enum VideoCardLayout {
         }
     }
 
-    static func rowChunks<T>(_ items: [T], columnCount: Int) -> [[T]] {
-        guard columnCount > 0 else { return items.isEmpty ? [] : [items] }
-        return stride(from: 0, to: items.count, by: columnCount).map { start in
-            Array(items[start..<min(start + columnCount, items.count)])
-        }
+    static func rowStartIndices(itemCount: Int, columnCount: Int) -> [Int] {
+        guard itemCount > 0, columnCount > 0 else { return [] }
+        return Array(stride(from: 0, to: itemCount, by: columnCount))
     }
 
     static func titleNSFont(for metrics: RowLayoutMetrics) -> NSFont {
@@ -84,6 +81,7 @@ enum VideoCardLayout {
 
     /// SwiftUI `Text` 实际行高略高于 AppKit `NSLayoutManager` 测量值。
     static let titleLineHeightScale: CGFloat = 1.14
+    static let titleMaxLineCount = 2
 
     static func titleLineHeight(for metrics: RowLayoutMetrics) -> CGFloat {
         let font = titleNSFont(for: metrics)
@@ -91,65 +89,12 @@ enum VideoCardLayout {
         return ceil(appKitLineHeight * titleLineHeightScale)
     }
 
-    static func titleMeasureWidth(columnWidth: CGFloat, metrics: RowLayoutMetrics) -> CGFloat {
-        max(
-            columnWidth - metrics.metadataPadding.leading - metrics.metadataPadding.trailing - 6,
-            1
-        )
-    }
-
-    static func titleLineCount(for title: String, columnWidth: CGFloat, metrics: RowLayoutMetrics) -> Int {
-        let cacheKey = titleMeasureCacheKey(title: title, columnWidth: columnWidth, metrics: metrics)
-        if let cached = VideoTitleLayoutCache.shared.lineCount(for: cacheKey) {
-            return cached
-        }
-
-        let font = titleNSFont(for: metrics)
-        let textWidth = titleMeasureWidth(columnWidth: columnWidth, metrics: metrics)
-        guard !title.isEmpty else { return 1 }
-
-        let storage = NSTextStorage(string: title, attributes: [.font: font])
-        let layoutManager = NSLayoutManager()
-        storage.addLayoutManager(layoutManager)
-
-        let container = NSTextContainer(size: CGSize(width: textWidth, height: .greatestFiniteMagnitude))
-        container.lineFragmentPadding = 0
-        container.lineBreakMode = .byWordWrapping
-        layoutManager.addTextContainer(container)
-        layoutManager.ensureLayout(for: container)
-
-        var lineCount = 0
-        var glyphIndex = 0
-        let glyphCount = layoutManager.numberOfGlyphs
-        while glyphIndex < glyphCount {
-            var lineRange = NSRange()
-            _ = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: &lineRange)
-            lineCount += 1
-            glyphIndex = NSMaxRange(lineRange)
-        }
-        let result = max(lineCount, 1)
-        VideoTitleLayoutCache.shared.setLineCount(result, for: cacheKey)
-        return result
-    }
-
     static func titleAreaHeight(
-        for title: String,
-        columnWidth: CGFloat,
+        for _: String,
+        columnWidth _: CGFloat,
         metrics: RowLayoutMetrics
     ) -> CGFloat {
-        let lineCount = titleLineCount(for: title, columnWidth: columnWidth, metrics: metrics)
-        return CGFloat(lineCount) * titleLineHeight(for: metrics)
-    }
-
-    static func rowTitleAreaHeight(
-        titles: [String],
-        columnWidth: CGFloat,
-        metrics: RowLayoutMetrics
-    ) -> CGFloat {
-        let fallback = titleLineHeight(for: metrics)
-        return titles
-            .map { titleAreaHeight(for: $0, columnWidth: columnWidth, metrics: metrics) }
-            .max() ?? fallback
+        CGFloat(titleMaxLineCount) * titleLineHeight(for: metrics)
     }
 
     static func coverHeight(columnWidth: CGFloat) -> CGFloat {
@@ -164,39 +109,33 @@ enum VideoCardLayout {
         coverHeight(columnWidth: columnWidth) + metrics.metadataHeight(titleAreaHeight: titleAreaHeight)
     }
 
-    private static func titleMeasureCacheKey(
-        title: String,
-        columnWidth: CGFloat,
-        metrics: RowLayoutMetrics
-    ) -> String {
-        let widthBucket = Int(titleMeasureWidth(columnWidth: columnWidth, metrics: metrics).rounded(.toNearestOrAwayFromZero))
-        let typography = metrics.usesLargeTitleFont ? "large" : "regular"
-        let stats = metrics.includesStats ? "stats" : "nostats"
-        let author = Int(metrics.authorRowHeight.rounded(.toNearestOrAwayFromZero))
-        return "\(typography)#\(stats)#\(author)#\(widthBucket)#\(title)"
-    }
-}
-
-private final class VideoTitleLayoutCache: @unchecked Sendable {
-    static let shared = VideoTitleLayoutCache()
-
-    private let cache: NSCache<NSString, NSNumber> = {
-        let cache = NSCache<NSString, NSNumber>()
-        cache.countLimit = 2400
-        return cache
-    }()
-
-    func lineCount(for key: String) -> Int? {
-        cache.object(forKey: key as NSString)?.intValue
-    }
-
-    func setLineCount(_ lineCount: Int, for key: String) {
-        cache.setObject(NSNumber(value: lineCount), forKey: key as NSString)
-    }
 }
 
 private enum FeedCardHoverStyle {
     static let colorAnimation = Animation.easeInOut(duration: 0.2)
+}
+
+struct HoverZoomVideoCover<Content: View>: View {
+    let shape: RoundedRectangle
+    @Binding var isHovered: Bool
+    @ViewBuilder var content: () -> Content
+
+    private var hoverAnimation: Animation {
+        isHovered ? VideoCardLayout.coverHoverEnterAnimation : VideoCardLayout.coverHoverExitAnimation
+    }
+
+    var body: some View {
+        ZStack {
+            content()
+                .clipShape(shape)
+                .scaleEffect(isHovered ? VideoCardLayout.coverHoverScale : 1, anchor: .center)
+                .animation(hoverAnimation, value: isHovered)
+        }
+        .videoCoverHover(isHovered: $isHovered)
+        .onDisappear {
+            isHovered = false
+        }
+    }
 }
 
 private struct FeedCardTitle: View {
@@ -213,7 +152,7 @@ private struct FeedCardTitle: View {
                 .foregroundStyle(isHovered ? BiliTheme.blue : .primary)
                 .contentTransition(.interpolate)
                 .animation(FeedCardHoverStyle.colorAnimation, value: isHovered)
-                .lineLimit(nil)
+                .lineLimit(VideoCardLayout.titleMaxLineCount)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .allowsHitTesting(false)
@@ -339,23 +278,24 @@ struct VideoFeedGrid<Trailing: View>: View {
             largeTypography: largeTypography,
             showsAuthor: showsAuthor
         )
-        let rows = VideoCardLayout.rowChunks(videos, columnCount: columnCount)
+        let rowStarts = VideoCardLayout.rowStartIndices(itemCount: videos.count, columnCount: columnCount)
+        let titleAreaHeight = VideoCardLayout.titleAreaHeight(
+            for: "",
+            columnWidth: columnWidth,
+            metrics: metrics
+        )
+        let cardHeight = VideoCardLayout.cardHeight(
+            columnWidth: columnWidth,
+            titleAreaHeight: titleAreaHeight,
+            metrics: metrics
+        )
 
         LazyVStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
-            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                let titleAreaHeight = VideoCardLayout.rowTitleAreaHeight(
-                    titles: row.map(\.title),
-                    columnWidth: columnWidth,
-                    metrics: metrics
-                )
-                let cardHeight = VideoCardLayout.cardHeight(
-                    columnWidth: columnWidth,
-                    titleAreaHeight: titleAreaHeight,
-                    metrics: metrics
-                )
+            ForEach(rowStarts, id: \.self) { rowStart in
+                let rowEnd = min(rowStart + columnCount, videos.count)
 
                 HStack(alignment: .top, spacing: VideoCardLayout.gridSpacing) {
-                    ForEach(row) { video in
+                    ForEach(videos[rowStart..<rowEnd]) { video in
                         VideoCard(
                             video: video,
                             largeTypography: largeTypography,
@@ -517,9 +457,9 @@ struct VideoGridView: View {
 private enum HistoryCardLayout {
     static let metrics = VideoCardLayout.RowLayoutMetrics.history
 
-    static func rowTitleAreaHeight(items: [BiliHistoryItem], columnWidth: CGFloat) -> CGFloat {
-        VideoCardLayout.rowTitleAreaHeight(
-            titles: items.map(\.video.title),
+    static func titleAreaHeight(columnWidth: CGFloat) -> CGFloat {
+        VideoCardLayout.titleAreaHeight(
+            for: "",
             columnWidth: columnWidth,
             metrics: metrics
         )
@@ -956,15 +896,16 @@ private struct HistoryItemsGrid: View {
         let layoutWidth = resolvedLayoutWidth
         let columnCount = VideoCardLayout.columnCount(for: layoutWidth)
         let columnWidth = VideoCardLayout.columnWidth(for: layoutWidth, columnCount: columnCount)
-        let rows = VideoCardLayout.rowChunks(items, columnCount: columnCount)
+        let rowStarts = VideoCardLayout.rowStartIndices(itemCount: items.count, columnCount: columnCount)
+        let titleAreaHeight = HistoryCardLayout.titleAreaHeight(columnWidth: columnWidth)
+        let cardHeight = HistoryCardLayout.cardHeight(columnWidth: columnWidth, titleAreaHeight: titleAreaHeight)
 
         VStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
-            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                let titleAreaHeight = HistoryCardLayout.rowTitleAreaHeight(items: row, columnWidth: columnWidth)
-                let cardHeight = HistoryCardLayout.cardHeight(columnWidth: columnWidth, titleAreaHeight: titleAreaHeight)
+            ForEach(rowStarts, id: \.self) { rowStart in
+                let rowEnd = min(rowStart + columnCount, items.count)
 
                 HStack(alignment: .top, spacing: VideoCardLayout.gridSpacing) {
-                    ForEach(row) { item in
+                    ForEach(items[rowStart..<rowEnd]) { item in
                         HistoryVideoCard(
                             item: item,
                             columnWidth: columnWidth,
@@ -1050,37 +991,26 @@ private struct HistoryVideoCard: View {
         VStack(alignment: .leading, spacing: 0) {
             coverSection(shape: shape)
                 .frame(height: coverHeight)
+                .zIndex(isCoverHovered ? 1 : 0)
             metadataSection
                 .frame(height: metadataHeight)
         }
         .frame(height: coverHeight + metadataHeight)
-        .background {
-            ZStack {
-                shape.fill(Color.white)
-                shape.stroke(VideoCardLayout.cardBorderColor, lineWidth: 0.5)
-            }
-        }
-        .shadow(color: .black.opacity(isCoverHovered ? 0.055 : 0), radius: isCoverHovered ? 6 : 0, x: 0, y: isCoverHovered ? 3 : 0)
-        .zIndex(isCoverHovered ? 2 : 0)
-    }
-
-    private var coverHoverAnimation: Animation {
-        isCoverHovered ? VideoCardLayout.coverHoverAnimation : VideoCardLayout.coverHoverExitAnimation
+        .background(Color.white, in: shape)
+        .zIndex(isCoverHovered ? 1 : 0)
     }
 
     private func coverSection(shape: RoundedRectangle) -> some View {
         NavigationLink(value: playbackRequest) {
             ZStack(alignment: .bottomTrailing) {
-                RemoteCover(
-                    url: video.coverURL,
-                    aspectRatio: VideoCardLayout.coverAspect,
-                    appliesCornerClip: false,
-                    allowsOverflow: true
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipShape(shape)
-                .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
-                .animation(coverHoverAnimation, value: isCoverHovered)
+                HoverZoomVideoCover(shape: shape, isHovered: $isCoverHovered) {
+                    RemoteCover(
+                        url: video.coverURL,
+                        aspectRatio: VideoCardLayout.coverAspect,
+                        appliesCornerClip: false
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
 
                 if watchProgress > 0.001, watchProgress < 0.999 {
                     GeometryReader { geometry in
@@ -1107,8 +1037,6 @@ private struct HistoryVideoCard: View {
             .contentShape(shape)
         }
         .buttonStyle(.plain)
-        .videoCoverHover(isHovered: $isCoverHovered)
-        .onDisappear { isCoverHovered = false }
     }
 
     private var metadataSection: some View {
@@ -1345,36 +1273,25 @@ struct VideoCard: View {
         return VStack(alignment: .leading, spacing: 0) {
             coverSection(shape: shape)
                 .frame(height: coverHeight)
+                .zIndex(isCoverHovered ? 1 : 0)
             metadataSection
                 .frame(height: metadataHeight)
         }
-        .background {
-            ZStack {
-                shape.fill(Color.white)
-                shape.stroke(VideoCardLayout.cardBorderColor, lineWidth: 0.5)
-            }
-        }
-        .shadow(color: .black.opacity(isCoverHovered ? 0.055 : 0), radius: isCoverHovered ? 6 : 0, x: 0, y: isCoverHovered ? 3 : 0)
-        .zIndex(isCoverHovered ? 2 : 0)
-    }
-
-    private var coverHoverAnimation: Animation {
-        isCoverHovered ? VideoCardLayout.coverHoverAnimation : VideoCardLayout.coverHoverExitAnimation
+        .background(Color.white, in: shape)
+        .zIndex(isCoverHovered ? 1 : 0)
     }
 
     private func coverSection(shape: RoundedRectangle) -> some View {
         NavigationLink(value: VideoPlaybackRequest(video)) {
             ZStack(alignment: .bottomTrailing) {
-                RemoteCover(
-                    url: video.coverURL,
-                    aspectRatio: VideoCardLayout.coverAspect,
-                    appliesCornerClip: false,
-                    allowsOverflow: true
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .clipShape(shape)
-                .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
-                .animation(coverHoverAnimation, value: isCoverHovered)
+                HoverZoomVideoCover(shape: shape, isHovered: $isCoverHovered) {
+                    RemoteCover(
+                        url: video.coverURL,
+                        aspectRatio: VideoCardLayout.coverAspect,
+                        appliesCornerClip: false
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
 
                 if video.duration > 0 {
                     VideoCoverDurationBadge(text: video.durationText)
@@ -1384,8 +1301,6 @@ struct VideoCard: View {
             .contentShape(shape)
         }
         .buttonStyle(.plain)
-        .videoCoverHover(isHovered: $isCoverHovered)
-        .onDisappear { isCoverHovered = false }
     }
 
     private var metadataSection: some View {
@@ -1417,19 +1332,38 @@ struct VideoCard: View {
 
     @ViewBuilder
     private var authorRow: some View {
+        HStack(alignment: .center, spacing: 8) {
+            authorIdentity
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+            if let publishTime = video.publishTime {
+                Text(BiliCommentFormats.formatTime(publishTime))
+                    .font(statsFont)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var authorIdentity: some View {
         if video.authorMid > 0 {
             NavigationLink(
                 value: UserProfileRequest(mid: video.authorMid)
             ) {
-                authorRowContent
+                authorIdentityContent
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            authorRowContent
+            authorIdentityContent
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private var authorRowContent: some View {
+    private var authorIdentityContent: some View {
         FeedCardAuthorLabel(
             name: video.authorName,
             font: authorFont,
@@ -1639,7 +1573,6 @@ struct RemoteCover: View {
     var width: CGFloat?
     var height: CGFloat?
     var appliesCornerClip = true
-    var allowsOverflow = false
     var placeholderSystemImage = "play.rectangle"
     @StateObject private var imageLoader = RemoteCoverImageLoader()
     @Environment(\.displayScale) private var displayScale
@@ -1649,7 +1582,7 @@ struct RemoteCover: View {
             if let width, let height {
                 coverImageLayer
                     .frame(width: width, height: height)
-                    .modifier(RemoteCoverOverflowClip(enabled: !allowsOverflow))
+                    .clipped()
             } else {
                 Color.clear
                     .aspectRatio(aspectRatio, contentMode: .fit)
@@ -1657,7 +1590,7 @@ struct RemoteCover: View {
                     .overlay {
                         coverImageLayer
                     }
-                    .modifier(RemoteCoverOverflowClip(enabled: !allowsOverflow))
+                    .clipped()
             }
         }
         .background(Color.white)
@@ -1775,18 +1708,6 @@ private struct RemoteCoverCornerClip: ViewModifier {
     func body(content: Content) -> some View {
         if enabled {
             content.clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        } else {
-            content
-        }
-    }
-}
-
-private struct RemoteCoverOverflowClip: ViewModifier {
-    let enabled: Bool
-
-    func body(content: Content) -> some View {
-        if enabled {
-            content.clipped()
         } else {
             content
         }

@@ -1714,23 +1714,24 @@ private struct SearchBangumiFeedGrid: View {
         let columnCount = VideoCardLayout.columnCount(for: layoutWidth)
         let columnWidth = VideoCardLayout.columnWidth(for: layoutWidth, columnCount: columnCount)
         let metrics = VideoCardLayout.RowLayoutMetrics.feed(largeTypography: false)
-        let rows = VideoCardLayout.rowChunks(bangumis, columnCount: columnCount)
+        let rowStarts = VideoCardLayout.rowStartIndices(itemCount: bangumis.count, columnCount: columnCount)
+        let titleAreaHeight = VideoCardLayout.titleAreaHeight(
+            for: "",
+            columnWidth: columnWidth,
+            metrics: metrics
+        )
+        let cardHeight = VideoCardLayout.cardHeight(
+            columnWidth: columnWidth,
+            titleAreaHeight: titleAreaHeight,
+            metrics: metrics
+        )
 
         LazyVStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
-            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                let titleAreaHeight = VideoCardLayout.rowTitleAreaHeight(
-                    titles: row.map(\.title),
-                    columnWidth: columnWidth,
-                    metrics: metrics
-                )
-                let cardHeight = VideoCardLayout.cardHeight(
-                    columnWidth: columnWidth,
-                    titleAreaHeight: titleAreaHeight,
-                    metrics: metrics
-                )
+            ForEach(rowStarts, id: \.self) { rowStart in
+                let rowEnd = min(rowStart + columnCount, bangumis.count)
 
                 HStack(alignment: .top, spacing: VideoCardLayout.gridSpacing) {
-                    ForEach(row) { bangumi in
+                    ForEach(bangumis[rowStart..<rowEnd]) { bangumi in
                         SearchBangumiCard(
                             bangumi: bangumi,
                             columnWidth: columnWidth,
@@ -1780,21 +1781,12 @@ private struct SearchBangumiCard: View {
         VStack(alignment: .leading, spacing: 0) {
             coverSection(shape: shape)
                 .frame(height: coverHeight)
+                .zIndex(isCoverHovered ? 1 : 0)
             metadataSection
                 .frame(height: metadataHeight)
         }
-        .background {
-            ZStack {
-                shape.fill(Color.white)
-                shape.stroke(VideoCardLayout.cardBorderColor, lineWidth: 0.5)
-            }
-        }
-        .shadow(color: .black.opacity(isCoverHovered ? 0.055 : 0), radius: isCoverHovered ? 6 : 0, x: 0, y: isCoverHovered ? 3 : 0)
-        .zIndex(isCoverHovered ? 2 : 0)
-    }
-
-    private var coverHoverAnimation: Animation {
-        isCoverHovered ? VideoCardLayout.coverHoverAnimation : VideoCardLayout.coverHoverExitAnimation
+        .background(Color.white, in: shape)
+        .zIndex(isCoverHovered ? 1 : 0)
     }
 
     @ViewBuilder
@@ -1816,22 +1808,18 @@ private struct SearchBangumiCard: View {
                 coverContent(shape: shape)
             }
         }
-        .videoCoverHover(isHovered: $isCoverHovered)
-        .onDisappear { isCoverHovered = false }
     }
 
     private func coverContent(shape: RoundedRectangle) -> some View {
         ZStack(alignment: .topLeading) {
-            RemoteCover(
-                url: bangumi.coverURL,
-                aspectRatio: VideoCardLayout.coverAspect,
-                appliesCornerClip: false,
-                allowsOverflow: true
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipShape(shape)
-            .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
-            .animation(coverHoverAnimation, value: isCoverHovered)
+            HoverZoomVideoCover(shape: shape, isHovered: $isCoverHovered) {
+                RemoteCover(
+                    url: bangumi.coverURL,
+                    aspectRatio: VideoCardLayout.coverAspect,
+                    appliesCornerClip: false
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
 
             if !bangumi.categoryName.isEmpty || !bangumi.badge.isEmpty {
                 HStack(spacing: 6) {
@@ -1888,7 +1876,7 @@ private struct SearchBangumiCard: View {
                 Text(bangumi.title)
                     .font(.title3.weight(.medium))
                     .foregroundStyle(.primary)
-                    .lineLimit(nil)
+                    .lineLimit(VideoCardLayout.titleMaxLineCount)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 Spacer(minLength: 0)
@@ -1911,7 +1899,7 @@ private struct SearchBangumiCardTitle: View {
                 .foregroundStyle(isHovered ? BiliTheme.blue : .primary)
                 .contentTransition(.interpolate)
                 .animation(.easeOut(duration: 0.15), value: isHovered)
-                .lineLimit(nil)
+                .lineLimit(VideoCardLayout.titleMaxLineCount)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .allowsHitTesting(false)

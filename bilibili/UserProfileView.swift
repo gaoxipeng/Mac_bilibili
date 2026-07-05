@@ -1002,22 +1002,21 @@ private struct DynamicContentPreview: View {
 
 private struct DynamicVideoPreview: View {
     let video: BiliVideo
+    @State private var isCoverHovered = false
 
     var body: some View {
+        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
         NavigationLink(value: VideoPlaybackRequest(video)) {
             VStack(alignment: .leading, spacing: 8) {
                 ZStack(alignment: .bottomTrailing) {
-                    AsyncImage(url: video.coverURL) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFill()
-                        default:
-                            Color.secondary.opacity(0.1)
-                        }
+                    HoverZoomVideoCover(shape: shape, isHovered: $isCoverHovered) {
+                        RemoteCover(
+                            url: video.coverURL,
+                            aspectRatio: VideoCardLayout.coverAspect,
+                            appliesCornerClip: false
+                        )
+                        .frame(maxWidth: .infinity)
                     }
-                    .frame(maxWidth: .infinity)
-                    .aspectRatio(16 / 9, contentMode: .fit)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
 
                     if video.duration > 0 {
                         Text(video.durationText)
@@ -1029,6 +1028,7 @@ private struct DynamicVideoPreview: View {
                             .padding(6)
                     }
                 }
+                .zIndex(isCoverHovered ? 1 : 0)
 
                 if !video.title.isEmpty {
                     Text(video.title)

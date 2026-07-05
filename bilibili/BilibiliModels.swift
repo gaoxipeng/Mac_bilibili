@@ -55,6 +55,7 @@ nonisolated struct BiliVideo: Identifiable, Hashable, Sendable {
     let duration: Int
     let description: String
     let cid: Int64
+    let publishTime: Date?
 
     var webURL: URL? {
         URL(string: "https://www.bilibili.com/video/\(bvid)")
@@ -144,7 +145,8 @@ nonisolated struct BiliSearchBangumi: Identifiable, Hashable, Sendable {
             likeCount: 0,
             duration: 0,
             description: subtitle,
-            cid: 0
+            cid: 0,
+            publishTime: nil
         )
     }
 

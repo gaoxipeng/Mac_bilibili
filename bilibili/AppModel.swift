@@ -3,7 +3,7 @@ import Foundation
 
 @MainActor
 final class AppModel: ObservableObject {
-    @Published var selectedSection: AppSection = .home
+    @Published var selectedSection: AppSection = PerfLaunchConfiguration.requestedSection ?? .home
     @Published var homeVideos: [BiliVideo] = []
     @Published var homeHasMore = false
     @Published var homeLoadingMore = false
@@ -716,6 +716,7 @@ final class AppModel: ObservableObject {
     }
 
     private func prefetchHomePlayURLs() {
+        guard !PerfLaunchConfiguration.suppressPlayURLPrefetch else { return }
         homePrefetchTask?.cancel()
         homePrefetchTask = Task {
             try? await Task.sleep(for: .milliseconds(450))

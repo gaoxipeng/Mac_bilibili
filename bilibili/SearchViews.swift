@@ -1759,7 +1759,6 @@ private struct SearchBangumiCard: View, Equatable {
     let bangumi: BiliSearchBangumi
     let columnWidth: CGFloat
     let titleAreaHeight: CGFloat
-    @State private var isCoverHovered = false
 
     static func == (lhs: SearchBangumiCard, rhs: SearchBangumiCard) -> Bool {
         lhs.bangumi == rhs.bangumi
@@ -1784,49 +1783,42 @@ private struct SearchBangumiCard: View, Equatable {
     }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: VideoCardLayout.cornerRadius, style: .continuous)
         VStack(alignment: .leading, spacing: 0) {
-            coverSection(shape: shape)
+            coverSection
                 .frame(height: coverHeight)
-                .zIndex(isCoverHovered ? 1 : 0)
             metadataSection
                 .frame(height: metadataHeight)
         }
-        .background(Color.white, in: shape)
-        .zIndex(isCoverHovered ? 1 : 0)
+        .background(FeedCardSurfaceRepresentable(cornerRadius: VideoCardLayout.cornerRadius))
     }
 
     @ViewBuilder
-    private func coverSection(shape: RoundedRectangle) -> some View {
+    private var coverSection: some View {
         Group {
             if bangumi.canPlayInApp {
                 NavigationLink(value: playbackRequest) {
-                    coverContent(shape: shape)
+                    coverContent
                 }
                 .buttonStyle(.plain)
             } else if let webURL = bangumi.webURL {
                 Button {
                     NSWorkspace.shared.open(webURL)
                 } label: {
-                    coverContent(shape: shape)
+                    coverContent
                 }
                 .buttonStyle(.plain)
             } else {
-                coverContent(shape: shape)
+                coverContent
             }
         }
     }
 
-    private func coverContent(shape: RoundedRectangle) -> some View {
+    private var coverContent: some View {
         ZStack(alignment: .topLeading) {
-            HoverZoomVideoCover(shape: shape, isHovered: $isCoverHovered) {
-                RemoteCover(
-                    url: bangumi.coverURL,
-                    aspectRatio: VideoCardLayout.coverAspect,
-                    appliesCornerClip: false
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+            FeedVideoCoverHover(
+                url: bangumi.coverURL,
+                cornerRadius: VideoCardLayout.cornerRadius
+            )
 
             if !bangumi.categoryName.isEmpty || !bangumi.badge.isEmpty {
                 HStack(spacing: 6) {
@@ -1850,7 +1842,7 @@ private struct SearchBangumiCard: View, Equatable {
                 .padding(8)
             }
         }
-        .contentShape(shape)
+        .contentShape(RoundedRectangle(cornerRadius: VideoCardLayout.cornerRadius, style: .continuous))
     }
 
     @ViewBuilder
@@ -1904,7 +1896,6 @@ private struct SearchBangumiCardTitle: View {
             Text(title)
                 .font(.title3.weight(.medium))
                 .foregroundStyle(isHovered ? BiliTheme.blue : .primary)
-                .contentTransition(.interpolate)
                 .animation(.easeOut(duration: 0.15), value: isHovered)
                 .lineLimit(VideoCardLayout.titleMaxLineCount)
                 .multilineTextAlignment(.leading)

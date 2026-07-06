@@ -111,32 +111,97 @@ private enum FeedCardHoverStyle {
     static let colorAnimation = Animation.easeInOut(duration: 0.2)
 }
 
-struct HoverZoomVideoCover<Content: View>: View {
-    let shape: RoundedRectangle
+private struct FeedScrollAwareHover: ViewModifier {
+    @Environment(\.feedIsScrolling) private var feedIsScrolling
     @Binding var isHovered: Bool
+    let animation: Animation
+
+    func body(content: Content) -> some View {
+        if feedIsScrolling {
+            content
+                .onChange(of: feedIsScrolling) { _, scrolling in
+                    if scrolling {
+                        isHovered = false
+                    }
+                }
+        } else {
+            content
+                .onHover { hovering in
+                    withAnimation(animation) {
+                        isHovered = hovering
+                    }
+                }
+        }
+    }
+}
+
+struct HoverZoomVideoCover<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
-    private var hoverAnimation: Animation? {
-        isHovered ? VideoCardLayout.coverHoverEnterAnimation : VideoCardLayout.coverHoverExitAnimation
+    var body: some View {
+        VideoCoverHoverScaleRepresentable(content: content())
     }
+}
+
+/// Feed card cover with GPU hover scale; image layer is embedded directly (no `NSHostingView`).
+struct FeedVideoCoverHover: View {
+    let url: URL?
+    var fallbackURLs: [URL] = []
+    var maxDecodePixelLength: Int?
+    var cornerRadius: CGFloat = 0
+    var placeholderSystemImage = "play.rectangle"
+
+    @StateObject private var imageLoader = RemoteCoverImageLoader()
 
     var body: some View {
-        ZStack {
-            content()
-                .clipShape(shape)
-                .scaleEffect(isHovered ? VideoCardLayout.coverHoverScale : 1, anchor: .center)
-                .animation(hoverAnimation, value: isHovered)
-        }
-        .videoCoverHover(isHovered: $isHovered)
-        .onDisappear {
-            isHovered = false
-        }
+        Color.clear
+            .aspectRatio(VideoCardLayout.coverAspect, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .overlay {
+                FeedVideoCoverHoverRepresentable(
+                    image: imageLoader.image ?? cachedImage,
+                    failed: imageLoader.failed,
+                    cornerRadius: cornerRadius,
+                    placeholderSystemImage: placeholderSystemImage
+                )
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onAppear {
+                imageLoader.primeFromMemoryCache(
+                    url: url,
+                    maxPixelLength: maxDecodePixelLength
+                )
+            }
+            .task(id: loadTaskID) {
+                imageLoader.load(
+                    url: url,
+                    fallbackURLs: fallbackURLs,
+                    maxPixelLength: maxDecodePixelLength
+                )
+            }
+            .onDisappear {
+                imageLoader.cancel()
+            }
+    }
+
+    private var loadTaskID: String {
+        let fallbackKey = fallbackURLs.map(\.absoluteString).joined(separator: "|")
+        let decodeKey = maxDecodePixelLength.map(String.init) ?? "source"
+        return "\(url?.absoluteString ?? "")|\(fallbackKey)#feed#\(decodeKey)"
+    }
+
+    private var cachedImage: NSImage? {
+        RemoteCoverImageLoader.cachedImage(
+            url: url,
+            maxPixelLength: maxDecodePixelLength
+        )
     }
 }
 
 private struct FeedCardTitle: View {
     let title: String
     let font: Font
+    let textWidth: CGFloat
     let areaHeight: CGFloat
     let video: BiliVideo
     var resolveWatchProgress = false
@@ -144,49 +209,41 @@ private struct FeedCardTitle: View {
     var epid: Int64 = 0
     var refererURL: URL? = nil
     var onOpen: (() -> Void)? = nil
+    @Environment(\.feedIsScrolling) private var feedIsScrolling
     @State private var isHovered = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(title)
-                .font(font)
-                .foregroundStyle(isHovered ? BiliTheme.blue : .primary)
-                .contentTransition(.interpolate)
-                .animation(FeedCardHoverStyle.colorAnimation, value: isHovered)
-                .lineLimit(VideoCardLayout.titleMaxLineCount)
-                .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .allowsHitTesting(false)
-
-            Spacer(minLength: 0)
-        }
-        .frame(height: areaHeight, alignment: .top)
-        .overlay {
-            if let onOpen {
-                Button(action: onOpen) {
-                    Color.clear
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            } else {
-                VideoPlaybackLink(
-                    video: video,
-                    resolveWatchProgress: resolveWatchProgress,
-                    progressSeconds: progressSeconds,
-                    epid: epid,
-                    refererURL: refererURL
-                ) {
-                    Color.clear
-                        .contentShape(Rectangle())
+        Text(title)
+            .font(font)
+            .foregroundStyle(isHovered ? BiliTheme.blue : .primary)
+            .animation(FeedCardHoverStyle.colorAnimation, value: isHovered)
+            .lineLimit(VideoCardLayout.titleMaxLineCount)
+            .truncationMode(.tail)
+            .multilineTextAlignment(.leading)
+            .frame(width: textWidth, height: areaHeight, alignment: .topLeading)
+            .layoutPriority(feedIsScrolling ? -1 : 0)
+            .allowsHitTesting(false)
+            .overlay {
+                if let onOpen {
+                    Button(action: onOpen) {
+                        Color.clear
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    VideoPlaybackLink(
+                        video: video,
+                        resolveWatchProgress: resolveWatchProgress,
+                        progressSeconds: progressSeconds,
+                        epid: epid,
+                        refererURL: refererURL
+                    ) {
+                        Color.clear
+                            .contentShape(Rectangle())
+                    }
                 }
             }
-        }
-        .onHover { hovering in
-            guard !FeedScrollActivity.isScrolling else { return }
-            withAnimation(FeedCardHoverStyle.colorAnimation) {
-                isHovered = hovering
-            }
-        }
+            .modifier(FeedScrollAwareHover(isHovered: $isHovered, animation: FeedCardHoverStyle.colorAnimation))
     }
 }
 
@@ -232,6 +289,7 @@ private struct FeedCardAuthorLabel: View {
     let font: Font
     let avatarURL: URL?
     let avatarSize: CGFloat
+    let textWidth: CGFloat
     @State private var isHovered = false
 
     var body: some View {
@@ -247,19 +305,13 @@ private struct FeedCardAuthorLabel: View {
             Text(name.ifEmpty("未知 UP 主"))
                 .font(font)
                 .foregroundStyle(isHovered ? BiliTheme.blue : .secondary)
-                .contentTransition(.interpolate)
                 .animation(FeedCardHoverStyle.colorAnimation, value: isHovered)
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .frame(width: max(0, textWidth - avatarSize - 8), alignment: .leading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onHover { hovering in
-            guard !FeedScrollActivity.isScrolling else { return }
-            withAnimation(FeedCardHoverStyle.colorAnimation) {
-                isHovered = hovering
-            }
-        }
+        .modifier(FeedScrollAwareHover(isHovered: $isHovered, animation: FeedCardHoverStyle.colorAnimation))
     }
 }
 
@@ -1227,7 +1279,6 @@ private struct HistoryVideoCard: View, Equatable {
     let onDelete: () -> Void
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.displayScale) private var displayScale
-    @State private var isCoverHovered = false
     @State private var isDeleteHovered = false
 
     static func == (lhs: HistoryVideoCard, rhs: HistoryVideoCard) -> Bool {
@@ -1278,33 +1329,26 @@ private struct HistoryVideoCard: View, Equatable {
     }
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: VideoCardLayout.cornerRadius, style: .continuous)
         VStack(alignment: .leading, spacing: 0) {
-            coverSection(shape: shape)
+            coverSection
                 .frame(height: coverHeight)
-                .zIndex(isCoverHovered ? 1 : 0)
             metadataSection
                 .frame(height: metadataHeight)
         }
         .frame(height: coverHeight + metadataHeight)
-        .background(Color.white, in: shape)
-        .zIndex(isCoverHovered ? 1 : 0)
+        .background(FeedCardSurfaceRepresentable(cornerRadius: VideoCardLayout.cornerRadius))
     }
 
-    private func coverSection(shape: RoundedRectangle) -> some View {
+    private var coverSection: some View {
         Button {
             appModel.openHistoryVideo(item)
         } label: {
             ZStack(alignment: .bottomTrailing) {
-                HoverZoomVideoCover(shape: shape, isHovered: $isCoverHovered) {
-                    RemoteCover(
-                        url: video.coverURL,
-                        aspectRatio: VideoCardLayout.coverAspect,
-                        maxDecodePixelLength: coverDecodePixelLength,
-                        appliesCornerClip: false
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+                FeedVideoCoverHover(
+                    url: video.coverURL,
+                    maxDecodePixelLength: coverDecodePixelLength,
+                    cornerRadius: VideoCardLayout.cornerRadius
+                )
 
                 if watchProgress > 0.001, watchProgress < 0.999 {
                     GeometryReader { geometry in
@@ -1328,9 +1372,15 @@ private struct HistoryVideoCard: View, Equatable {
                         .padding(8)
                 }
             }
-            .contentShape(shape)
+            .contentShape(RoundedRectangle(cornerRadius: VideoCardLayout.cornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
+    }
+
+    private var metadataTextWidth: CGFloat {
+        columnWidth
+            - HistoryCardLayout.metrics.metadataPadding.leading
+            - HistoryCardLayout.metrics.metadataPadding.trailing
     }
 
     private var metadataSection: some View {
@@ -1338,6 +1388,7 @@ private struct HistoryVideoCard: View, Equatable {
             FeedCardTitle(
                 title: video.title,
                 font: .title3.weight(.medium),
+                textWidth: metadataTextWidth,
                 areaHeight: titleAreaHeight,
                 video: video,
                 progressSeconds: item.progressSeconds,
@@ -1373,14 +1424,12 @@ private struct HistoryVideoCard: View, Equatable {
                         .foregroundStyle(
                             isDeleteHovered ? AnyShapeStyle(Color.red) : AnyShapeStyle(.tertiary)
                         )
-                        .contentTransition(.interpolate)
                         .animation(FeedCardHoverStyle.colorAnimation, value: isDeleteHovered)
                 }
                 .buttonStyle(.plain)
                 .fixedSize()
                 .help("删除历史")
                 .onHover { hovering in
-                    guard !FeedScrollActivity.isScrolling else { return }
                     withAnimation(FeedCardHoverStyle.colorAnimation) {
                         isDeleteHovered = hovering
                     }
@@ -1411,7 +1460,8 @@ private struct HistoryVideoCard: View, Equatable {
             name: authorDisplayName,
             font: .body,
             avatarURL: video.authorFaceURL,
-            avatarSize: 26
+            avatarSize: 26,
+            textWidth: metadataTextWidth
         )
     }
 }
@@ -1522,7 +1572,6 @@ struct VideoCard: View, Equatable {
     var resolveWatchProgress = false
     let columnWidth: CGFloat
     let titleAreaHeight: CGFloat
-    @State private var isCoverHovered = false
     @Environment(\.displayScale) private var displayScale
 
     static func == (lhs: VideoCard, rhs: VideoCard) -> Bool {
@@ -1586,38 +1635,35 @@ struct VideoCard: View, Equatable {
     }
 
     private var mosaicCard: some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        return VStack(alignment: .leading, spacing: 0) {
-            coverSection(shape: shape)
+        VStack(alignment: .leading, spacing: 0) {
+            coverSection
                 .frame(height: coverHeight)
-                .zIndex(isCoverHovered ? 1 : 0)
             metadataSection
                 .frame(height: metadataHeight)
         }
-        .background(Color.white, in: shape)
-        .zIndex(isCoverHovered ? 1 : 0)
+        .background(FeedCardSurfaceRepresentable(cornerRadius: cornerRadius))
     }
 
-    private func coverSection(shape: RoundedRectangle) -> some View {
+    private var coverSection: some View {
         VideoPlaybackLink(video: video, resolveWatchProgress: resolveWatchProgress) {
             ZStack(alignment: .bottomTrailing) {
-                HoverZoomVideoCover(shape: shape, isHovered: $isCoverHovered) {
-                    RemoteCover(
-                        url: video.coverURL,
-                        aspectRatio: VideoCardLayout.coverAspect,
-                        maxDecodePixelLength: coverDecodePixelLength,
-                        appliesCornerClip: false
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
+                FeedVideoCoverHover(
+                    url: video.coverURL,
+                    maxDecodePixelLength: coverDecodePixelLength,
+                    cornerRadius: cornerRadius
+                )
 
                 if video.duration > 0 {
                     VideoCoverDurationBadge(text: video.durationText)
                         .padding(8)
                 }
             }
-            .contentShape(shape)
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
+    }
+
+    private var metadataTextWidth: CGFloat {
+        columnWidth - metrics.metadataPadding.leading - metrics.metadataPadding.trailing
     }
 
     private var metadataSection: some View {
@@ -1625,6 +1671,7 @@ struct VideoCard: View, Equatable {
             FeedCardTitle(
                 title: video.title,
                 font: titleFont,
+                textWidth: metadataTextWidth,
                 areaHeight: titleAreaHeight,
                 video: video,
                 resolveWatchProgress: resolveWatchProgress
@@ -1685,7 +1732,8 @@ struct VideoCard: View, Equatable {
             name: video.authorName,
             font: authorFont,
             avatarURL: video.authorFaceURL,
-            avatarSize: avatarSize
+            avatarSize: avatarSize,
+            textWidth: metadataTextWidth
         )
     }
 
@@ -1917,17 +1965,24 @@ struct RemoteCover: View {
     var width: CGFloat?
     var height: CGFloat?
     var maxDecodePixelLength: Int?
+    var cornerRadius: CGFloat = 0
     var appliesCornerClip = true
     var placeholderSystemImage = "play.rectangle"
     @StateObject private var imageLoader = RemoteCoverImageLoader()
     @Environment(\.displayScale) private var displayScale
+
+    private var resolvedCornerRadius: CGFloat {
+        if cornerRadius > 0 {
+            return cornerRadius
+        }
+        return appliesCornerClip ? 8 : 0
+    }
 
     var body: some View {
         Group {
             if let width, let height {
                 coverImageLayer
                     .frame(width: width, height: height)
-                    .clipped()
             } else {
                 Color.clear
                     .aspectRatio(aspectRatio, contentMode: .fit)
@@ -1935,11 +1990,8 @@ struct RemoteCover: View {
                     .overlay {
                         coverImageLayer
                     }
-                    .clipped()
             }
         }
-        .background(Color.white)
-        .modifier(RemoteCoverCornerClip(enabled: appliesCornerClip))
         .onAppear {
             imageLoader.primeFromMemoryCache(
                 url: url,
@@ -1958,20 +2010,13 @@ struct RemoteCover: View {
         }
     }
 
-    @ViewBuilder
     private var coverImageLayer: some View {
-        ZStack {
-            if let image = imageLoader.image ?? cachedImage {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-                    .compositingGroup()
-            } else if imageLoader.failed {
-                placeholder(systemImage: placeholderSystemImage)
-            } else {
-                placeholder(systemImage: placeholderSystemImage)
-            }
-        }
+        RemoteCoverImageRepresentable(
+            image: imageLoader.image ?? cachedImage,
+            failed: imageLoader.failed,
+            cornerRadius: resolvedCornerRadius,
+            placeholderSystemImage: placeholderSystemImage
+        )
     }
 
     private var loadTaskID: String {
@@ -2000,15 +2045,6 @@ struct RemoteCover: View {
             maxPixelLength: coverDecodePixelLength
         )
     }
-
-    private func placeholder(systemImage: String) -> some View {
-        ZStack {
-            Color.white
-            Image(systemName: systemImage)
-                .font(.title2)
-                .foregroundStyle(Color.secondary.opacity(0.42))
-        }
-    }
 }
 
 struct RemoteAvatar: View {
@@ -2022,24 +2058,14 @@ struct RemoteAvatar: View {
     @Environment(\.displayScale) private var displayScale
 
     var body: some View {
-        ZStack {
-            if let image = imageLoader.image ?? cachedImage {
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                Image(systemName: "person.fill")
-                    .font(.system(size: size * 0.54, weight: .semibold))
-                    .foregroundStyle(foreground)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
+        RemoteAvatarImageRepresentable(
+            image: imageLoader.image ?? cachedImage,
+            size: size,
+            foreground: foreground.nsColor,
+            background: background.nsColor,
+            border: border.nsColor
+        )
         .frame(width: size, height: size)
-        .background(background, in: Circle())
-        .overlay {
-            Circle().stroke(border, lineWidth: 0.5)
-        }
-        .clipShape(Circle())
         .onAppear {
             imageLoader.primeFromMemoryCache(url: url, maxPixelLength: avatarPixelLength)
         }
@@ -2061,17 +2087,5 @@ struct RemoteAvatar: View {
 
     private var cachedImage: NSImage? {
         RemoteCoverImageLoader.cachedImage(url: url, maxPixelLength: avatarPixelLength)
-    }
-}
-
-private struct RemoteCoverCornerClip: ViewModifier {
-    let enabled: Bool
-
-    func body(content: Content) -> some View {
-        if enabled {
-            content.clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        } else {
-            content
-        }
     }
 }

@@ -733,12 +733,33 @@ private struct FeedUsesDirectViewportWidthKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct FeedIsScrollingKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
 @MainActor
 enum FeedScrollActivity {
     private(set) static var isScrolling = false
+    private static var listeners: [UUID: (Bool) -> Void] = [:]
 
     static func setScrolling(_ scrolling: Bool) {
+        guard isScrolling != scrolling else { return }
         isScrolling = scrolling
+        VideoCoverHoverScrollCenter.setTrackingSuspended(scrolling)
+        for listener in listeners.values {
+            listener(scrolling)
+        }
+    }
+
+    @discardableResult
+    static func addListener(_ listener: @escaping (Bool) -> Void) -> UUID {
+        let id = UUID()
+        listeners[id] = listener
+        return id
+    }
+
+    static func removeListener(_ id: UUID) {
+        listeners.removeValue(forKey: id)
     }
 
     static func waitUntilIdle(pollInterval: Duration = .milliseconds(48)) async {
@@ -763,6 +784,11 @@ extension EnvironmentValues {
         get { self[FeedUsesDirectViewportWidthKey.self] }
         set { self[FeedUsesDirectViewportWidthKey.self] = newValue }
     }
+
+    var feedIsScrolling: Bool {
+        get { self[FeedIsScrollingKey.self] }
+        set { self[FeedIsScrollingKey.self] = newValue }
+    }
 }
 
 private enum FeedScrollTopAnchor {
@@ -772,6 +798,8 @@ private enum FeedScrollTopAnchor {
 struct AppScrollView<Content: View>: View {
     @ViewBuilder private var content: () -> Content
     @State private var viewportWidth: CGFloat = 0
+    @State private var feedIsScrolling = FeedScrollActivity.isScrolling
+    @State private var scrollActivityListenerID: UUID?
     private var scrollToTopTrigger: Int
 
     init(scrollToTopTrigger: Int = 0, @ViewBuilder content: @escaping () -> Content) {
@@ -792,6 +820,7 @@ struct AppScrollView<Content: View>: View {
                     .padding(.vertical, AppLayout.feedVerticalInset)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .environment(\.feedViewportWidth, viewportWidth)
+                    .environment(\.feedIsScrolling, feedIsScrolling)
             }
             .onChange(of: scrollToTopTrigger) { _, request in
                 guard request > 0 else { return }
@@ -810,6 +839,16 @@ struct AppScrollView<Content: View>: View {
             }
         }
         .background(MacOverlayScrollConfigurator())
+        .onAppear {
+            scrollActivityListenerID = FeedScrollActivity.addListener { scrolling in
+                feedIsScrolling = scrolling
+            }
+        }
+        .onDisappear {
+            if let scrollActivityListenerID {
+                FeedScrollActivity.removeListener(scrollActivityListenerID)
+            }
+        }
     }
 }
 
@@ -1010,12 +1049,6 @@ private struct VideoDetailCardModifier: ViewModifier {
 }
 
 extension View {
-    func videoCoverHover(isHovered: Binding<Bool>) -> some View {
-        overlay {
-            VideoCoverHoverDetector(isHovered: isHovered)
-        }
-    }
-
     func materialPanel() -> some View {
         self
             .background(Color.white, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -1052,45 +1085,128 @@ struct VideoCoverDurationBadge: View {
     }
 }
 
-/// AppKit tracking area hover detection with scroll-driven reset for stationary pointers.
-struct VideoCoverHoverDetector: NSViewRepresentable {
-    @Binding var isHovered: Bool
+/// Hosts SwiftUI cover content and applies GPU `CALayer` scale on hover (no SwiftUI relayout).
+struct VideoCoverHoverScaleRepresentable<Content: View>: NSViewRepresentable {
+    let content: Content
 
-    func makeNSView(context: Context) -> VideoCoverHoverTrackingView {
-        let view = VideoCoverHoverTrackingView()
-        view.onHoverChanged = { isHovered = $0 }
-        return view
+    final class Coordinator {
+        var hostingView: NSHostingView<Content>?
     }
 
-    func updateNSView(_ nsView: VideoCoverHoverTrackingView, context: Context) {
-        nsView.onHoverChanged = { isHovered = $0 }
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> VideoCoverHoverContainerView {
+        let container = VideoCoverHoverContainerView()
+        container.hoverScale = VideoCardLayout.coverHoverScale
+
+        let hosting = NSHostingView(rootView: content)
+        hosting.translatesAutoresizingMaskIntoConstraints = false
+        hosting.layerContentsRedrawPolicy = .duringViewResize
+        container.setHostedView(hosting)
+        context.coordinator.hostingView = hosting
+        return container
+    }
+
+    func updateNSView(_ container: VideoCoverHoverContainerView, context: Context) {
+        container.hoverScale = VideoCardLayout.coverHoverScale
+        if let hosting = context.coordinator.hostingView {
+            hosting.rootView = content
+        }
+    }
+}
+
+/// Feed cover: hover container hosts `RemoteCoverImageLayerView` directly (no nested `NSHostingView`).
+struct FeedVideoCoverHoverRepresentable: NSViewRepresentable {
+    let image: NSImage?
+    let failed: Bool
+    let cornerRadius: CGFloat
+    var placeholderSystemImage = "play.rectangle"
+
+    final class Coordinator {
+        weak var imageView: RemoteCoverImageLayerView?
+        var lastImage: NSImage?
+        var lastFailed = false
+        var lastCornerRadius: CGFloat = -1
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> VideoCoverHoverContainerView {
+        let container = VideoCoverHoverContainerView()
+        container.hoverScale = VideoCardLayout.coverHoverScale
+
+        let imageView = RemoteCoverImageLayerView()
+        imageView.cornerRadius = cornerRadius
+        imageView.placeholderSystemImage = placeholderSystemImage
+        imageView.updateDisplay(image: image, failed: failed)
+        container.setHostedView(imageView)
+        context.coordinator.imageView = imageView
+        return container
+    }
+
+    func updateNSView(_ container: VideoCoverHoverContainerView, context: Context) {
+        container.hoverScale = VideoCardLayout.coverHoverScale
+        guard let imageView = context.coordinator.imageView else { return }
+
+        let coordinator = context.coordinator
+        if coordinator.lastCornerRadius != cornerRadius {
+            imageView.cornerRadius = cornerRadius
+            coordinator.lastCornerRadius = cornerRadius
+        }
+        if coordinator.lastImage !== image || coordinator.lastFailed != failed {
+            imageView.updateDisplay(image: image, failed: failed)
+            coordinator.lastImage = image
+            coordinator.lastFailed = failed
+        }
     }
 }
 
 @MainActor
 private enum VideoCoverHoverScrollCenter {
-    private static var trackedViewsByScrollView: [ObjectIdentifier: NSHashTable<VideoCoverHoverTrackingView>] = [:]
-    private static var activeViews = NSHashTable<VideoCoverHoverTrackingView>.weakObjects()
+    private static var trackedViewsByScrollView: [ObjectIdentifier: NSHashTable<VideoCoverHoverContainerView>] = [:]
+    private static var activeViews = NSHashTable<VideoCoverHoverContainerView>.weakObjects()
     private static var scrollBoundsObservers: [ObjectIdentifier: [NSObjectProtocol]] = [:]
     private static var scrollIdleWorkItems: [ObjectIdentifier: DispatchWorkItem] = [:]
     private static var activeScrollDeadlines: [ObjectIdentifier: CFTimeInterval] = [:]
+    private static var lastMouseSyncTime: [ObjectIdentifier: CFTimeInterval] = [:]
     private static let scrollSettleDelay: TimeInterval = 0.08
+    private static let mouseSyncInterval: CFTimeInterval = 1.0 / 60.0
+    private static let mouseSyncIntervalWhileScrolling: CFTimeInterval = 1.0 / 30.0
+    private static let hoverSyncVerticalBand: CGFloat = 150
+    private static var trackingSuspended = false
 
-    static func prepare(_ view: VideoCoverHoverTrackingView) {
+    static func setTrackingSuspended(_ suspended: Bool) {
+        guard trackingSuspended != suspended else { return }
+        trackingSuspended = suspended
+        for table in trackedViewsByScrollView.values {
+            for view in table.allObjects {
+                view.setTrackingSuspended(suspended)
+            }
+        }
+    }
+
+    static func prepare(_ view: VideoCoverHoverContainerView) {
+        if trackingSuspended {
+            view.setTrackingSuspended(true)
+        }
         if let scrollView = view.hoverScrollView() {
             track(view, in: scrollView)
             registerScrollViewIfNeeded(scrollView)
         }
     }
 
-    static func untrack(_ view: VideoCoverHoverTrackingView) {
+    static func untrack(_ view: VideoCoverHoverContainerView) {
         activeViews.remove(view)
         if let scrollView = view.cachedScrollView {
             trackedViewsByScrollView[ObjectIdentifier(scrollView)]?.remove(view)
         }
     }
 
-    static func activate(_ view: VideoCoverHoverTrackingView) {
+    static func activate(_ view: VideoCoverHoverContainerView) {
         activeViews.add(view)
         if let scrollView = view.hoverScrollView() {
             track(view, in: scrollView)
@@ -1098,13 +1214,13 @@ private enum VideoCoverHoverScrollCenter {
         }
     }
 
-    static func deactivate(_ view: VideoCoverHoverTrackingView) {
+    static func deactivate(_ view: VideoCoverHoverContainerView) {
         activeViews.remove(view)
     }
 
-    private static func track(_ view: VideoCoverHoverTrackingView, in scrollView: NSScrollView) {
+    private static func track(_ view: VideoCoverHoverContainerView, in scrollView: NSScrollView) {
         let id = ObjectIdentifier(scrollView)
-        let views = trackedViewsByScrollView[id] ?? NSHashTable<VideoCoverHoverTrackingView>.weakObjects()
+        let views = trackedViewsByScrollView[id] ?? NSHashTable<VideoCoverHoverContainerView>.weakObjects()
         views.add(view)
         trackedViewsByScrollView[id] = views
     }
@@ -1150,11 +1266,8 @@ private enum VideoCoverHoverScrollCenter {
 
     private static func handleLiveScrollWillStart(in scrollView: NSScrollView?) {
         guard let scrollView else { return }
-        let wasScrolling = FeedScrollActivity.isScrolling
         FeedScrollActivity.setScrolling(true)
-        if !wasScrolling {
-            deactivateHoveredViews(in: scrollView)
-        }
+        syncHoverToMouse(in: scrollView)
     }
 
     private static func handleLiveScrollDidEnd(in scrollView: NSScrollView?) {
@@ -1164,13 +1277,8 @@ private enum VideoCoverHoverScrollCenter {
 
     private static func handleScrollBoundsChanged(in scrollView: NSScrollView?) {
         guard let scrollView else { return }
-
-        let wasScrolling = FeedScrollActivity.isScrolling
         FeedScrollActivity.setScrolling(true)
-        if !wasScrolling {
-            deactivateHoveredViews(in: scrollView)
-        }
-
+        syncHoverToMouse(in: scrollView)
         scheduleScrollEnd(in: scrollView)
     }
 
@@ -1188,48 +1296,60 @@ private enum VideoCoverHoverScrollCenter {
                 scrollIdleWorkItems[id] = nil
                 guard let scrollView = scrollViewBox.value else { return }
                 FeedScrollActivity.setScrolling(false)
-                recheckTrackedViews(in: scrollView)
+                syncHoverToMouse(in: scrollView)
             }
         }
         scrollIdleWorkItems[id] = idleWorkItem
         DispatchQueue.main.asyncAfter(deadline: .now() + scrollSettleDelay, execute: idleWorkItem)
     }
 
-    private static func deactivateHoveredViews(in scrollView: NSScrollView) {
-        for view in activeViews.allObjects {
-            guard view.hoverScrollView() === scrollView else { continue }
-            view.forceDeactivateHover()
+    private static func syncHoverToMouse(in scrollView: NSScrollView) {
+        let id = ObjectIdentifier(scrollView)
+        let now = CACurrentMediaTime()
+        let syncInterval = FeedScrollActivity.isScrolling ? mouseSyncIntervalWhileScrolling : mouseSyncInterval
+        if now - (lastMouseSyncTime[id] ?? 0) < syncInterval {
+            return
         }
-    }
+        lastMouseSyncTime[id] = now
 
-    private static func recheckTrackedViews(in scrollView: NSScrollView) {
+        var hoverSyncCandidateCount = 0
+        let signpostID = BiliScrollSignpost.beginHoverSync()
+        defer {
+            let trackedCount = trackedViewsByScrollView[id]?.count ?? 0
+            BiliScrollSignpost.endHoverSync(signpostID, tracked: trackedCount, candidates: hoverSyncCandidateCount)
+        }
+
         guard let mouseInWindow = scrollView.window?.mouseLocationOutsideOfEventStream else {
             for view in activeViews.allObjects {
                 guard view.hoverScrollView() === scrollView else { continue }
-                view.forceDeactivateHover()
+                view.setHovering(false, suppressAnimation: true)
             }
             return
         }
 
-        var seen = Set<ObjectIdentifier>()
-        var viewsToRecheck: [VideoCoverHoverTrackingView] = []
+        let mouseBand = CGRect(
+            x: -10_000,
+            y: mouseInWindow.y - hoverSyncVerticalBand,
+            width: 20_000,
+            height: hoverSyncVerticalBand * 2
+        )
 
-        for view in trackedViewsByScrollView[ObjectIdentifier(scrollView)]?.allObjects ?? [] {
-            let id = ObjectIdentifier(view)
-            guard seen.insert(id).inserted else { continue }
-            guard view.needsScrollHoverRecheck(mouseInWindow: mouseInWindow) else { continue }
-            viewsToRecheck.append(view)
+        let tracked = trackedViewsByScrollView[id]?.allObjects ?? []
+        var hoverTarget: VideoCoverHoverContainerView?
+
+        for view in tracked {
+            let frameInWindow = view.convert(view.bounds, to: nil)
+            guard frameInWindow.intersects(mouseBand) else { continue }
+            hoverSyncCandidateCount += 1
+            guard view.isMouseInsideCover(mouseInWindow: mouseInWindow) else { continue }
+            hoverTarget = view
+            break
         }
 
-        for view in activeViews.allObjects {
-            guard view.hoverScrollView() === scrollView else { continue }
-            let id = ObjectIdentifier(view)
-            guard seen.insert(id).inserted else { continue }
-            viewsToRecheck.append(view)
-        }
-
-        for view in viewsToRecheck {
-            view.recheckHoverState(mouseInWindow: mouseInWindow)
+        for view in tracked {
+            let shouldHover = view === hoverTarget
+            guard view.isHoveringActive != shouldHover else { continue }
+            view.setHovering(shouldHover, suppressAnimation: true)
         }
     }
 }
@@ -1242,14 +1362,54 @@ private final class WeakScrollViewBox: @unchecked Sendable {
     }
 }
 
-final class VideoCoverHoverTrackingView: NSView {
-    var onHoverChanged: ((Bool) -> Void)?
+/// AppKit hover host: tracking + scroll sync + GPU scale (no SwiftUI `scaleEffect`).
+final class VideoCoverHoverContainerView: NSView {
+    private static let scaleAnimationKey = "videoCoverHoverScale"
+    private static let hoveredZPosition: CGFloat = 1
+    private static let restingZPosition: CGFloat = 0
+
+    var hoverScale: CGFloat = VideoCardLayout.coverHoverScale
     weak var cachedScrollView: NSScrollView?
-    private var isHovering = false
+    private weak var hostedView: NSView?
+    private var lastTrackingBoundsSize = NSSize.zero
+    private var trackingSuspended = false
+    private(set) var isHoveringActive = false
 
     override var isOpaque: Bool { false }
 
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layerContentsRedrawPolicy = .duringViewResize
+        layer?.allowsEdgeAntialiasing = true
+        layer?.masksToBounds = false
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard bounds.contains(point), let hostedView else { return nil }
+        return hostedView.hitTest(convert(point, to: hostedView))
+    }
+
+    func setHostedView(_ view: NSView) {
+        hostedView?.removeFromSuperview()
+        hostedView = view
+        addSubview(view)
+        needsLayout = true
+    }
+
+    func setTrackingSuspended(_ suspended: Bool) {
+        guard trackingSuspended != suspended else { return }
+        trackingSuspended = suspended
+        if suspended {
+            trackingAreas.forEach(removeTrackingArea)
+        } else {
+            updateTrackingAreas()
+        }
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -1262,7 +1422,7 @@ final class VideoCoverHoverTrackingView: NSView {
         if newWindow == nil {
             VideoCoverHoverScrollCenter.untrack(self)
             cachedScrollView = nil
-            forceDeactivateHover()
+            setHovering(false, suppressAnimation: true)
         }
     }
 
@@ -1273,18 +1433,20 @@ final class VideoCoverHoverTrackingView: NSView {
 
     override func layout() {
         super.layout()
-        guard !FeedScrollActivity.isScrolling else { return }
-        updateTrackingAreas()
-        refreshScrollViewAttachment()
-        if isHovering {
-            recheckHoverState()
+        hostedView?.frame = bounds
+        if bounds.size != lastTrackingBoundsSize {
+            lastTrackingBoundsSize = bounds.size
+            updateTrackingAreas()
+        }
+        if isHoveringActive {
+            layer?.transform = hoverScaleTransform(scale: hoverScale)
         }
     }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
-        guard bounds.width > 0, bounds.height > 0 else { return }
+        guard !trackingSuspended, bounds.width > 0, bounds.height > 0 else { return }
         let area = NSTrackingArea(
             rect: bounds,
             options: [.activeInActiveApp, .mouseEnteredAndExited, .inVisibleRect, .enabledDuringMouseDrag],
@@ -1295,11 +1457,13 @@ final class VideoCoverHoverTrackingView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
+        guard !trackingSuspended else { return }
         setHovering(true)
     }
 
     override func mouseExited(with event: NSEvent) {
-        forceDeactivateHover()
+        guard !trackingSuspended else { return }
+        setHovering(false)
     }
 
     func hoverScrollView() -> NSScrollView? {
@@ -1328,34 +1492,22 @@ final class VideoCoverHoverTrackingView: NSView {
     }
 
     func refreshScrollViewAttachment() {
-        cachedScrollView = nil
+        if cachedScrollView?.window == nil {
+            cachedScrollView = nil
+        }
         VideoCoverHoverScrollCenter.prepare(self)
-    }
-
-    func forceDeactivateHover() {
-        setHovering(false, suppressAnimation: FeedScrollActivity.isScrolling)
     }
 
     func recheckHoverState(mouseInWindow providedMouseInWindow: NSPoint? = nil) {
         guard let window else {
-            forceDeactivateHover()
+            setHovering(false, suppressAnimation: true)
             return
         }
         let mouseInWindow = providedMouseInWindow ?? window.mouseLocationOutsideOfEventStream
         setHovering(isMouseInsideCover(mouseInWindow: mouseInWindow))
     }
 
-    func needsScrollHoverRecheck(mouseInWindow: NSPoint) -> Bool {
-        isHovering || mayContainMouse(mouseInWindow: mouseInWindow)
-    }
-
-    private func mayContainMouse(mouseInWindow: NSPoint) -> Bool {
-        let coverFrameInWindow = convert(bounds, to: nil)
-        guard coverFrameInWindow.width > 0, coverFrameInWindow.height > 0 else { return false }
-        return coverFrameInWindow.insetBy(dx: -6, dy: -6).contains(mouseInWindow)
-    }
-
-    private func isMouseInsideCover(mouseInWindow: NSPoint) -> Bool {
+    func isMouseInsideCover(mouseInWindow: NSPoint) -> Bool {
         let coverFrameInWindow = convert(bounds, to: nil)
         guard coverFrameInWindow.width > 0, coverFrameInWindow.height > 0 else { return false }
 
@@ -1370,25 +1522,58 @@ final class VideoCoverHoverTrackingView: NSView {
         return coverFrameInWindow.contains(mouseInWindow)
     }
 
-    private func setHovering(_ hovering: Bool, suppressAnimation: Bool = false) {
-        guard isHovering != hovering else { return }
-        if hovering, FeedScrollActivity.isScrolling { return }
-        isHovering = hovering
+    func setHovering(_ hovering: Bool, suppressAnimation: Bool = false) {
+        guard isHoveringActive != hovering else { return }
+        isHoveringActive = hovering
         if hovering {
             refreshScrollViewAttachment()
             VideoCoverHoverScrollCenter.activate(self)
         } else {
             VideoCoverHoverScrollCenter.deactivate(self)
         }
-        if suppressAnimation {
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                onHoverChanged?(hovering)
-            }
-        } else {
-            onHoverChanged?(hovering)
+        applyGPUHoverScale(hovered: hovering, animated: !suppressAnimation)
+        applyHoverZPosition(hovered: hovering)
+    }
+
+    private func applyHoverZPosition(hovered: Bool) {
+        wantsLayer = true
+        layer?.zPosition = hovered ? Self.hoveredZPosition : Self.restingZPosition
+    }
+
+    private func hoverScaleTransform(scale: CGFloat) -> CATransform3D {
+        guard bounds.width > 0, bounds.height > 0 else { return CATransform3DIdentity }
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        var affine = CGAffineTransform.identity
+        affine = affine.translatedBy(x: center.x, y: center.y)
+        affine = affine.scaledBy(x: scale, y: scale)
+        affine = affine.translatedBy(x: -center.x, y: -center.y)
+        return CATransform3DMakeAffineTransform(affine)
+    }
+
+    private func applyGPUHoverScale(hovered: Bool, animated: Bool) {
+        wantsLayer = true
+        guard let layer else { return }
+
+        let targetScale = hovered ? hoverScale : 1
+        let targetTransform = hoverScaleTransform(scale: targetScale)
+
+        layer.removeAnimation(forKey: Self.scaleAnimationKey)
+
+        guard animated else {
+            layer.transform = targetTransform
+            return
         }
+
+        let animation = CABasicAnimation(keyPath: "transform")
+        animation.fromValue = layer.presentation()?.transform ?? layer.transform
+        animation.toValue = targetTransform
+        animation.duration = hovered ? 0.09 : 0.07
+        animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        animation.fillMode = .forwards
+        animation.isRemovedOnCompletion = true
+
+        layer.transform = targetTransform
+        layer.add(animation, forKey: Self.scaleAnimationKey)
     }
 }
 

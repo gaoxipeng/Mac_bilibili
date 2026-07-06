@@ -40,7 +40,23 @@ nonisolated enum BiliSVGPathParser {
         return Path(scaled)
     }
 
+    private nonisolated static let parsedPathCache: NSCache<NSString, CGPath> = {
+        let cache = NSCache<NSString, CGPath>()
+        cache.countLimit = 96
+        return cache
+    }()
+
     private nonisolated static func parse(_ data: String) -> CGPath {
+        let key = data as NSString
+        if let cached = parsedPathCache.object(forKey: key) {
+            return cached
+        }
+        let path = parseUncached(data)
+        parsedPathCache.setObject(path, forKey: key)
+        return path
+    }
+
+    private nonisolated static func parseUncached(_ data: String) -> CGPath {
         let path = CGMutablePath()
         let tokens = tokenize(data)
         var index = 0

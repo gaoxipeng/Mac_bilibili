@@ -1126,21 +1126,19 @@ private struct DynamicContentPreview: View {
 private struct DynamicVideoPreview: View {
     let video: BiliVideo
     @EnvironmentObject private var appModel: AppModel
-    @State private var isCoverHovered = false
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
         VideoPlaybackLink(
             video: video,
             resolveWatchProgress: appModel.account != nil
         ) {
             VStack(alignment: .leading, spacing: 8) {
                 ZStack(alignment: .bottomTrailing) {
-                    HoverZoomVideoCover(shape: shape, isHovered: $isCoverHovered) {
+                    HoverZoomVideoCover {
                         RemoteCover(
                             url: video.coverURL,
                             aspectRatio: VideoCardLayout.coverAspect,
-                            appliesCornerClip: false
+                            cornerRadius: 8
                         )
                         .frame(maxWidth: .infinity)
                     }
@@ -1155,7 +1153,6 @@ private struct DynamicVideoPreview: View {
                             .padding(6)
                     }
                 }
-                .zIndex(isCoverHovered ? 1 : 0)
 
                 if !video.title.isEmpty {
                     Text(video.title)

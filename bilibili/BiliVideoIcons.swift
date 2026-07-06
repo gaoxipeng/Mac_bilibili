@@ -559,15 +559,48 @@ struct BiliIconView: View {
     var symbolScale: CGFloat = 1
 
     var body: some View {
-        Image(icon.rawValue)
-            .renderingMode(.template)
-            .resizable()
-            .interpolation(.high)
-            .antialiased(true)
-            .scaledToFit()
-            .frame(width: size, height: size)
-            .scaleEffect(symbolScale)
-            .foregroundStyle(color)
+        Image(nsImage: BiliRasterIconCache.image(
+            icon: icon,
+            size: size,
+            color: color.nsColor,
+            symbolScale: symbolScale
+        ))
+        .resizable()
+        .interpolation(.high)
+        .antialiased(true)
+        .scaledToFit()
+        .frame(width: size, height: size)
+    }
+}
+
+private enum BiliRasterIconCache {
+    private static let cache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 96
+        return cache
+    }()
+
+    static func image(icon: BiliIcon, size: CGFloat, color: NSColor, symbolScale: CGFloat) -> NSImage {
+        let pointSize = max(1, size)
+        let key = "\(icon.rawValue)#\(Int(pointSize * 100))#\(Int(symbolScale * 100))#\(color.hash)" as NSString
+        if let cached = cache.object(forKey: key) {
+            return cached
+        }
+
+        let image = NSImage(size: NSSize(width: pointSize, height: pointSize))
+        image.lockFocus()
+        defer { image.unlockFocus() }
+
+        color.set()
+        guard let template = NSImage(named: icon.rawValue) else {
+            return image
+        }
+        template.isTemplate = true
+        let drawSize = pointSize * max(0.1, symbolScale)
+        let inset = (pointSize - drawSize) / 2
+        template.draw(in: NSRect(x: inset, y: inset, width: drawSize, height: drawSize))
+        cache.setObject(image, forKey: key)
+        return image
     }
 }
 

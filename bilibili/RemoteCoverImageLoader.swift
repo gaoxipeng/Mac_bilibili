@@ -170,6 +170,9 @@ final class RemoteCoverImageLoader: ObservableObject {
     }
 
     private nonisolated static func fetchAndDecode(url: URL, maxPixelLength: Int?) async -> NSImage? {
+        let signpostID = BiliScrollSignpost.imageDecodeBegin(url: url.lastPathComponent)
+        defer { BiliScrollSignpost.imageDecodeEnd(signpostID) }
+
         if let data = CoverImageDiskCache.data(for: url),
            let decoded = decodeCachedData(data, maxPixelLength: maxPixelLength) {
             return decoded

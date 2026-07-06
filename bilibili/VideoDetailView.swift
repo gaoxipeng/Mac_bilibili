@@ -49,6 +49,7 @@ final class VideoDetailModel: ObservableObject {
 
     @Published var videoRelation = BiliVideoRelation()
     @Published var authorSign = ""
+    @Published var authorIpLocation: String?
     @Published var authorLevel = 0
     @Published var authorFollowerCount: Int64 = 0
     @Published var authorRelation = BiliAuthorRelation()
@@ -61,6 +62,12 @@ final class VideoDetailModel: ObservableObject {
     @Published var needsLoginPrompt = false
 
     private var coinHintDismissTask: Task<Void, Never>?
+    private var authorIpRefreshTask: Task<Void, Never>?
+    private var prefetchedStream: BiliPlayStream?
+
+    func applyPrefetchedStream(_ stream: BiliPlayStream?) {
+        prefetchedStream = stream
+    }
 
     init(
         video: BiliVideo,
@@ -73,7 +80,8 @@ final class VideoDetailModel: ObservableObject {
         self.credential = credential
         self.activeCID = video.cid
         self.initialProgressSeconds = max(0, initialProgressSeconds)
-        self.activeEpid = max(0, playbackEpid)
+        let resolvedEpid = playbackEpid > 0 ? playbackEpid : video.pgcEpid
+        self.activeEpid = max(0, resolvedEpid)
         self.playbackRefererURL = playbackRefererURL
         playerChangeSink = player.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
@@ -88,6 +96,15 @@ final class VideoDetailModel: ObservableObject {
         detail?.video ?? seedVideo
     }
 
+    func makePlaybackRequest() -> VideoPlaybackRequest {
+        VideoPlaybackRequest(
+            displayVideo,
+            progressSeconds: Int(player.currentTime.rounded(.down)),
+            epid: activeEpid,
+            refererURL: playbackRefererURL
+        )
+    }
+
     var showAuthorFollowControl: Bool {
         guard let credential, displayVideo.authorMid > 0 else { return false }
         let viewerMid = Int64(credential.dedeUserId) ?? 0
@@ -99,6 +116,7 @@ final class VideoDetailModel: ObservableObject {
         isLoadingDetail = true
         detailError = nil
         authorSign = ""
+        authorIpLocation = nil
         authorLevel = 0
         authorFollowerCount = 0
         authorRelation = BiliAuthorRelation()
@@ -108,10 +126,10 @@ final class VideoDetailModel: ObservableObject {
 
         if isBangumiPlayback {
             do {
-                let (context, loaded) = try await loadBangumiEpisodeContext(epid: activeEpid)
+                let loaded = try await api.pgcVideoDetail(epid: activeEpid, credential: credential)
                 guard isLifecycleActive(generation), !Task.isCancelled else { return }
-                activeCID = context.cid
-                detail = applyBangumiDetail(context: context, loaded: loaded)
+                activeCID = loaded.video.cid
+                detail = loaded
                 async let authorCardTask = loadAuthorCardInfo()
                 async let onlineCountTask = loadOnlineCount()
                 async let videoTagsTask = loadVideoTags()
@@ -123,6 +141,7 @@ final class VideoDetailModel: ObservableObject {
                 await authorCardTask
                 await onlineCountTask
                 await videoTagsTask
+                scheduleAuthorIpRefresh(generation: generation)
             } catch {
                 guard isLifecycleActive(generation) else { return }
                 detailError = error.localizedDescription
@@ -133,10 +152,20 @@ final class VideoDetailModel: ObservableObject {
         do {
             let loaded = try await api.videoDetail(bvid: seedVideo.bvid, credential: credential)
             guard isLifecycleActive(generation), !Task.isCancelled else { return }
-            detail = loaded
-            if activeCID <= 0 {
-                activeCID = loaded.video.cid
+
+            if loaded.video.pgcEpid > 0 {
+                activeEpid = loaded.video.pgcEpid
+                let pgcLoaded = try await api.pgcVideoDetail(epid: activeEpid, credential: credential)
+                guard isLifecycleActive(generation), !Task.isCancelled else { return }
+                activeCID = pgcLoaded.video.cid
+                detail = pgcLoaded
+            } else {
+                detail = loaded
+                if activeCID <= 0 {
+                    activeCID = loaded.video.cid
+                }
             }
+
             async let authorCardTask = loadAuthorCardInfo()
             async let onlineCountTask = loadOnlineCount()
             async let videoTagsTask = loadVideoTags()
@@ -148,6 +177,7 @@ final class VideoDetailModel: ObservableObject {
             await authorCardTask
             await onlineCountTask
             await videoTagsTask
+            scheduleAuthorIpRefresh(generation: generation)
         } catch {
             guard isLifecycleActive(generation) else { return }
             detailError = error.localizedDescription
@@ -171,6 +201,27 @@ final class VideoDetailModel: ObservableObject {
         authorLevel = snapshot.level
         authorFollowerCount = snapshot.followerCount
         authorRelation = snapshot.relation
+    }
+
+    private func scheduleAuthorIpRefresh(generation: Int) {
+        authorIpRefreshTask?.cancel()
+        authorIpRefreshTask = nil
+        let mid = displayVideo.authorMid
+        guard mid > 0, isLifecycleActive(generation) else { return }
+
+        authorIpRefreshTask = Task(priority: .background) { [weak self] in
+            guard let self else { return }
+            let ipLocation = await self.resolveAuthorIpLocation(mid: mid)
+            guard !Task.isCancelled, self.isLifecycleActive(generation) else { return }
+            self.authorIpLocation = JSONParser.normalizeIpLocation(ipLocation)
+        }
+    }
+
+    private func resolveAuthorIpLocation(mid: Int64) async -> String? {
+        await api.userSpaceIpLocation(
+            mid: mid,
+            credential: credential
+        )
     }
 
     func followAuthor() async {
@@ -504,10 +555,10 @@ final class VideoDetailModel: ObservableObject {
             isLoadingDetail = true
             defer { isLoadingDetail = false }
             do {
-                let (context, loaded) = try await loadBangumiEpisodeContext(epid: part.epid)
+                let loaded = try await api.pgcVideoDetail(epid: part.epid, credential: credential)
                 guard isLifecycleActive(generation), !Task.isCancelled else { return }
-                activeCID = context.cid
-                detail = applyBangumiDetail(context: context, loaded: loaded)
+                activeCID = loaded.video.cid
+                detail = loaded
                 loadedCommentsKey = nil
                 comments = []
                 commentsEnd = false
@@ -553,7 +604,20 @@ final class VideoDetailModel: ObservableObject {
         defer { isLoadingPlayback = false }
 
         do {
-            let stream = try await resolvePlayStream(bvid: bvid, cid: cid)
+            let stream: BiliPlayStream
+            if let prefetchedStream,
+               prefetchedStream.cid == cid,
+               !prefetchedStream.videoURL.isEmpty {
+                stream = BiliPlayStream(
+                    videoURL: prefetchedStream.videoURL,
+                    audioURL: prefetchedStream.audioURL,
+                    aid: displayVideo.aid > 0 ? displayVideo.aid : prefetchedStream.aid,
+                    cid: cid
+                )
+                self.prefetchedStream = nil
+            } else {
+                stream = try await resolvePlayStream(bvid: bvid, cid: cid)
+            }
             guard isLifecycleActive(generation), !Task.isCancelled else { return }
 
             let resolvedStream = BiliPlayStream(
@@ -778,7 +842,10 @@ final class VideoDetailModel: ObservableObject {
         coinHintDismissTask?.cancel()
         coinHintDismissTask = nil
         coinHintMessage = nil
+        authorIpRefreshTask?.cancel()
+        authorIpRefreshTask = nil
         authorSign = ""
+        authorIpLocation = nil
         authorLevel = 0
         authorFollowerCount = 0
         authorRelation = BiliAuthorRelation()
@@ -1133,7 +1200,10 @@ struct VideoDetailView: View {
         }
         .background(AppLayout.videoDetailPageBackground)
         .navigationBarBackButtonHidden(true)
-        .task { await model.load() }
+        .task {
+            model.applyPrefetchedStream(appModel.cachedPlayStream(for: model.seedVideo))
+            await model.load()
+        }
         .onAppear {
             publishesFloatingChrome = true
             publishVideoFloatingChrome()
@@ -1182,6 +1252,7 @@ struct VideoDetailView: View {
                     }
                 }
             }
+            .environmentObject(appModel)
         }
         .commentImageFullscreenOverlay(imageURL: $commentFullscreenPictureURL)
     }
@@ -1220,7 +1291,7 @@ struct VideoDetailView: View {
 
                     VideoIntroCard(
                         model: model,
-                        onTagTap: { appModel.openSearch(for: $0) }
+                        onTagTap: { appModel.openSearch(for: $0, returningTo: model.makePlaybackRequest()) }
                     )
                     .frame(width: playerWidth)
                 }
@@ -1446,14 +1517,16 @@ struct VideoDetailView: View {
             ) {
                 VideoDetailAuthorNameLabel(
                     name: model.displayVideo.authorName,
-                    level: model.authorLevel
+                    level: model.authorLevel,
+                    ipLocation: model.authorIpLocation
                 )
             }
             .buttonStyle(.plain)
         } else {
             VideoDetailAuthorNameLabel(
                 name: model.displayVideo.authorName,
-                level: model.authorLevel
+                level: model.authorLevel,
+                ipLocation: model.authorIpLocation
             )
         }
     }
@@ -2464,6 +2537,7 @@ private struct VideoCommentsPanel: View {
 private struct VideoDetailAuthorNameLabel: View {
     let name: String
     let level: Int
+    let ipLocation: String?
 
     @State private var isHovered = false
 
@@ -2480,6 +2554,13 @@ private struct VideoDetailAuthorNameLabel: View {
 
             if level > 0 {
                 BiliUserLevelIcon(level: level, width: 28, height: 18)
+            }
+
+            if let ipLocation, !ipLocation.isEmpty {
+                Text("IP属地：\(ipLocation)")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: isHovered)
@@ -2639,5 +2720,3 @@ private extension Date {
         return formatter.string(from: self)
     }
 }
-
-

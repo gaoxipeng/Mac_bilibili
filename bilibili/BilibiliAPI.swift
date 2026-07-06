@@ -11,6 +11,12 @@ actor BilibiliAPI {
         await buildCookieHeader(credential: credential) ?? ""
     }
 
+    func invalidateWBICache() {
+        mixinKey = nil
+        warmUpTask?.cancel()
+        warmUpTask = nil
+    }
+
     func warmUp(credential: BilibiliCredential? = nil) async {
         loadPersistedGuestBuvid()
         if mixinKey != nil, guestBuvid3 != nil { return }
@@ -487,6 +493,138 @@ actor BilibiliAPI {
         return JSONParser.parseSpaceDynamicFeed(from: json)
     }
 
+    func dynamicDetail(
+        dynamicId: String,
+        credential: BilibiliCredential? = nil
+    ) async throws -> BiliDynamicItem? {
+        guard !dynamicId.isEmpty else { return nil }
+        let json = try await wbiJSON(
+            url: "https://api.bilibili.com/x/polymer/web-dynamic/v1/detail",
+            params: [
+                "id": dynamicId,
+                "timezone_offset": "-480",
+                "platform": "web",
+                "gaia_source": "main_web",
+                "features": "itemOpusStyle,opusBigCover,onlyfansVote,endFooterHidden,decorationCard,onlyfansAssetsV2,ugcDelete,onlyfansQaCard,commentsNewVersion",
+                "web_location": "333.1368"
+            ],
+            credential: credential,
+            referer: "https://t.bilibili.com/\(dynamicId)",
+            extraHeaders: dynamicRequestHeaders()
+        )
+        return JSONParser.parseDynamicDetail(from: json)
+    }
+
+    func exchangeAccessKey(_ credential: BilibiliCredential) async -> BilibiliCredential {
+        if !credential.accessKey.isEmpty { return credential }
+        let prepared = await preparedCredentialForExchange(credential)
+        let result = await BiliAccessKeyExchange.exchangeWithStatus(credential: prepared)
+        if let exchanged = result.credential, !exchanged.accessKey.isEmpty {
+            return exchanged
+        }
+        return prepared
+    }
+
+    func preparedCredentialForExchange(_ credential: BilibiliCredential) async -> BilibiliCredential {
+        await warmUp(credential: credential)
+        var prepared = credential
+        if prepared.buvid3.isEmpty, let guestBuvid3 {
+            prepared.buvid3 = guestBuvid3
+        }
+        if prepared.buvid4.isEmpty, let guestBuvid4 {
+            prepared.buvid4 = guestBuvid4
+        }
+        return prepared
+    }
+
+    func dynamicAuthorIpLocation(
+        dynamicId: String,
+        credential: BilibiliCredential?
+    ) async -> String? {
+        guard let credential else { return nil }
+        let resolved = await exchangeAccessKey(credential)
+        guard !resolved.accessKey.isEmpty else { return nil }
+        return await BiliDynamicGrpcClient.fetchAuthorIpLocation(
+            dynamicId: dynamicId,
+            credential: resolved
+        )
+    }
+
+    func userSpaceIpLocation(
+        mid: Int64,
+        seedDynamics: [BiliDynamicItem] = [],
+        credential: BilibiliCredential? = nil
+    ) async -> String? {
+        let resolvedCredential: BilibiliCredential?
+        if let credential {
+            resolvedCredential = await exchangeAccessKey(credential)
+        } else {
+            resolvedCredential = nil
+        }
+
+        if let ipLocation = seedDynamics.compactMap({ JSONParser.normalizeIpLocation($0.ipLocation) }).first {
+            return ipLocation
+        }
+
+        var candidates = seedDynamics
+        if candidates.isEmpty {
+            candidates = (try? await userSpaceDynamics(
+                mid: mid,
+                offset: nil,
+                credential: resolvedCredential ?? credential
+            ).items) ?? []
+        }
+
+        let canUseGrpc = !(resolvedCredential?.accessKey.isEmpty ?? true)
+        for dynamic in candidates.prefix(5) {
+            if let ipLocation = JSONParser.normalizeIpLocation(dynamic.ipLocation) {
+                return ipLocation
+            }
+            if canUseGrpc,
+               let resolvedCredential,
+               let grpcIpLocation = await BiliDynamicGrpcClient.fetchAuthorIpLocation(
+                   dynamicId: dynamic.id,
+                   credential: resolvedCredential
+               ),
+               let ipLocation = JSONParser.normalizeIpLocation(grpcIpLocation) {
+                return ipLocation
+            }
+        }
+
+        return nil
+    }
+
+    func enrichDynamicIpLocations(
+        items: [BiliDynamicItem],
+        credential: BilibiliCredential? = nil
+    ) async -> [BiliDynamicItem] {
+        guard items.contains(where: { JSONParser.normalizeIpLocation($0.ipLocation) == nil }) else {
+            return items
+        }
+
+        var result = items
+        for (index, item) in items.enumerated() {
+            if JSONParser.normalizeIpLocation(item.ipLocation) != nil {
+                if let normalized = JSONParser.normalizeIpLocation(item.ipLocation),
+                   item.ipLocation != normalized {
+                    result[index] = item.withIpLocation(normalized)
+                }
+                continue
+            }
+
+            guard let credential else { continue }
+            let requestCredential = await exchangeAccessKey(credential)
+            guard let resolved = await dynamicAuthorIpLocation(
+                dynamicId: item.id,
+                credential: requestCredential
+            ) else {
+                continue
+            }
+            result[index] = item.withIpLocation(resolved)
+        }
+        return result
+    }
+
     func subjectComments(
         oid: Int64,
         type: Int,
@@ -665,6 +803,60 @@ actor BilibiliAPI {
         return JSONParser.parseHistoryPage(from: json)
     }
 
+    func watchProgress(
+        bvid: String,
+        aid: Int64,
+        credential: BilibiliCredential,
+        maxPages: Int = 15
+    ) async throws -> BiliWatchProgress? {
+        guard !bvid.isEmpty || aid > 0 else { return nil }
+
+        var cursorMax: Int64 = 0
+        var viewAt: Int64 = 0
+        var business = ""
+        var pageSize = 30
+
+        for _ in 0..<max(1, maxPages) {
+            let page = try await history(
+                credential: credential,
+                cursorMax: cursorMax,
+                viewAt: viewAt,
+                business: business,
+                pageSize: pageSize
+            )
+
+            if let match = page.items.first(where: { matchesHistoryItem($0, bvid: bvid, aid: aid) }),
+               let progress = Self.watchProgress(from: match) {
+                return progress
+            }
+
+            guard let cursor = page.cursor, page.hasMore else { break }
+            cursorMax = cursor.max
+            viewAt = cursor.viewAt
+            business = cursor.business
+            pageSize = cursor.ps > 0 ? cursor.ps : 30
+        }
+
+        return nil
+    }
+
+    private func matchesHistoryItem(_ item: BiliHistoryItem, bvid: String, aid: Int64) -> Bool {
+        if !bvid.isEmpty, item.video.bvid == bvid { return true }
+        if aid > 0, item.video.aid == aid { return true }
+        return false
+    }
+
+    private static func watchProgress(from item: BiliHistoryItem) -> BiliWatchProgress? {
+        let durationSeconds = max(item.durationSeconds, item.video.duration)
+        let progress = BiliWatchProgress(
+            progressSeconds: item.progressSeconds,
+            epid: item.epid,
+            refererURL: item.webURI,
+            durationSeconds: durationSeconds
+        )
+        return progress.isResumable ? progress : nil
+    }
+
     func pgcPlayURL(
         epid: Int64,
         cid: Int64,
@@ -747,6 +939,24 @@ actor BilibiliAPI {
         return stream
     }
 
+    func pgcVideoDetail(
+        epid: Int64,
+        credential: BilibiliCredential? = nil
+    ) async throws -> BiliVideoDetail {
+        let context = try await pgcEpisodeContext(epid: epid, credential: credential)
+        let loaded = try await videoDetail(bvid: context.bvid, credential: credential)
+        let mergedVideo = mergePgcContextToVideo(context: context, base: loaded.video)
+        return BiliVideoDetail(
+            video: mergedVideo,
+            publishTime: loaded.publishTime,
+            replyCount: loaded.replyCount,
+            coinCount: loaded.coinCount,
+            favoriteCount: loaded.favoriteCount,
+            shareCount: loaded.shareCount,
+            pages: context.pages.isEmpty ? loaded.pages : context.pages
+        )
+    }
+
     func pgcEpisodeContext(
         epid: Int64,
         credential: BilibiliCredential? = nil
@@ -764,6 +974,113 @@ actor BilibiliAPI {
             throw APIError.message("无法读取番剧详情")
         }
         return context
+    }
+
+    func resolveHistoryPlaybackRequest(
+        item: BiliHistoryItem,
+        credential: BilibiliCredential? = nil
+    ) async -> VideoPlaybackRequest {
+        let epid = await resolvedHistoryEpid(for: item, credential: credential)
+        let isPgc = item.business == .pgc || item.video.isPgcPlayback || epid > 0
+
+        if isPgc, epid > 0 {
+            if let context = try? await pgcEpisodeContext(epid: epid, credential: credential) {
+                let video = mergePgcContextToVideo(context: context, base: item.video)
+                let referer = item.webURI
+                    ?? URL(string: "https://www.bilibili.com/bangumi/play/ep\(epid)")
+                return VideoPlaybackRequest(
+                    video,
+                    progressSeconds: item.progressSeconds,
+                    epid: epid,
+                    refererURL: referer
+                )
+            }
+
+            let video = normalizedPgcHistoryVideo(item.video, epid: epid)
+            return VideoPlaybackRequest(
+                video,
+                progressSeconds: item.progressSeconds,
+                epid: epid,
+                refererURL: item.webURI
+                    ?? URL(string: "https://www.bilibili.com/bangumi/play/ep\(epid)")
+            )
+        }
+
+        return VideoPlaybackRequest(
+            item.video,
+            progressSeconds: item.progressSeconds,
+            epid: item.epid,
+            refererURL: item.webURI
+        )
+    }
+
+    private func resolvedHistoryEpid(
+        for item: BiliHistoryItem,
+        credential: BilibiliCredential?
+    ) async -> Int64 {
+        if item.epid > 0 { return item.epid }
+        if let uri = item.webURI?.absoluteString,
+           let parsed = JSONParser.parsePgcEpidFromUri(uri) {
+            return parsed
+        }
+        let fromVideo = item.video.pgcEpid
+        if fromVideo > 0 { return fromVideo }
+        if item.business == .pgc,
+           let uri = item.webURI?.absoluteString,
+           let seasonId = JSONParser.parsePgcSeasonIdFromUri(uri),
+           seasonId > 0 {
+            return (try? await pgcSeasonFirstEpid(seasonId: seasonId, credential: credential)) ?? 0
+        }
+        return 0
+    }
+
+    private func normalizedPgcHistoryVideo(_ video: BiliVideo, epid: Int64) -> BiliVideo {
+        guard epid > 0 else { return video }
+        let syntheticBvid = video.bvid.isEmpty ? "pgc:\(epid)" : video.bvid
+        return BiliVideo(
+            id: "pgc:\(epid)",
+            bvid: syntheticBvid,
+            aid: video.aid,
+            title: video.title,
+            coverURL: video.coverURL,
+            authorName: video.authorName,
+            authorFaceURL: video.authorFaceURL,
+            authorMid: video.authorMid,
+            viewCount: video.viewCount,
+            danmakuCount: video.danmakuCount,
+            likeCount: video.likeCount,
+            duration: video.duration,
+            description: video.description,
+            cid: video.cid,
+            publishTime: video.publishTime
+        )
+    }
+
+    private func mergePgcContextToVideo(
+        context: BiliPGCEpisodeContext,
+        base: BiliVideo
+    ) -> BiliVideo {
+        let title = context.seasonTitle.ifEmpty(base.title)
+        let metadata = [context.styles, context.areas]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+        return BiliVideo(
+            id: "pgc:\(context.epid)",
+            bvid: context.bvid,
+            aid: context.aid,
+            title: title,
+            coverURL: context.coverURL ?? base.coverURL,
+            authorName: metadata.ifEmpty(base.authorName),
+            authorFaceURL: base.authorFaceURL,
+            authorMid: base.authorMid,
+            viewCount: base.viewCount,
+            danmakuCount: base.danmakuCount,
+            likeCount: base.likeCount,
+            duration: context.duration > 0 ? context.duration : base.duration,
+            description: context.evaluate.ifEmpty(base.description),
+            cid: context.cid,
+            publishTime: base.publishTime
+        )
     }
 
     func deleteWatchHistory(kid: String, credential: BilibiliCredential) async throws -> Bool {
@@ -1257,7 +1574,8 @@ actor BilibiliAPI {
         url: String,
         params: [String: String],
         credential: BilibiliCredential? = nil,
-        referer: String = BilibiliEndpoints.home
+        referer: String = BilibiliEndpoints.home,
+        extraHeaders: [String: String] = [:]
     ) async throws -> Any {
         await warmUp(credential: credential)
 
@@ -1273,6 +1591,7 @@ actor BilibiliAPI {
             params: signed,
             credential: credential,
             referer: referer,
+            extraHeaders: extraHeaders,
             wbiEncoded: true,
             skipWarmUp: true
         )

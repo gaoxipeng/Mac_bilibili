@@ -26,7 +26,7 @@ struct BiliHistoryCursor: Sendable {
     let business: String
     let ps: Int
 
-    var hasMore: Bool {
+    nonisolated var hasMore: Bool {
         ps > 0
     }
 }
@@ -35,7 +35,7 @@ struct BiliHistoryPage: Sendable {
     let items: [BiliHistoryItem]
     let cursor: BiliHistoryCursor?
 
-    var hasMore: Bool {
+    nonisolated var hasMore: Bool {
         cursor?.hasMore ?? false
     }
 }
@@ -59,6 +59,37 @@ nonisolated struct BiliVideo: Identifiable, Hashable, Sendable {
 
     var webURL: URL? {
         URL(string: "https://www.bilibili.com/video/\(bvid)")
+    }
+
+    nonisolated var pgcEpid: Int64 {
+        if id.hasPrefix("pgc:") {
+            let token = id.dropFirst(4).split(separator: "-", maxSplits: 1).first.map(String.init)
+                ?? String(id.dropFirst(4))
+            return Int64(token) ?? 0
+        }
+        if bvid.hasPrefix("pgc:") {
+            let token = bvid.dropFirst(4).split(separator: "-", maxSplits: 1).first.map(String.init)
+                ?? String(bvid.dropFirst(4))
+            return Int64(token) ?? 0
+        }
+        return 0
+    }
+
+    nonisolated var isPgcPlayback: Bool {
+        pgcEpid > 0
+    }
+
+    nonisolated func playbackID() -> String {
+        if !bvid.isEmpty, cid > 0 {
+            return "\(bvid):cid:\(cid)"
+        }
+        if !bvid.isEmpty {
+            return bvid
+        }
+        if aid > 0 {
+            return "av:\(aid)"
+        }
+        return id
     }
 }
 
@@ -202,17 +233,73 @@ struct BilibiliCredential: Codable, Hashable, Sendable {
     var biliJct: String
     var buvid3: String
     var buvid4: String
+    var dedeUserIDCkMd5: String = ""
+    var sid: String = ""
+    var accessKey: String = ""
+    var refreshToken: String = ""
+
+    enum CodingKeys: String, CodingKey {
+        case dedeUserId
+        case sessdata
+        case biliJct
+        case buvid3
+        case buvid4
+        case dedeUserIDCkMd5
+        case sid
+        case accessKey
+        case refreshToken
+    }
+
+    init(
+        dedeUserId: String,
+        sessdata: String,
+        biliJct: String,
+        buvid3: String,
+        buvid4: String,
+        dedeUserIDCkMd5: String = "",
+        sid: String = "",
+        accessKey: String = "",
+        refreshToken: String = ""
+    ) {
+        self.dedeUserId = dedeUserId
+        self.sessdata = sessdata
+        self.biliJct = biliJct
+        self.buvid3 = buvid3
+        self.buvid4 = buvid4
+        self.dedeUserIDCkMd5 = dedeUserIDCkMd5
+        self.sid = sid
+        self.accessKey = accessKey
+        self.refreshToken = refreshToken
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        dedeUserId = try container.decode(String.self, forKey: .dedeUserId)
+        sessdata = try container.decode(String.self, forKey: .sessdata)
+        biliJct = try container.decodeIfPresent(String.self, forKey: .biliJct) ?? ""
+        buvid3 = try container.decodeIfPresent(String.self, forKey: .buvid3) ?? ""
+        buvid4 = try container.decodeIfPresent(String.self, forKey: .buvid4) ?? ""
+        dedeUserIDCkMd5 = try container.decodeIfPresent(String.self, forKey: .dedeUserIDCkMd5) ?? ""
+        sid = try container.decodeIfPresent(String.self, forKey: .sid) ?? ""
+        accessKey = try container.decodeIfPresent(String.self, forKey: .accessKey) ?? ""
+        refreshToken = try container.decodeIfPresent(String.self, forKey: .refreshToken) ?? ""
+    }
 
     nonisolated var cookieHeader: String {
         var parts = [
             "SESSDATA=\(sessdata)",
             "bili_jct=\(biliJct)",
             "DedeUserID=\(dedeUserId)",
-            "DedeUserID__ckMd5="
+            "DedeUserID__ckMd5=\(dedeUserIDCkMd5)"
         ]
+        if !sid.isEmpty { parts.append("sid=\(sid)") }
         if !buvid3.isEmpty { parts.append("buvid3=\(buvid3)") }
         if !buvid4.isEmpty { parts.append("buvid4=\(buvid4)") }
         return parts.joined(separator: "; ")
+    }
+
+    nonisolated var hasLoginSession: Bool {
+        !sessdata.isEmpty && !dedeUserId.isEmpty
     }
 }
 
@@ -240,6 +327,23 @@ struct BiliUserProfile: Hashable, Sendable {
     let bcoinBalance: Double
     let videoCount: Int64
     let ipLocation: String?
+
+    nonisolated func withIpLocation(_ ipLocation: String?) -> BiliUserProfile {
+        BiliUserProfile(
+            mid: mid,
+            name: name,
+            faceURL: faceURL,
+            sign: sign,
+            level: level,
+            following: following,
+            follower: follower,
+            likes: likes,
+            coinCount: coinCount,
+            bcoinBalance: bcoinBalance,
+            videoCount: videoCount,
+            ipLocation: ipLocation
+        )
+    }
 }
 
 struct BiliAuthorRelation: Hashable, Sendable {
@@ -367,6 +471,30 @@ struct BiliDynamicItem: Identifiable, Hashable, Sendable {
     var publishDate: Date? {
         publishTimeSeconds > 0 ? Date(timeIntervalSince1970: TimeInterval(publishTimeSeconds)) : nil
     }
+
+    nonisolated func withIpLocation(_ ipLocation: String?) -> BiliDynamicItem {
+        BiliDynamicItem(
+            id: id,
+            text: text,
+            emoticons: emoticons,
+            publishTimeSeconds: publishTimeSeconds,
+            video: video,
+            imageURLs: imageURLs,
+            link: link,
+            origin: origin,
+            authorMid: authorMid,
+            authorName: authorName,
+            authorFaceURL: authorFaceURL,
+            authorLevel: authorLevel,
+            ipLocation: ipLocation,
+            commentOid: commentOid,
+            commentType: commentType,
+            dynamicType: dynamicType,
+            likeCount: likeCount,
+            commentCount: commentCount,
+            repostCount: repostCount
+        )
+    }
 }
 
 struct BiliDynamicFeedPage: Sendable {
@@ -396,6 +524,19 @@ enum BiliHistoryBusiness: String, Sendable, Hashable {
     case archive
     case pgc
     case unknown
+}
+
+struct BiliWatchProgress: Sendable {
+    let progressSeconds: Int
+    let epid: Int64
+    let refererURL: URL?
+    let durationSeconds: Int
+
+    nonisolated var isResumable: Bool {
+        guard progressSeconds > 0 else { return false }
+        guard durationSeconds > 0 else { return true }
+        return progressSeconds < durationSeconds
+    }
 }
 
 nonisolated struct VideoPlaybackRequest: Hashable, Sendable {

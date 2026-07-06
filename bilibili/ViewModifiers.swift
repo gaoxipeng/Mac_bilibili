@@ -729,6 +729,25 @@ private struct FeedSymmetricHorizontalInsetsKey: EnvironmentKey {
     static let defaultValue = false
 }
 
+private struct FeedUsesDirectViewportWidthKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+@MainActor
+enum FeedScrollActivity {
+    private(set) static var isScrolling = false
+
+    static func setScrolling(_ scrolling: Bool) {
+        isScrolling = scrolling
+    }
+
+    static func waitUntilIdle(pollInterval: Duration = .milliseconds(48)) async {
+        while isScrolling {
+            try? await Task.sleep(for: pollInterval)
+        }
+    }
+}
+
 extension EnvironmentValues {
     var feedViewportWidth: CGFloat {
         get { self[FeedViewportWidthKey.self] }
@@ -739,24 +758,45 @@ extension EnvironmentValues {
         get { self[FeedSymmetricHorizontalInsetsKey.self] }
         set { self[FeedSymmetricHorizontalInsetsKey.self] = newValue }
     }
+
+    var feedUsesDirectViewportWidth: Bool {
+        get { self[FeedUsesDirectViewportWidthKey.self] }
+        set { self[FeedUsesDirectViewportWidthKey.self] = newValue }
+    }
+}
+
+private enum FeedScrollTopAnchor {
+    static let id = "feed-scroll-top"
 }
 
 struct AppScrollView<Content: View>: View {
     @ViewBuilder private var content: () -> Content
     @State private var viewportWidth: CGFloat = 0
+    private var scrollToTopTrigger: Int
 
-    init(@ViewBuilder content: @escaping () -> Content) {
+    init(scrollToTopTrigger: Int = 0, @ViewBuilder content: @escaping () -> Content) {
+        self.scrollToTopTrigger = scrollToTopTrigger
         self.content = content
     }
 
     var body: some View {
-        ScrollView {
-            content()
-                .padding(.leading, AppLayout.feedHorizontalInset)
-                .padding(.trailing, AppLayout.feedTrailingInset)
-                .padding(.vertical, AppLayout.feedVerticalInset)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .environment(\.feedViewportWidth, viewportWidth)
+        ScrollViewReader { proxy in
+            ScrollView {
+                Color.clear
+                    .frame(height: 0)
+                    .id(FeedScrollTopAnchor.id)
+
+                content()
+                    .padding(.leading, AppLayout.feedHorizontalInset)
+                    .padding(.trailing, AppLayout.feedTrailingInset)
+                    .padding(.vertical, AppLayout.feedVerticalInset)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .environment(\.feedViewportWidth, viewportWidth)
+            }
+            .onChange(of: scrollToTopTrigger) { _, request in
+                guard request > 0 else { return }
+                proxy.scrollTo(FeedScrollTopAnchor.id, anchor: .top)
+            }
         }
         .background {
             GeometryReader { geometry in
@@ -1004,7 +1044,7 @@ struct VideoCoverDurationBadge: View {
             .shadow(color: .black.opacity(0.28), radius: 1, x: 0, y: 0.5)
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
-            .glassEffect(.clear, in: .capsule)
+            .background(Color.black.opacity(0.58), in: Capsule())
             .overlay {
                 Capsule()
                     .stroke(.white.opacity(0.24), lineWidth: 0.5)
@@ -1031,7 +1071,7 @@ struct VideoCoverHoverDetector: NSViewRepresentable {
 private enum VideoCoverHoverScrollCenter {
     private static var trackedViewsByScrollView: [ObjectIdentifier: NSHashTable<VideoCoverHoverTrackingView>] = [:]
     private static var activeViews = NSHashTable<VideoCoverHoverTrackingView>.weakObjects()
-    private static var scrollBoundsObservers: [ObjectIdentifier: NSObjectProtocol] = [:]
+    private static var scrollBoundsObservers: [ObjectIdentifier: [NSObjectProtocol]] = [:]
     private static var scrollIdleWorkItems: [ObjectIdentifier: DispatchWorkItem] = [:]
     private static var activeScrollDeadlines: [ObjectIdentifier: CFTimeInterval] = [:]
     private static let scrollSettleDelay: TimeInterval = 0.08
@@ -1076,7 +1116,9 @@ private enum VideoCoverHoverScrollCenter {
         let clipView = scrollView.contentView
         clipView.postsBoundsChangedNotifications = true
         let scrollViewBox = WeakScrollViewBox(scrollView)
-        scrollBoundsObservers[id] = NotificationCenter.default.addObserver(
+
+        var observers: [NSObjectProtocol] = []
+        observers.append(NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification,
             object: clipView,
             queue: .main
@@ -1084,12 +1126,55 @@ private enum VideoCoverHoverScrollCenter {
             MainActor.assumeIsolated {
                 handleScrollBoundsChanged(in: scrollViewBox.value)
             }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSScrollView.willStartLiveScrollNotification,
+            object: scrollView,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                handleLiveScrollWillStart(in: scrollViewBox.value)
+            }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSScrollView.didEndLiveScrollNotification,
+            object: scrollView,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                handleLiveScrollDidEnd(in: scrollViewBox.value)
+            }
+        })
+        scrollBoundsObservers[id] = observers
+    }
+
+    private static func handleLiveScrollWillStart(in scrollView: NSScrollView?) {
+        guard let scrollView else { return }
+        let wasScrolling = FeedScrollActivity.isScrolling
+        FeedScrollActivity.setScrolling(true)
+        if !wasScrolling {
+            deactivateHoveredViews(in: scrollView)
         }
+    }
+
+    private static func handleLiveScrollDidEnd(in scrollView: NSScrollView?) {
+        guard let scrollView else { return }
+        scheduleScrollEnd(in: scrollView)
     }
 
     private static func handleScrollBoundsChanged(in scrollView: NSScrollView?) {
         guard let scrollView else { return }
 
+        let wasScrolling = FeedScrollActivity.isScrolling
+        FeedScrollActivity.setScrolling(true)
+        if !wasScrolling {
+            deactivateHoveredViews(in: scrollView)
+        }
+
+        scheduleScrollEnd(in: scrollView)
+    }
+
+    private static func scheduleScrollEnd(in scrollView: NSScrollView) {
         let id = ObjectIdentifier(scrollView)
         let settleDeadline = CACurrentMediaTime() + scrollSettleDelay
         activeScrollDeadlines[id] = settleDeadline
@@ -1102,6 +1187,7 @@ private enum VideoCoverHoverScrollCenter {
                 activeScrollDeadlines[id] = nil
                 scrollIdleWorkItems[id] = nil
                 guard let scrollView = scrollViewBox.value else { return }
+                FeedScrollActivity.setScrolling(false)
                 recheckTrackedViews(in: scrollView)
             }
         }
@@ -1109,17 +1195,40 @@ private enum VideoCoverHoverScrollCenter {
         DispatchQueue.main.asyncAfter(deadline: .now() + scrollSettleDelay, execute: idleWorkItem)
     }
 
+    private static func deactivateHoveredViews(in scrollView: NSScrollView) {
+        for view in activeViews.allObjects {
+            guard view.hoverScrollView() === scrollView else { continue }
+            view.forceDeactivateHover()
+        }
+    }
+
     private static func recheckTrackedViews(in scrollView: NSScrollView) {
         guard let mouseInWindow = scrollView.window?.mouseLocationOutsideOfEventStream else {
-            for view in activeViews.allObjects where view.hoverScrollView() === scrollView {
+            for view in activeViews.allObjects {
+                guard view.hoverScrollView() === scrollView else { continue }
                 view.forceDeactivateHover()
             }
             return
         }
 
-        let trackedInScrollView = trackedViewsByScrollView[ObjectIdentifier(scrollView)]?.allObjects ?? []
-        for view in trackedInScrollView {
+        var seen = Set<ObjectIdentifier>()
+        var viewsToRecheck: [VideoCoverHoverTrackingView] = []
+
+        for view in trackedViewsByScrollView[ObjectIdentifier(scrollView)]?.allObjects ?? [] {
+            let id = ObjectIdentifier(view)
+            guard seen.insert(id).inserted else { continue }
             guard view.needsScrollHoverRecheck(mouseInWindow: mouseInWindow) else { continue }
+            viewsToRecheck.append(view)
+        }
+
+        for view in activeViews.allObjects {
+            guard view.hoverScrollView() === scrollView else { continue }
+            let id = ObjectIdentifier(view)
+            guard seen.insert(id).inserted else { continue }
+            viewsToRecheck.append(view)
+        }
+
+        for view in viewsToRecheck {
             view.recheckHoverState(mouseInWindow: mouseInWindow)
         }
     }
@@ -1145,11 +1254,7 @@ final class VideoCoverHoverTrackingView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         updateTrackingAreas()
-        if window != nil {
-            MainActor.assumeIsolated {
-                VideoCoverHoverScrollCenter.prepare(self)
-            }
-        }
+        refreshScrollViewAttachment()
     }
 
     override func viewWillMove(toWindow newWindow: NSWindow?) {
@@ -1161,9 +1266,19 @@ final class VideoCoverHoverTrackingView: NSView {
         }
     }
 
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        refreshScrollViewAttachment()
+    }
+
     override func layout() {
         super.layout()
+        guard !FeedScrollActivity.isScrolling else { return }
         updateTrackingAreas()
+        refreshScrollViewAttachment()
+        if isHovering {
+            recheckHoverState()
+        }
     }
 
     override func updateTrackingAreas() {
@@ -1192,8 +1307,17 @@ final class VideoCoverHoverTrackingView: NSView {
             return cachedScrollView
         }
 
-        var candidate: NSView? = self
+        if let scrollView = enclosingScrollView {
+            cachedScrollView = scrollView
+            return scrollView
+        }
+
+        var candidate: NSView? = superview
         while let view = candidate {
+            if let scrollView = view as? NSScrollView {
+                cachedScrollView = scrollView
+                return scrollView
+            }
             if let scrollView = view.enclosingScrollView {
                 cachedScrollView = scrollView
                 return scrollView
@@ -1203,8 +1327,13 @@ final class VideoCoverHoverTrackingView: NSView {
         return nil
     }
 
+    func refreshScrollViewAttachment() {
+        cachedScrollView = nil
+        VideoCoverHoverScrollCenter.prepare(self)
+    }
+
     func forceDeactivateHover() {
-        setHovering(false)
+        setHovering(false, suppressAnimation: FeedScrollActivity.isScrolling)
     }
 
     func recheckHoverState(mouseInWindow providedMouseInWindow: NSPoint? = nil) {
@@ -1241,15 +1370,25 @@ final class VideoCoverHoverTrackingView: NSView {
         return coverFrameInWindow.contains(mouseInWindow)
     }
 
-    private func setHovering(_ hovering: Bool) {
+    private func setHovering(_ hovering: Bool, suppressAnimation: Bool = false) {
         guard isHovering != hovering else { return }
+        if hovering, FeedScrollActivity.isScrolling { return }
         isHovering = hovering
         if hovering {
+            refreshScrollViewAttachment()
             VideoCoverHoverScrollCenter.activate(self)
         } else {
             VideoCoverHoverScrollCenter.deactivate(self)
         }
-        onHoverChanged?(hovering)
+        if suppressAnimation {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                onHoverChanged?(hovering)
+            }
+        } else {
+            onHoverChanged?(hovering)
+        }
     }
 }
 

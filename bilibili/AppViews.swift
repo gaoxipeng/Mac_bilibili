@@ -12,10 +12,6 @@ enum VideoCardLayout {
     static let coverHoverExitAnimation = Animation.easeOut(duration: 0.07)
     static let statsAuthorSpacing: CGFloat = 4
     static let metadataPadding = EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
-    /// Feed 封面解码目标像素，避免滚动时为每个 cell 做 GeometryReader 测量。
-    static func feedCoverPixelLength(displayScale: CGFloat) -> Int {
-        Int((minWidth * max(1, displayScale) * 1.05).rounded(.up))
-    }
 
     static func columnCount(for width: CGFloat) -> Int {
         guard width > 0 else { return 1 }
@@ -120,7 +116,7 @@ struct HoverZoomVideoCover<Content: View>: View {
     @Binding var isHovered: Bool
     @ViewBuilder var content: () -> Content
 
-    private var hoverAnimation: Animation {
+    private var hoverAnimation: Animation? {
         isHovered ? VideoCardLayout.coverHoverEnterAnimation : VideoCardLayout.coverHoverExitAnimation
     }
 
@@ -142,7 +138,12 @@ private struct FeedCardTitle: View {
     let title: String
     let font: Font
     let areaHeight: CGFloat
-    let destination: VideoPlaybackRequest
+    let video: BiliVideo
+    var resolveWatchProgress = false
+    var progressSeconds = 0
+    var epid: Int64 = 0
+    var refererURL: URL? = nil
+    var onOpen: (() -> Void)? = nil
     @State private var isHovered = false
 
     var body: some View {
@@ -161,15 +162,66 @@ private struct FeedCardTitle: View {
         }
         .frame(height: areaHeight, alignment: .top)
         .overlay {
-            NavigationLink(value: destination) {
-                Color.clear
-                    .contentShape(Rectangle())
+            if let onOpen {
+                Button(action: onOpen) {
+                    Color.clear
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else {
+                VideoPlaybackLink(
+                    video: video,
+                    resolveWatchProgress: resolveWatchProgress,
+                    progressSeconds: progressSeconds,
+                    epid: epid,
+                    refererURL: refererURL
+                ) {
+                    Color.clear
+                        .contentShape(Rectangle())
+                }
             }
-            .buttonStyle(.plain)
         }
         .onHover { hovering in
+            guard !FeedScrollActivity.isScrolling else { return }
             withAnimation(FeedCardHoverStyle.colorAnimation) {
                 isHovered = hovering
+            }
+        }
+    }
+}
+
+struct VideoPlaybackLink<Label: View>: View {
+    let video: BiliVideo
+    var resolveWatchProgress = false
+    var progressSeconds = 0
+    var epid: Int64 = 0
+    var refererURL: URL? = nil
+    @ViewBuilder let label: () -> Label
+    @EnvironmentObject private var model: AppModel
+
+    private var destination: VideoPlaybackRequest {
+        VideoPlaybackRequest(
+            video,
+            progressSeconds: progressSeconds,
+            epid: epid,
+            refererURL: refererURL
+        )
+    }
+
+    var body: some View {
+        Group {
+            if resolveWatchProgress {
+                Button {
+                    model.openVideo(video, resolveWatchProgress: true)
+                } label: {
+                    label()
+                }
+                .buttonStyle(.plain)
+            } else {
+                NavigationLink(value: destination) {
+                    label()
+                }
+                .buttonStyle(.plain)
             }
         }
     }
@@ -203,6 +255,7 @@ private struct FeedCardAuthorLabel: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onHover { hovering in
+            guard !FeedScrollActivity.isScrolling else { return }
             withAnimation(FeedCardHoverStyle.colorAnimation) {
                 isHovered = hovering
             }
@@ -248,16 +301,19 @@ struct VideoFeedGrid<Trailing: View>: View {
     var largeTypography = false
     var showsLikeCount = true
     var showsAuthor = true
+    var resolveWatchProgress = false
     var maxColumnCount: Int? = nil
     @ViewBuilder var trailing: () -> Trailing
     @Environment(\.feedViewportWidth) private var feedViewportWidth
     @Environment(\.feedSymmetricHorizontalInsets) private var feedSymmetricHorizontalInsets
+    @Environment(\.feedUsesDirectViewportWidth) private var feedUsesDirectViewportWidth
 
     init(
         videos: [BiliVideo],
         largeTypography: Bool = false,
         showsLikeCount: Bool = true,
         showsAuthor: Bool = true,
+        resolveWatchProgress: Bool = false,
         maxColumnCount: Int? = nil,
         @ViewBuilder trailing: @escaping () -> Trailing = { EmptyView() }
     ) {
@@ -265,6 +321,7 @@ struct VideoFeedGrid<Trailing: View>: View {
         self.largeTypography = largeTypography
         self.showsLikeCount = showsLikeCount
         self.showsAuthor = showsAuthor
+        self.resolveWatchProgress = resolveWatchProgress
         self.maxColumnCount = maxColumnCount
         self.trailing = trailing
     }
@@ -301,6 +358,7 @@ struct VideoFeedGrid<Trailing: View>: View {
                             largeTypography: largeTypography,
                             showsLikeCount: showsLikeCount,
                             showsAuthor: showsAuthor,
+                            resolveWatchProgress: resolveWatchProgress,
                             columnWidth: columnWidth,
                             titleAreaHeight: titleAreaHeight
                         )
@@ -316,9 +374,14 @@ struct VideoFeedGrid<Trailing: View>: View {
     }
 
     private var resolvedLayoutWidth: CGFloat {
-        let width = feedSymmetricHorizontalInsets
-            ? AppLayout.feedContentWidthSymmetric(viewportWidth: feedViewportWidth)
-            : AppLayout.feedContentWidth(viewportWidth: feedViewportWidth)
+        let width: CGFloat
+        if feedUsesDirectViewportWidth {
+            width = feedViewportWidth
+        } else if feedSymmetricHorizontalInsets {
+            width = AppLayout.feedContentWidthSymmetric(viewportWidth: feedViewportWidth)
+        } else {
+            width = AppLayout.feedContentWidth(viewportWidth: feedViewportWidth)
+        }
         if width > 0 {
             return width
         }
@@ -401,7 +464,12 @@ struct FavoritesView: View {
                         emptyTitle: "暂无收藏视频"
                     )
 
-                    VideoFeedGrid(videos: videos, largeTypography: true, showsLikeCount: false)
+                    VideoFeedGrid(
+                        videos: videos,
+                        largeTypography: true,
+                        showsLikeCount: false,
+                        resolveWatchProgress: loggedIn
+                    )
                         .frame(maxWidth: .infinity, alignment: .leading)
 
                     if hasMore, !videos.isEmpty {
@@ -419,37 +487,33 @@ struct FavoritesView: View {
 }
 
 struct ScrollPerformanceTestView: View {
-    private static let sampleImages = ScrollTestSampleImage.makeAll()
+    private static let sampleImages = ScrollTestSampleImage.makeAll(count: 24)
+    private static let imageGridStride = 10
 
     private static let baseParagraphs: [String] = [
-        "这是一段用于滚动性能测试的中文文字。页面里包含少量本地示例图片与纯文本，用于对比滚动表现。",
+        "这是一段用于滚动性能测试的中文文字。页面里包含较多本地示例图片与纯文本，用于对比滚动表现。",
         "如果你在这个页面滚动依然感到卡顿，问题可能出在 ScrollView 本身、窗口渲染，或者全局滚动配置。",
         "如果这里滚动很流畅，而首页或收藏页滚动卡顿，则更可能是视频卡片、图片加载或列表布局导致的。",
         "春天来了，柳树抽出了嫩绿的新芽。微风拂过，河面上的涟漪一圈圈散开，远处的山峦在薄雾中若隐若现。",
         "程序员常说，过早优化是万恶之源。但在排查性能问题时，先用最简单的对照实验，往往比盲目改代码更有效。",
-        "这是一段用于滚动性能测试的中文文字。页面里只有纯文本，没有视频封面、网络图片或复杂卡片布局。",
-        "如果你在这个页面滚动依然感到卡顿，问题可能出在 ScrollView 本身、窗口渲染，或者全局滚动配置。",
-        "如果这里滚动很流畅，而首页或收藏页滚动卡顿，则更可能是视频卡片、图片加载或列表布局导致的。",
         "夏天的傍晚，蝉鸣声此起彼伏。街边的路灯一盏盏亮起，行人放慢了脚步，享受着一天中最惬意的时光。",
         "调试性能问题时，可以分别测试：纯文本滚动、纯图片滚动、以及完整视频卡片滚动，逐步缩小范围。",
-        "这是一段用于滚动性能测试的中文文字。页面里只有纯文本，没有视频封面、网络图片或复杂卡片布局。",
-        "如果你在这个页面滚动依然感到卡顿，问题可能出在 ScrollView 本身、窗口渲染，或者全局滚动配置。",
-        "如果这里滚动很流畅，而首页或收藏页滚动卡顿，则更可能是视频卡片、图片加载或列表布局导致的。",
         "秋天的落叶铺满了小路，踩上去发出沙沙的声响。天空高远而清澈，阳光透过枝叶洒下斑驳的光影。",
         "性能优化没有银弹。先测量，再定位，最后才是修改。对照实验能帮你快速判断瓶颈在哪一层。",
-        "这是一段用于滚动性能测试的中文文字。页面里只有纯文本，没有视频封面、网络图片或复杂卡片布局。",
-        "如果你在这个页面滚动依然感到卡顿，问题可能出在 ScrollView 本身、窗口渲染，或者全局滚动配置。",
-        "如果这里滚动很流畅，而首页或收藏页滚动卡顿，则更可能是视频卡片、图片加载或列表布局导致的。",
         "冬天的清晨，窗玻璃上结了一层薄霜。热茶捧在手里，白气袅袅升起，屋里屋外是两个截然不同的世界。",
-        "请继续向下滚动，确认大约两页内容时滚动是否依然顺滑。测试完成后，可对比首页与收藏页的表现。",
-        "这是一段用于滚动性能测试的中文文字。页面里只有纯文本，没有视频封面、网络图片或复杂卡片布局。",
-        "如果你在这个页面滚动依然感到卡顿，问题可能出在 ScrollView 本身、窗口渲染，或者全局滚动配置。",
-        "如果这里滚动很流畅，而首页或收藏页滚动卡顿，则更可能是视频卡片、图片加载或列表布局导致的。",
-        "测试页面的文字会重复出现，目的是凑够大约两屏的可滚动高度，便于你感受连续滚动时的帧率变化。",
+        "请继续向下滚动，确认多页内容时滚动是否依然顺滑。测试完成后，可对比首页与收藏页的表现。",
+        "测试页面的文字会重复出现，目的是凑够多屏可滚动高度，便于你感受连续滚动时的帧率变化。",
         "当你滚动到页面底部时，说明已经浏览完所有测试内容。感谢配合排查，希望这能帮助你定位卡顿原因。",
+        "滚动测试页现在包含更多示例图片网格，以及单行不换行的长文本，用于模拟更接近真实 feed 的滚动负载。",
+        "鼠标滚轮快速滑动时，请留意帧率是否稳定；若此处流畅而首页卡顿，瓶颈通常在卡片布局或图片解码。",
+        "触控板惯性滚动结束后，页面应能立即响应 hover 与其他交互，不应出现明显的延迟或抖动。",
+        "本地示例图均为 320×180 的静态位图，不涉及网络请求，可排除远程封面加载对滚动测试的干扰。",
+        "若需要进一步对比，可在首页、收藏页与本页之间来回切换，感受不同内容密度下的滚动差异。",
+        "单行文本不会自动折行，过长部分会以省略号截断，避免 Text 布局在滚动时反复计算多行高度。",
+        "示例图片网格采用 LazyVGrid 布局，与首页视频卡片网格在结构上有一定相似性，便于横向对比。",
     ]
 
-    private static let paragraphs = baseParagraphs + baseParagraphs
+    private static let paragraphs = Array(repeating: baseParagraphs, count: 6).flatMap { $0 }
 
     var body: some View {
         AppScrollView {
@@ -457,26 +521,49 @@ struct ScrollPerformanceTestView: View {
                 Text("滚动性能测试")
                     .font(.title2.weight(.semibold))
 
-                Text("本页包含中文文字与几张低分辨率本地示例图，约四屏可滚动内容，用于排查滚动卡顿原因。")
+                Text("本页包含 24 张本地示例图、单行不换行文字，约八至十屏可滚动内容，用于排查滚动卡顿原因。")
                     .font(.body)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
-                ScrollTestImageGrid(images: Self.sampleImages, title: "示例图片（320×180）")
+                ScrollTestImageGrid(
+                    images: Self.sampleImages,
+                    title: "示例图片（320×180，共 \(Self.sampleImages.count) 张）"
+                )
 
                 ForEach(Array(Self.paragraphs.enumerated()), id: \.offset) { index, paragraph in
                     Text("\(index + 1). \(paragraph)")
                         .font(.body)
                         .foregroundStyle(.primary)
-                        .lineSpacing(6)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
                         .frame(maxWidth: .infinity, alignment: .leading)
 
-                    if index == 12 {
-                        ScrollTestImageGrid(images: Array(Self.sampleImages.prefix(3)), title: "示例图片 A")
-                    } else if index == 37 {
-                        ScrollTestImageGrid(images: Array(Self.sampleImages.suffix(3)), title: "示例图片 B")
+                    if index > 0, index % Self.imageGridStride == 0 {
+                        let gridIndex = index / Self.imageGridStride
+                        ScrollTestImageGrid(
+                            images: Self.sampleImages(forGrid: gridIndex),
+                            title: "示例图片组 \(gridIndex)"
+                        )
                     }
                 }
+
+                ScrollTestImageGrid(
+                    images: Self.sampleImages,
+                    title: "示例图片（底部完整网格）"
+                )
             }
+        }
+    }
+
+    private static func sampleImages(forGrid gridIndex: Int) -> [NSImage] {
+        let count = sampleImages.count
+        guard count > 0 else { return [] }
+        let sliceSize = 8
+        let start = (gridIndex * sliceSize) % count
+        return (0..<sliceSize).map { offset in
+            sampleImages[(start + offset) % count]
         }
     }
 }
@@ -516,7 +603,7 @@ private enum ScrollTestSampleImage {
         let blue: CGFloat
     }
 
-    private static let specs: [Spec] = [
+    private static let baseSpecs: [Spec] = [
         Spec(label: "示例 1", red: 0.96, green: 0.45, blue: 0.55),
         Spec(label: "示例 2", red: 0.42, green: 0.62, blue: 0.96),
         Spec(label: "示例 3", red: 0.45, green: 0.78, blue: 0.58),
@@ -525,8 +612,20 @@ private enum ScrollTestSampleImage {
         Spec(label: "示例 6", red: 0.38, green: 0.74, blue: 0.82),
     ]
 
-    static func makeAll() -> [NSImage] {
-        specs.map { makeImage(spec: $0) }
+    static func makeAll(count: Int = 6) -> [NSImage] {
+        guard count > 0 else { return [] }
+        return (0..<count).map { index in
+            let base = baseSpecs[index % baseSpecs.count]
+            let cycle = index / baseSpecs.count
+            let tint = 0.92 - CGFloat(min(cycle, 3)) * 0.08
+            let spec = Spec(
+                label: "示例 \(index + 1)",
+                red: min(1, base.red * tint + CGFloat(index % 3) * 0.02),
+                green: min(1, base.green * tint + CGFloat((index + 1) % 3) * 0.02),
+                blue: min(1, base.blue * tint + CGFloat((index + 2) % 3) * 0.02)
+            )
+            return makeImage(spec: spec)
+        }
     }
 
     private static func makeImage(spec: Spec, width: Int = 320, height: Int = 180) -> NSImage {
@@ -589,6 +688,53 @@ struct VideoGridView: View {
                         loadingMore: loadingMore,
                         onLoadMore: { onLoadMore?() }
                     )
+                }
+            }
+        }
+    }
+}
+
+struct HomeView: View {
+    let videos: [BiliVideo]
+    let loading: Bool
+    let loadingMore: Bool
+    let hasMore: Bool
+    let error: String?
+    let loggedIn: Bool
+    let scrollToTopTrigger: Int
+    let onLoadMore: () -> Void
+
+    var body: some View {
+        AppScrollView(scrollToTopTrigger: scrollToTopTrigger) {
+            LazyVStack(alignment: .leading, spacing: 10) {
+                if !loggedIn {
+                    ContentUnavailableView(
+                        "登录后查看个人主页",
+                        systemImage: "house",
+                        description: Text("在「我的」页面完成登录，即可同步首页推荐")
+                    )
+                    .padding(.vertical, 40)
+                    .frame(maxWidth: .infinity)
+                    .materialPanel()
+                } else {
+                    StateBanner(
+                        loading: loading,
+                        error: error,
+                        isEmpty: videos.isEmpty,
+                        emptyTitle: "暂无推荐内容"
+                    )
+
+                    VideoFeedGrid(videos: videos)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if hasMore, !videos.isEmpty {
+                        FeedLoadMoreFooter(
+                            anchorID: videos.count,
+                            hasMore: hasMore,
+                            loadingMore: loadingMore,
+                            onLoadMore: onLoadMore
+                        )
+                    }
                 }
             }
         }
@@ -1079,6 +1225,8 @@ private struct HistoryVideoCard: View, Equatable {
     let columnWidth: CGFloat
     let titleAreaHeight: CGFloat
     let onDelete: () -> Void
+    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.displayScale) private var displayScale
     @State private var isCoverHovered = false
     @State private var isDeleteHovered = false
 
@@ -1092,6 +1240,11 @@ private struct HistoryVideoCard: View, Equatable {
 
     private var coverHeight: CGFloat {
         VideoCardLayout.coverHeight(columnWidth: columnWidth)
+    }
+
+    private var coverDecodePixelLength: Int {
+        let displayMax = max(columnWidth, coverHeight)
+        return Int((displayMax * max(1, displayScale) * 1.05).rounded(.up))
     }
 
     private var metadataHeight: CGFloat {
@@ -1109,15 +1262,6 @@ private struct HistoryVideoCard: View, Equatable {
         let duration = max(item.durationSeconds, video.duration)
         guard duration > 0, item.progressSeconds > 0 else { return 0 }
         return min(1, Double(item.progressSeconds) / Double(duration))
-    }
-
-    private var playbackRequest: VideoPlaybackRequest {
-        VideoPlaybackRequest(
-            video,
-            progressSeconds: item.progressSeconds,
-            epid: item.epid,
-            refererURL: item.webURI
-        )
     }
 
     private var authorDisplayName: String {
@@ -1148,12 +1292,15 @@ private struct HistoryVideoCard: View, Equatable {
     }
 
     private func coverSection(shape: RoundedRectangle) -> some View {
-        NavigationLink(value: playbackRequest) {
+        Button {
+            appModel.openHistoryVideo(item)
+        } label: {
             ZStack(alignment: .bottomTrailing) {
                 HoverZoomVideoCover(shape: shape, isHovered: $isCoverHovered) {
                     RemoteCover(
                         url: video.coverURL,
                         aspectRatio: VideoCardLayout.coverAspect,
+                        maxDecodePixelLength: coverDecodePixelLength,
                         appliesCornerClip: false
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1192,7 +1339,11 @@ private struct HistoryVideoCard: View, Equatable {
                 title: video.title,
                 font: .title3.weight(.medium),
                 areaHeight: titleAreaHeight,
-                destination: playbackRequest
+                video: video,
+                progressSeconds: item.progressSeconds,
+                epid: item.epid,
+                refererURL: item.webURI,
+                onOpen: { appModel.openHistoryVideo(item) }
             )
 
             authorRow
@@ -1229,6 +1380,7 @@ private struct HistoryVideoCard: View, Equatable {
                 .fixedSize()
                 .help("删除历史")
                 .onHover { hovering in
+                    guard !FeedScrollActivity.isScrolling else { return }
                     withAnimation(FeedCardHoverStyle.colorAnimation) {
                         isDeleteHovered = hovering
                     }
@@ -1294,6 +1446,7 @@ struct MineView: View {
                     }
                 }
             }
+            .environmentObject(model)
         }
     }
 
@@ -1366,15 +1519,18 @@ struct VideoCard: View, Equatable {
     var largeTypography = false
     var showsLikeCount = true
     var showsAuthor = true
+    var resolveWatchProgress = false
     let columnWidth: CGFloat
     let titleAreaHeight: CGFloat
     @State private var isCoverHovered = false
+    @Environment(\.displayScale) private var displayScale
 
     static func == (lhs: VideoCard, rhs: VideoCard) -> Bool {
         lhs.video == rhs.video
             && lhs.largeTypography == rhs.largeTypography
             && lhs.showsLikeCount == rhs.showsLikeCount
             && lhs.showsAuthor == rhs.showsAuthor
+            && lhs.resolveWatchProgress == rhs.resolveWatchProgress
             && lhs.columnWidth == rhs.columnWidth
             && lhs.titleAreaHeight == rhs.titleAreaHeight
     }
@@ -1385,6 +1541,11 @@ struct VideoCard: View, Equatable {
 
     private var coverHeight: CGFloat {
         VideoCardLayout.coverHeight(columnWidth: columnWidth)
+    }
+
+    private var coverDecodePixelLength: Int {
+        let displayMax = max(columnWidth, coverHeight)
+        return Int((displayMax * max(1, displayScale) * 1.05).rounded(.up))
     }
 
     private var metadataHeight: CGFloat {
@@ -1438,12 +1599,13 @@ struct VideoCard: View, Equatable {
     }
 
     private func coverSection(shape: RoundedRectangle) -> some View {
-        NavigationLink(value: VideoPlaybackRequest(video)) {
+        VideoPlaybackLink(video: video, resolveWatchProgress: resolveWatchProgress) {
             ZStack(alignment: .bottomTrailing) {
                 HoverZoomVideoCover(shape: shape, isHovered: $isCoverHovered) {
                     RemoteCover(
                         url: video.coverURL,
                         aspectRatio: VideoCardLayout.coverAspect,
+                        maxDecodePixelLength: coverDecodePixelLength,
                         appliesCornerClip: false
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1456,7 +1618,6 @@ struct VideoCard: View, Equatable {
             }
             .contentShape(shape)
         }
-        .buttonStyle(.plain)
     }
 
     private var metadataSection: some View {
@@ -1465,15 +1626,15 @@ struct VideoCard: View, Equatable {
                 title: video.title,
                 font: titleFont,
                 areaHeight: titleAreaHeight,
-                destination: VideoPlaybackRequest(video)
+                video: video,
+                resolveWatchProgress: resolveWatchProgress
             )
 
             if metrics.includesStats {
-                NavigationLink(value: VideoPlaybackRequest(video)) {
+                VideoPlaybackLink(video: video, resolveWatchProgress: resolveWatchProgress) {
                     statsRow
                         .frame(height: metrics.statsHeight, alignment: .leading)
                 }
-                .buttonStyle(.plain)
             }
 
             if showsAuthor {
@@ -1678,22 +1839,35 @@ struct LoginCard: View {
 }
 
 struct WebLoginSheet: View {
+    @EnvironmentObject private var appModel: AppModel
     @ObservedObject var session: BilibiliWebSession
     let onCompleteLogin: () -> Void
     @Environment(\.dismiss) private var dismiss
+
+    private let sheetMinWidth: CGFloat = 1080
+    private let sheetMinHeight: CGFloat = 780
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
             BilibiliWebView(webView: session.webView)
-                .clipShape(RoundedRectangle(cornerRadius: 0))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 720, minHeight: 560)
+        .frame(
+            minWidth: sheetMinWidth,
+            idealWidth: sheetMinWidth,
+            minHeight: sheetMinHeight,
+            idealHeight: sheetMinHeight
+        )
         .background(.regularMaterial)
         .task {
-            session.openLogin()
-            await session.refreshLoginState()
+            if appModel.consumeFreshWebLoginFlag() {
+                await session.prepareFreshLogin()
+            } else {
+                session.openLogin(forceReload: true)
+                await session.refreshLoginState()
+            }
         }
     }
 
@@ -1702,7 +1876,7 @@ struct WebLoginSheet: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("哔哩哔哩登录")
                     .font(.title2.weight(.bold))
-                Text("在下方页面完成登录。登录成功后点击「完成登录」返回应用。")
+                Text("在下方页面完成登录。若要切换账号，请先点「清除网页登录」。")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -1710,6 +1884,11 @@ struct WebLoginSheet: View {
             Spacer()
 
             HStack(spacing: 10) {
+                Button("清除网页登录") {
+                    Task { await session.prepareFreshLogin() }
+                }
+                .buttonStyle(.bordered)
+
                 Button("重新打开") {
                     session.openLogin(forceReload: true)
                 }
@@ -1733,9 +1912,11 @@ struct WebLoginSheet: View {
 
 struct RemoteCover: View {
     let url: URL?
+    var fallbackURLs: [URL] = []
     let aspectRatio: CGFloat
     var width: CGFloat?
     var height: CGFloat?
+    var maxDecodePixelLength: Int?
     var appliesCornerClip = true
     var placeholderSystemImage = "play.rectangle"
     @StateObject private var imageLoader = RemoteCoverImageLoader()
@@ -1759,17 +1940,18 @@ struct RemoteCover: View {
         }
         .background(Color.white)
         .modifier(RemoteCoverCornerClip(enabled: appliesCornerClip))
+        .onAppear {
+            imageLoader.primeFromMemoryCache(
+                url: url,
+                maxPixelLength: coverDecodePixelLength
+            )
+        }
         .task(id: loadTaskID) {
-            if let width, let height {
-                imageLoader.load(url: url, targetSize: CGSize(width: width, height: height), scale: displayScale)
-            } else {
-                let maxPixel = VideoCardLayout.feedCoverPixelLength(displayScale: displayScale)
-                imageLoader.load(
-                    url: url,
-                    maxPixelLength: maxPixel,
-                    thumbnailPixelSize: CGSize(width: CGFloat(maxPixel), height: CGFloat(maxPixel) / aspectRatio)
-                )
-            }
+            imageLoader.load(
+                url: url,
+                fallbackURLs: fallbackURLs,
+                maxPixelLength: coverDecodePixelLength
+            )
         }
         .onDisappear {
             imageLoader.cancel()
@@ -1783,6 +1965,7 @@ struct RemoteCover: View {
                 Image(nsImage: image)
                     .resizable()
                     .scaledToFill()
+                    .compositingGroup()
             } else if imageLoader.failed {
                 placeholder(systemImage: placeholderSystemImage)
             } else {
@@ -1792,35 +1975,29 @@ struct RemoteCover: View {
     }
 
     private var loadTaskID: String {
+        let fallbackKey = fallbackURLs.map(\.absoluteString).joined(separator: "|")
+        let decodeKey = coverDecodePixelLength.map(String.init) ?? "source"
         if let width, let height {
-            return "\(url?.absoluteString ?? "")#\(Int(width))x\(Int(height))#\(displayScale)"
+            return "\(url?.absoluteString ?? "")|\(fallbackKey)#\(Int(width))x\(Int(height))#\(displayScale)#\(decodeKey)"
         }
-        let pixel = VideoCardLayout.feedCoverPixelLength(displayScale: displayScale)
-        return "\(url?.absoluteString ?? "")#feed#\(pixel)"
+        return "\(url?.absoluteString ?? "")|\(fallbackKey)#feed#\(decodeKey)"
     }
 
-    private var coverPixelLength: Int {
+    private var coverDecodePixelLength: Int? {
+        if let maxDecodePixelLength {
+            return maxDecodePixelLength
+        }
         if let width, let height {
             let displayMax = max(width, height)
             return Int((displayMax * max(1, displayScale)).rounded(.up))
         }
-        return VideoCardLayout.feedCoverPixelLength(displayScale: displayScale)
-    }
-
-    private var coverThumbnailPixelSize: CGSize {
-        let scale = max(1, displayScale)
-        if let width, let height {
-            return CGSize(width: width * scale, height: height * scale)
-        }
-        let maxPixel = VideoCardLayout.feedCoverPixelLength(displayScale: displayScale)
-        return CGSize(width: CGFloat(maxPixel), height: CGFloat(maxPixel) / aspectRatio)
+        return nil
     }
 
     private var cachedImage: NSImage? {
         RemoteCoverImageLoader.cachedImage(
             url: url,
-            maxPixelLength: coverPixelLength,
-            thumbnailPixelSize: coverThumbnailPixelSize
+            maxPixelLength: coverDecodePixelLength
         )
     }
 
@@ -1863,6 +2040,9 @@ struct RemoteAvatar: View {
             Circle().stroke(border, lineWidth: 0.5)
         }
         .clipShape(Circle())
+        .onAppear {
+            imageLoader.primeFromMemoryCache(url: url, maxPixelLength: avatarPixelLength)
+        }
         .task(id: loadTaskID) {
             imageLoader.load(url: url, maxPixelLength: avatarPixelLength)
         }

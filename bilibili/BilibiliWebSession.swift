@@ -54,13 +54,87 @@ final class BilibiliWebSession: NSObject, ObservableObject {
         webView.load(URLRequest(url: BilibiliEndpoints.passportLogin))
     }
 
+    func clearLoginData() async {
+        let store = webView.configuration.websiteDataStore
+        let cookies = await store.httpCookieStore.allCookies()
+        for cookie in cookies where cookie.domain.contains("bilibili") {
+            await store.httpCookieStore.deleteCookie(cookie)
+        }
+        await Self.clearDefaultWebsiteData()
+        hasLoginCookie = false
+    }
+
+    func prepareFreshLogin() async {
+        await clearLoginData()
+        openLogin(forceReload: true)
+        await refreshLoginState()
+    }
+
+    static func clearDefaultWebsiteData() async {
+        let store = WKWebsiteDataStore.default()
+        let cookies = await store.httpCookieStore.allCookies()
+        for cookie in cookies where cookie.domain.contains("bilibili") {
+            await store.httpCookieStore.deleteCookie(cookie)
+        }
+
+        let records = await withCheckedContinuation { continuation in
+            store.fetchDataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes()) { records in
+                continuation.resume(returning: records)
+            }
+        }
+        for record in records where record.displayName.localizedCaseInsensitiveContains("bilibili") {
+            await withCheckedContinuation { continuation in
+                store.removeData(
+                    ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                    for: [record]
+                ) {
+                    continuation.resume()
+                }
+            }
+        }
+    }
+
     func refreshLoginState() async {
         hasLoginCookie = await readCredential() != nil
     }
 
     func readCredential() async -> BilibiliCredential? {
+        try? await Task.sleep(nanoseconds: 250_000_000)
         let cookies = await webView.configuration.websiteDataStore.httpCookieStore.allCookies()
         return Self.credential(from: cookies)
+    }
+
+    static func credential(from cookies: [HTTPCookie]) -> BilibiliCredential? {
+        let bilibiliCookies = cookies.filter { $0.domain.contains("bilibili.com") }
+        var bestByName: [String: HTTPCookie] = [:]
+        for cookie in bilibiliCookies {
+            if let existing = bestByName[cookie.name] {
+                let preferNew = cookie.domain.hasPrefix(".") && !existing.domain.hasPrefix(".")
+                    || cookie.value.count > existing.value.count
+                if preferNew {
+                    bestByName[cookie.name] = cookie
+                }
+            } else {
+                bestByName[cookie.name] = cookie
+            }
+        }
+
+        guard
+            let sessdata = bestByName["SESSDATA"]?.value, !sessdata.isEmpty,
+            let dedeUserId = bestByName["DedeUserID"]?.value, !dedeUserId.isEmpty
+        else {
+            return nil
+        }
+
+        return BilibiliCredential(
+            dedeUserId: dedeUserId,
+            sessdata: sessdata,
+            biliJct: bestByName["bili_jct"]?.value ?? "",
+            buvid3: bestByName["buvid3"]?.value ?? "",
+            buvid4: bestByName["buvid4"]?.value ?? "",
+            dedeUserIDCkMd5: bestByName["DedeUserID__ckMd5"]?.value ?? "",
+            sid: bestByName["sid"]?.value ?? ""
+        )
     }
 
     private func configureWebView() {
@@ -73,31 +147,6 @@ final class BilibiliWebSession: NSObject, ObservableObject {
         guard !cookieObserverRegistered else { return }
         cookieObserverRegistered = true
         webView.configuration.websiteDataStore.httpCookieStore.add(self)
-    }
-
-    private static func credential(from cookies: [HTTPCookie]) -> BilibiliCredential? {
-        let bilibiliCookies = cookies.filter {
-            $0.domain.contains("bilibili.com")
-        }
-        let values = Dictionary(
-            bilibiliCookies.map { ($0.name, $0.value) },
-            uniquingKeysWith: { current, _ in current }
-        )
-
-        guard
-            let sessdata = values["SESSDATA"], !sessdata.isEmpty,
-            let dedeUserId = values["DedeUserID"], !dedeUserId.isEmpty
-        else {
-            return nil
-        }
-
-        return BilibiliCredential(
-            dedeUserId: dedeUserId,
-            sessdata: sessdata,
-            biliJct: values["bili_jct"] ?? "",
-            buvid3: values["buvid3"] ?? "",
-            buvid4: values["buvid4"] ?? ""
-        )
     }
 }
 

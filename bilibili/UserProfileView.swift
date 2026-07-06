@@ -1,4 +1,3 @@
-import AppKit
 import Combine
 import SwiftUI
 
@@ -25,6 +24,8 @@ final class UserProfileModel: ObservableObject {
     @Published private(set) var dynamicsHasMore = true
     private var videoPage = 1
     private var dynamicsOffset: String?
+    private var profileIpRefreshTask: Task<Void, Never>?
+    private var dynamicsIpEnrichTask: Task<Void, Never>?
     private let api = BilibiliAPI()
 
     init(
@@ -73,6 +74,7 @@ final class UserProfileModel: ObservableObject {
                 let sign = profile?.sign ?? ""
                 return sign.isEmpty ? "这个人很神秘，什么都没有写" : sign
             }(),
+            ipLocation: JSONParser.normalizeIpLocation(profile?.ipLocation),
             following: profile?.following,
             follower: profile?.follower,
             likes: profile?.likes,
@@ -82,11 +84,14 @@ final class UserProfileModel: ObservableObject {
             isFollowing: relation.following,
             followerMe: relation.followerMe,
             followerCount: authorFollowerCount,
-            followLoading: followLoading
+            followLoading: followLoading,
+            showLogoutButton: isOwnProfile
         )
     }
 
     func load() async {
+        profileIpRefreshTask?.cancel()
+        dynamicsIpEnrichTask?.cancel()
         loading = true
         errorMessage = nil
         defer { loading = false }
@@ -99,6 +104,7 @@ final class UserProfileModel: ObservableObject {
             async let videosTask: Void = reloadVideos()
             async let dynamicsTask: Void = reloadDynamics()
             _ = await (videosTask, dynamicsTask)
+            scheduleProfileIpRefresh()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -166,6 +172,8 @@ final class UserProfileModel: ObservableObject {
             dynamics = page.items
             dynamicsOffset = page.nextOffset
             dynamicsHasMore = page.hasMore
+            applyProfileIpLocation(Self.resolveProfileIpFromDynamics(page.items))
+            scheduleDynamicsIpEnrichment(page.items)
         } catch {
             if errorMessage == nil {
                 errorMessage = error.localizedDescription
@@ -251,6 +259,84 @@ final class UserProfileModel: ObservableObject {
             ipLocation: current.ipLocation
         )
     }
+
+    private func applyProfileIpLocation(_ ipLocation: String?) {
+        guard let normalized = JSONParser.normalizeIpLocation(ipLocation) else { return }
+        guard let current = profile else { return }
+        if JSONParser.normalizeIpLocation(current.ipLocation) != nil { return }
+        profile = current.withIpLocation(normalized)
+    }
+
+    private static func resolveProfileIpFromDynamics(_ dynamics: [BiliDynamicItem]) -> String? {
+        dynamics.compactMap { JSONParser.normalizeIpLocation($0.ipLocation) }.first
+    }
+
+    private func scheduleDynamicsIpEnrichment(_ baseItems: [BiliDynamicItem]) {
+        guard baseItems.contains(where: { JSONParser.normalizeIpLocation($0.ipLocation) == nil }) else {
+            return
+        }
+        dynamicsIpEnrichTask?.cancel()
+        dynamicsIpEnrichTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var requestCredential = credential
+            if let current = requestCredential {
+                let exchanged = await api.exchangeAccessKey(current)
+                requestCredential = exchanged
+                credential = exchanged
+            }
+            let enriched = await api.enrichDynamicIpLocations(
+                items: baseItems,
+                credential: requestCredential
+            )
+            guard !Task.isCancelled else { return }
+            let enrichedByID = Dictionary(uniqueKeysWithValues: enriched.map { ($0.id, $0) })
+            dynamics = dynamics.map { dynamic in
+                guard let enrichedItem = enrichedByID[dynamic.id] else { return dynamic }
+                if let normalized = JSONParser.normalizeIpLocation(enrichedItem.ipLocation) {
+                    return dynamic.withIpLocation(normalized)
+                }
+                if enrichedItem.ipLocation == nil, dynamic.ipLocation != nil {
+                    return dynamic.withIpLocation(nil)
+                }
+                return dynamic
+            }
+            applyProfileIpLocation(Self.resolveProfileIpFromDynamics(dynamics))
+        }
+    }
+
+    func syncCredential(_ credential: BilibiliCredential?) {
+        self.credential = credential
+    }
+
+    func refreshProfileIpLocationIfNeeded() async {
+        guard JSONParser.normalizeIpLocation(profile?.ipLocation) == nil else { return }
+
+        var requestCredential = credential
+        if let current = requestCredential {
+            let exchanged = await api.exchangeAccessKey(current)
+            requestCredential = exchanged
+            credential = exchanged
+        }
+
+        let ipLocation = await api.userSpaceIpLocation(
+            mid: mid,
+            seedDynamics: dynamics,
+            credential: requestCredential
+        )
+        applyProfileIpLocation(ipLocation)
+    }
+
+    private func scheduleProfileIpRefresh() {
+        profileIpRefreshTask?.cancel()
+        guard JSONParser.normalizeIpLocation(profile?.ipLocation) == nil else {
+            profileIpRefreshTask = nil
+            return
+        }
+
+        profileIpRefreshTask = Task { @MainActor [weak self] in
+            await self?.refreshProfileIpLocationIfNeeded()
+        }
+    }
 }
 
 struct UserProfileChromeInfo: Equatable {
@@ -258,6 +344,7 @@ struct UserProfileChromeInfo: Equatable {
     let name: String
     let level: Int
     let sign: String
+    let ipLocation: String?
     let following: Int64?
     let follower: Int64?
     let likes: Int64?
@@ -268,6 +355,7 @@ struct UserProfileChromeInfo: Equatable {
     let followerMe: Bool
     let followerCount: Int64
     let followLoading: Bool
+    let showLogoutButton: Bool
 }
 
 struct UserProfileChromeMeasuredHeightKey: PreferenceKey {
@@ -292,6 +380,7 @@ struct UserProfileChromeHeaderView: View {
     var onBack: () -> Void = {}
     var onFollow: () -> Void = {}
     var onUnfollow: () -> Void = {}
+    var onLogout: () -> Void = {}
     var onFollowingTap: (() -> Void)?
     var onFollowersTap: (() -> Void)?
 
@@ -305,31 +394,36 @@ struct UserProfileChromeHeaderView: View {
                 GlassBackButton(action: onBack)
             }
 
-            HStack(alignment: .center, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
                 profileAvatar
 
-                VStack(alignment: .leading, spacing: 10) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(alignment: .center, spacing: 6) {
-                            Text(info.name)
-                                .font(.title)
-                                .foregroundStyle(primaryText)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.leading)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .center, spacing: 6) {
+                        Text(info.name)
+                            .font(.title)
+                            .foregroundStyle(primaryText)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
 
-                            if info.level > 0 {
-                                BiliUserLevelIcon(level: info.level, width: 30, height: 19)
-                            }
+                        if info.level > 0 {
+                            BiliUserLevelIcon(level: info.level, width: 30, height: 19)
                         }
 
-                        if !info.sign.isEmpty {
-                            Text(info.sign)
+                        if let ipLocation = info.ipLocation, !ipLocation.isEmpty {
+                            Text("IP属地：\(ipLocation)")
                                 .font(.callout)
                                 .foregroundStyle(secondaryText)
-                                .lineSpacing(2)
-                                .lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
+                                .lineLimit(1)
                         }
+                    }
+
+                    if !info.sign.isEmpty {
+                        Text(info.sign)
+                            .font(.callout)
+                            .foregroundStyle(secondaryText)
+                            .lineSpacing(2)
+                            .lineLimit(2)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -401,9 +495,29 @@ struct UserProfileChromeHeaderView: View {
                 )
             }
 
+            if info.showLogoutButton {
+                profileLogoutButton
+            }
+
             GlassMoreButton(webURL: info.webURL)
         }
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var profileLogoutButton: some View {
+        Button(action: onLogout) {
+            Text("退出登录")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(secondaryText)
+                .padding(.horizontal, 14)
+                .frame(height: ProfileChromeCapsuleMetrics.height)
+                .background(Color.black.opacity(0.06), in: Capsule())
+                .overlay {
+                    Capsule()
+                        .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.8)
+                }
+        }
+        .buttonStyle(.plain)
     }
 
     private var profileAvatar: some View {
@@ -662,12 +776,12 @@ struct UserProfileView: View {
                 HStack(alignment: .top, spacing: 0) {
                     profileScrollColumn(width: videoColumnWidth) {
                         videoSectionHeader
-                            .padding(.horizontal, AppLayout.feedHorizontalInset)
+                            .padding(.leading, columnInnerPadding)
                     } content: {
                         videosScrollContent
-                            .padding(.horizontal, AppLayout.feedHorizontalInset)
-                            .environment(\.feedViewportWidth, videoColumnWidth)
-                            .environment(\.feedSymmetricHorizontalInsets, true)
+                            .padding(.leading, columnInnerPadding)
+                            .environment(\.feedViewportWidth, videoColumnWidth - columnInnerPadding)
+                            .environment(\.feedUsesDirectViewportWidth, true)
                     }
                     .padding(.trailing, columnInnerPadding)
 
@@ -692,8 +806,13 @@ struct UserProfileView: View {
             .animation(.easeOut(duration: 0.22), value: contentTopInset)
         }
         .navigationBarBackButtonHidden(true)
-        .task { await model.load() }
+        .onChange(of: appModel.account?.credential.accessKey) { _, _ in
+            model.syncCredential(appModel.account?.credential)
+            Task { await model.refreshProfileIpLocationIfNeeded() }
+        }
         .onAppear {
+            model.syncCredential(appModel.account?.credential)
+            Task { await model.load() }
             publishesFloatingChrome = true
             publishProfileFloatingChrome()
             appModel.profilePageHandlers = ProfilePageHandlers(
@@ -710,7 +829,8 @@ struct UserProfileView: View {
                         )
                     )
                 },
-                reload: { Task { await model.load() } }
+                reload: { Task { await model.load() } },
+                logout: model.isOwnProfile ? { appModel.logout() } : nil
             )
             MediaPlaybackCoordinator.shared.notifyObscuringPageVisible()
         }
@@ -723,6 +843,7 @@ struct UserProfileView: View {
         }
         .onChange(of: model.profile?.name) { _, _ in updateFloatingProfileChrome() }
         .onChange(of: model.profile?.sign) { _, _ in updateFloatingProfileChrome() }
+        .onChange(of: model.profile?.ipLocation) { _, _ in updateFloatingProfileChrome() }
         .onChange(of: model.profile?.level) { _, _ in updateFloatingProfileChrome() }
         .onChange(of: model.profile?.follower) { _, _ in updateFloatingProfileChrome() }
         .onChange(of: model.relation.following) { _, _ in updateFloatingProfileChrome() }
@@ -748,6 +869,7 @@ struct UserProfileView: View {
             name: model.chromeInfo.name,
             level: model.chromeInfo.level,
             sign: model.chromeInfo.sign,
+            ipLocation: model.chromeInfo.ipLocation,
             following: model.chromeInfo.following,
             follower: model.chromeInfo.follower,
             likes: model.chromeInfo.likes,
@@ -757,7 +879,8 @@ struct UserProfileView: View {
             isFollowing: model.chromeInfo.isFollowing,
             followerMe: model.chromeInfo.followerMe,
             followerCount: model.chromeInfo.followerCount,
-            followLoading: model.chromeInfo.followLoading
+            followLoading: model.chromeInfo.followLoading,
+            showLogoutButton: model.chromeInfo.showLogoutButton
         )
     }
 
@@ -822,7 +945,7 @@ struct UserProfileView: View {
                 .padding(.vertical, 40)
         } else {
             VStack(alignment: .leading, spacing: 0) {
-                VideoFeedGrid(videos: model.videos, showsAuthor: false)
+                VideoFeedGrid(videos: model.videos, showsAuthor: false, resolveWatchProgress: appModel.account != nil)
 
                 if model.videosHasMore {
                     FeedLoadMoreFooter(
@@ -1002,11 +1125,15 @@ private struct DynamicContentPreview: View {
 
 private struct DynamicVideoPreview: View {
     let video: BiliVideo
+    @EnvironmentObject private var appModel: AppModel
     @State private var isCoverHovered = false
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
-        NavigationLink(value: VideoPlaybackRequest(video)) {
+        VideoPlaybackLink(
+            video: video,
+            resolveWatchProgress: appModel.account != nil
+        ) {
             VStack(alignment: .leading, spacing: 8) {
                 ZStack(alignment: .bottomTrailing) {
                     HoverZoomVideoCover(shape: shape, isHovered: $isCoverHovered) {
@@ -1039,7 +1166,6 @@ private struct DynamicVideoPreview: View {
                 }
             }
         }
-        .buttonStyle(.plain)
     }
 }
 
@@ -1115,7 +1241,7 @@ private struct DynamicFeedMetaRow: View {
     var body: some View {
         let hasPlayStats = video != nil && (video!.viewCount > 0 || video!.danmakuCount > 0)
         let timeText = BiliCommentFormats.formatTime(item.publishDate)
-        let ipText = item.ipLocation.map { "IP属地：\($0)" }
+        let ipText = JSONParser.normalizeIpLocation(item.ipLocation).map { "IP属地：\($0)" }
         let hasTrailing = !timeText.isEmpty || ipText != nil
 
         if hasPlayStats || hasTrailing {

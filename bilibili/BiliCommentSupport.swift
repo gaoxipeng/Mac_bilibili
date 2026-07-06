@@ -471,6 +471,7 @@ private struct CommentPictureThumbnail: View {
         Button(action: onTap) {
             RemoteCover(
                 url: picture.url,
+                fallbackURLs: BiliImageURLResolver.commentThumbnailFallbackURLs(for: picture.url),
                 aspectRatio: picture.aspectRatio,
                 width: size.width,
                 height: size.height,
@@ -572,15 +573,22 @@ private struct CommentFullscreenImage: View {
                     .tint(.white)
             }
         }
-        .task(id: url.absoluteString) {
-            imageLoader.load(
-                url: url,
+        .onAppear {
+            let candidates = BiliImageURLResolver.fullscreenCandidates(from: url)
+            imageLoader.primeFromMemoryCache(
+                url: candidates.first ?? url,
                 maxPixelLength: RemoteCoverImageLoader.fullscreenMaxPixelLength,
                 pixelCap: RemoteCoverImageLoader.fullscreenMaxPixelLength
             )
         }
-        .onDisappear {
-            imageLoader.cancel()
+        .task(id: url.absoluteString) {
+            let candidates = BiliImageURLResolver.fullscreenCandidates(from: url)
+            imageLoader.load(
+                url: candidates.first ?? url,
+                fallbackURLs: Array(candidates.dropFirst()),
+                maxPixelLength: RemoteCoverImageLoader.fullscreenMaxPixelLength,
+                pixelCap: RemoteCoverImageLoader.fullscreenMaxPixelLength
+            )
         }
     }
 }

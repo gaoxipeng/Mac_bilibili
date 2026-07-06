@@ -7,6 +7,7 @@ final class AppModel: ObservableObject {
     @Published var homeVideos: [BiliVideo] = []
     @Published var homeHasMore = false
     @Published var homeLoadingMore = false
+    @Published private(set) var playURLs: [String: BiliPlayStream] = [:]
     @Published var followingVideos: [BiliVideo] = []
     @Published var followingHasMore = false
     @Published var followingLoadingMore = false
@@ -22,14 +23,25 @@ final class AppModel: ObservableObject {
     @Published private(set) var loadingSections = Set<AppSection>()
     @Published var errorMessage: String?
     @Published var loginMessage: String?
+    @Published private(set) var needsFreshWebLogin = false
     @Published private(set) var searchFocusRequest = 0
     @Published private(set) var pendingSearchQuery: String?
     @Published var isSearchShowingResults = false
     @Published private(set) var exitSearchResultsRequest = 0
     @Published private(set) var searchRefreshRequest = 0
+    @Published private(set) var homeScrollToTopRequest = 0
+
+    private struct SearchReturnContext {
+        let section: AppSection
+        let playbackRequest: VideoPlaybackRequest
+    }
+
+    private var searchReturnContext: SearchReturnContext?
+    private var isRestoringSearchReturn = false
 
     var profilePageHandlers: ProfilePageHandlers?
     @Published var pendingUserRelationListRequest: UserRelationListRequest?
+    @Published var pendingPlaybackRequest: VideoPlaybackRequest?
 
     @Published private(set) var floatingVideoChrome: VideoDetailChromeInfo?
     @Published private(set) var floatingProfileChrome: UserProfileChromeInfo?
@@ -163,11 +175,15 @@ final class AppModel: ObservableObject {
     private var homeFetchCount = 0
     private var favoritePage = 1
     private var historyCursor: BiliHistoryCursor?
+    private var watchProgressByKey: [String: BiliWatchProgress] = [:]
 
     private let api = BilibiliAPI()
     private let accountStore = AccountStore()
+    private let homeFeedStore = HomeFeedStore()
     private var didLoadInitialData = false
     private var reloadGeneration = 0
+    private var didRestoreHomeFeedCache = false
+    private var homePrefetchTask: Task<Void, Never>?
 
     func isSectionLoading(_ section: AppSection) -> Bool {
         loadingSections.contains(section)
@@ -177,13 +193,31 @@ final class AppModel: ObservableObject {
         guard !didLoadInitialData else { return }
         didLoadInitialData = true
         account = accountStore.load()
+        restoreHomeFeedFromCacheIfNeeded()
         Task { await api.warmUp(credential: account?.credential) }
-        await reloadSelected()
+        if let account {
+            await ensureAccessKey(for: account)
+        }
+
+        if account != nil {
+            if homeVideos.isEmpty {
+                await refreshHome()
+            }
+            await refreshFollowingOnLaunch()
+            await prefetchWatchProgressIndex()
+        } else {
+            resetHomeForLoggedOut()
+        }
+
+        if selectedSection != .home {
+            await reloadSelectedIfNeeded()
+        }
     }
 
     func reloadSelectedIfNeeded() async {
         switch selectedSection {
         case .home where homeVideos.isEmpty:
+            guard account != nil else { return }
             await reloadSelected()
         case .following where followingVideos.isEmpty:
             await reloadSelected()
@@ -204,9 +238,19 @@ final class AppModel: ObservableObject {
         searchFocusRequest += 1
     }
 
-    func openSearch(for keyword: String) {
+    func requestHomeScrollToTop() {
+        homeScrollToTopRequest += 1
+    }
+
+    func openSearch(for keyword: String, returningTo playbackRequest: VideoPlaybackRequest? = nil) {
         let normalized = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalized.isEmpty else { return }
+        if let playbackRequest {
+            searchReturnContext = SearchReturnContext(
+                section: selectedSection,
+                playbackRequest: playbackRequest
+            )
+        }
         pendingSearchQuery = normalized
         selectedSection = .search
     }
@@ -215,8 +259,33 @@ final class AppModel: ObservableObject {
         pendingSearchQuery = nil
     }
 
+    func handleExitSearchResults() {
+        if restoreSearchReturnContext() { return }
+        requestExitSearchResults()
+    }
+
     func requestExitSearchResults() {
         exitSearchResultsRequest += 1
+    }
+
+    func clearSearchReturnContext() {
+        searchReturnContext = nil
+    }
+
+    func consumeSearchReturnRestoreFlag() -> Bool {
+        defer { isRestoringSearchReturn = false }
+        return isRestoringSearchReturn
+    }
+
+    @discardableResult
+    private func restoreSearchReturnContext() -> Bool {
+        guard let context = searchReturnContext else { return false }
+        searchReturnContext = nil
+        exitSearchResultsRequest += 1
+        isRestoringSearchReturn = true
+        pendingPlaybackRequest = context.playbackRequest
+        selectedSection = context.section
+        return true
     }
 
     func clearProfilePageHandlers() {
@@ -227,7 +296,128 @@ final class AppModel: ObservableObject {
         pendingUserRelationListRequest = request
     }
 
+    func openVideo(_ video: BiliVideo, resolveWatchProgress: Bool = false) {
+        guard resolveWatchProgress else {
+            pendingPlaybackRequest = VideoPlaybackRequest(video)
+            return
+        }
+
+        Task {
+            pendingPlaybackRequest = await resolvePlaybackRequest(for: video)
+        }
+    }
+
+    func openHistoryVideo(_ item: BiliHistoryItem) {
+        Task {
+            pendingPlaybackRequest = await api.resolveHistoryPlaybackRequest(
+                item: item,
+                credential: account?.credential
+            )
+        }
+    }
+
+    func resolvePlaybackRequest(for video: BiliVideo) async -> VideoPlaybackRequest {
+        if let progress = cachedWatchProgress(for: video) {
+            return playbackRequest(for: video, progress: progress)
+        }
+
+        guard let credential = account?.credential else {
+            if video.pgcEpid > 0 {
+                return VideoPlaybackRequest(
+                    video,
+                    epid: video.pgcEpid,
+                    refererURL: URL(string: "https://www.bilibili.com/bangumi/play/ep\(video.pgcEpid)")
+                )
+            }
+            return VideoPlaybackRequest(video)
+        }
+
+        if let progress = try? await api.watchProgress(
+            bvid: video.bvid,
+            aid: video.aid,
+            credential: credential
+        ) {
+            storeWatchProgress(progress, for: video)
+            return playbackRequest(for: video, progress: progress)
+        }
+
+        if video.pgcEpid > 0 {
+            return VideoPlaybackRequest(
+                video,
+                epid: video.pgcEpid,
+                refererURL: URL(string: "https://www.bilibili.com/bangumi/play/ep\(video.pgcEpid)")
+            )
+        }
+
+        return VideoPlaybackRequest(video)
+    }
+
+    private func playbackRequest(for video: BiliVideo, progress: BiliWatchProgress) -> VideoPlaybackRequest {
+        VideoPlaybackRequest(
+            video,
+            progressSeconds: progress.progressSeconds,
+            epid: progress.epid,
+            refererURL: progress.refererURL
+        )
+    }
+
+    private func cachedWatchProgress(for video: BiliVideo) -> BiliWatchProgress? {
+        watchProgressByKey[watchProgressKey(for: video)]
+    }
+
+    private func storeWatchProgress(_ progress: BiliWatchProgress, for video: BiliVideo) {
+        watchProgressByKey[watchProgressKey(for: video)] = progress
+    }
+
+    private func watchProgressKey(for video: BiliVideo) -> String {
+        if !video.bvid.isEmpty { return "bvid:\(video.bvid)" }
+        if video.aid > 0 { return "aid:\(video.aid)" }
+        return "id:\(video.id)"
+    }
+
+    private func mergeWatchProgress(from items: [BiliHistoryItem]) {
+        for item in items {
+            guard let progress = Self.resumableWatchProgress(from: item) else { continue }
+            let key = watchProgressKey(for: item.video)
+            if let existing = watchProgressByKey[key] {
+                if existing.progressSeconds >= progress.progressSeconds {
+                    continue
+                }
+            }
+            watchProgressByKey[key] = progress
+        }
+    }
+
+    private static func resumableWatchProgress(from item: BiliHistoryItem) -> BiliWatchProgress? {
+        let durationSeconds = max(item.durationSeconds, item.video.duration)
+        let progress = BiliWatchProgress(
+            progressSeconds: item.progressSeconds,
+            epid: item.epid,
+            refererURL: item.webURI,
+            durationSeconds: durationSeconds
+        )
+        return progress.isResumable ? progress : nil
+    }
+
+    private func prefetchWatchProgressIndex() async {
+        guard let credential = account?.credential else { return }
+        do {
+            let page = try await api.history(credential: credential, pageSize: 30)
+            mergeWatchProgress(from: page.items)
+            if historyItems.isEmpty {
+                historyItems = page.items
+                historyCursor = page.cursor
+                historyHasMore = page.hasMore
+            }
+        } catch {}
+    }
+
     func reloadSelected() async {
+        if selectedSection == .home {
+            await refreshHome()
+            return
+        }
+
         reloadGeneration += 1
         let generation = reloadGeneration
         let section = selectedSection
@@ -246,21 +436,7 @@ final class AppModel: ObservableObject {
                 searchRefreshRequest += 1
                 return
             case .home:
-                homeFreshIdx = 1
-                homeFetchRow = 1
-                homeLastShowList = ""
-                homeFetchCount = 0
-                let page = try await api.homeRecommend(
-                    credential: account?.credential,
-                    pageSize: Self.homePageSize
-                )
-                guard generation == reloadGeneration, selectedSection == section else { return }
-                homeVideos = page.videos
-                homeFreshIdx = page.nextFreshIdx
-                homeFetchRow = page.nextFetchRow
-                homeLastShowList = page.lastShowList
-                homeFetchCount = 1
-                homeHasMore = canLoadMoreHome(after: page, appendedNewItems: !page.videos.isEmpty)
+                break
             case .following:
                 guard let credential = account?.credential else {
                     guard generation == reloadGeneration else { return }
@@ -291,6 +467,7 @@ final class AppModel: ObservableObject {
                 historyItems = page.items
                 historyCursor = page.cursor
                 historyHasMore = page.hasMore
+                mergeWatchProgress(from: page.items)
             case .favorites:
                 guard let credential = account?.credential else {
                     guard generation == reloadGeneration else { return }
@@ -348,6 +525,7 @@ final class AppModel: ObservableObject {
             historyItems = page.items
             historyCursor = page.cursor
             historyHasMore = page.hasMore
+            mergeWatchProgress(from: page.items)
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
@@ -396,6 +574,7 @@ final class AppModel: ObservableObject {
                     || next.business != cursor.business
             } ?? false
             historyItems = merged
+            mergeWatchProgress(from: page.items)
             historyCursor = page.cursor
             if !page.hasMore || page.items.isEmpty {
                 historyHasMore = false
@@ -409,8 +588,53 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func refreshHome() async {
+        guard account != nil else {
+            resetHomeForLoggedOut()
+            return
+        }
+
+        requestHomeScrollToTop()
+
+        reloadGeneration += 1
+        let generation = reloadGeneration
+
+        errorMessage = nil
+        loadingSections.insert(.home)
+        defer {
+            if generation == reloadGeneration {
+                loadingSections.remove(.home)
+            }
+        }
+
+        homeFreshIdx = 1
+        homeFetchRow = 1
+        homeLastShowList = ""
+        homeFetchCount = 0
+
+        do {
+            let page = try await api.homeRecommend(
+                credential: account?.credential,
+                pageSize: Self.homePageSize
+            )
+            guard generation == reloadGeneration else { return }
+            homeVideos = page.videos
+            homeFreshIdx = page.nextFreshIdx
+            homeFetchRow = page.nextFetchRow
+            homeLastShowList = page.lastShowList
+            homeFetchCount = 1
+            homeHasMore = canLoadMoreHome(after: page, appendedNewItems: !page.videos.isEmpty)
+            persistHomeFeedCache()
+            prefetchHomePlayURLs()
+        } catch {
+            guard generation == reloadGeneration else { return }
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func loadMoreHome() async {
-        guard selectedSection == .home,
+        guard account != nil,
+              selectedSection == .home,
               homeHasMore,
               homeFetchCount < Self.homeMaxFetchCount,
               !isSectionLoading(.home),
@@ -438,8 +662,118 @@ final class AppModel: ObservableObject {
             homeLastShowList = page.lastShowList
             homeFetchCount += 1
             homeHasMore = canLoadMoreHome(after: page, appendedNewItems: !newVideos.isEmpty)
+            persistHomeFeedCache()
+            prefetchHomePlayURLs()
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    func cachedPlayStream(for video: BiliVideo) -> BiliPlayStream? {
+        let playbackID = video.playbackID()
+        guard let cached = playURLs[playbackID] else { return nil }
+        let targetCID = video.cid > 0 ? video.cid : nil
+        let cacheValid = cached.aid > 0
+            && cached.cid > 0
+            && (targetCID == nil || cached.cid == targetCID)
+        return cacheValid ? cached : nil
+    }
+
+    func ensurePlayStream(for video: BiliVideo) {
+        Task { await resolvePlayURL(for: video) }
+    }
+
+    @discardableResult
+    func resolvePlayURL(for video: BiliVideo) async -> BiliPlayStream? {
+        let playbackID = video.playbackID()
+        if let cached = cachedPlayStream(for: video) {
+            return cached
+        }
+
+        guard let credential = account?.credential, !video.bvid.isEmpty else { return nil }
+
+        do {
+            let detail = try await api.videoDetail(bvid: video.bvid, credential: credential)
+            let cid = video.cid > 0 ? video.cid : detail.video.cid
+            guard cid > 0 else { return nil }
+            let aid = video.aid > 0 ? video.aid : detail.video.aid
+            let stream = try await api.playURL(bvid: video.bvid, cid: cid, credential: credential)
+            let resolved = BiliPlayStream(
+                videoURL: stream.videoURL,
+                audioURL: stream.audioURL,
+                aid: aid,
+                cid: cid
+            )
+            playURLs[playbackID] = resolved
+            return resolved
+        } catch {
+            return nil
+        }
+    }
+
+    func ensureHomePlayStreamsPrefetched() {
+        prefetchHomePlayURLs()
+    }
+
+    private func prefetchHomePlayURLs() {
+        homePrefetchTask?.cancel()
+        homePrefetchTask = Task {
+            try? await Task.sleep(for: .milliseconds(450))
+            guard !Task.isCancelled else { return }
+            await FeedScrollActivity.waitUntilIdle()
+            guard !Task.isCancelled else { return }
+            for video in homeVideos.prefix(10) {
+                if Task.isCancelled { return }
+                if playURLs[video.playbackID()] != nil { continue }
+                await resolvePlayURL(for: video)
+            }
+        }
+    }
+
+    private func restoreHomeFeedFromCacheIfNeeded() {
+        guard !didRestoreHomeFeedCache else { return }
+        didRestoreHomeFeedCache = true
+        guard let cached = homeFeedStore.read() else { return }
+        homeVideos = cached.videos
+        homeFreshIdx = cached.freshIdx
+        homeFetchRow = cached.fetchRow
+        homeLastShowList = cached.lastShowList
+        homeHasMore = cached.hasMore
+        homeFetchCount = max(1, Int(ceil(Double(cached.videos.count) / Double(Self.homePageSize))))
+        prefetchHomePlayURLs()
+    }
+
+    private func persistHomeFeedCache() {
+        homeFeedStore.save(
+            CachedHomeFeed(
+                videos: homeVideos,
+                freshIdx: homeFreshIdx,
+                fetchRow: homeFetchRow,
+                lastShowList: homeLastShowList,
+                hasMore: homeHasMore
+            )
+        )
+    }
+
+    private func resetHomeForLoggedOut() {
+        homeVideos = []
+        homeHasMore = false
+        homeFreshIdx = 1
+        homeFetchRow = 1
+        homeLastShowList = ""
+        homeFetchCount = 0
+        homeLoadingMore = false
+    }
+
+    private func refreshFollowingOnLaunch() async {
+        guard account?.credential != nil else { return }
+        do {
+            let page = try await api.followingFeed(credential: account!.credential)
+            followingVideos = page.videos
+            followingOffset = page.nextOffset
+            followingHasMore = page.hasMore
+        } catch {
+            // Keep launch quiet; the following tab can retry on demand.
         }
     }
 
@@ -507,11 +841,36 @@ final class AppModel: ObservableObject {
         defer { loadingSections.remove(.mine) }
 
         do {
+            await api.warmUp(credential: credential)
+            var credential = await api.preparedCredentialForExchange(credential)
+            guard credential.hasLoginSession else {
+                loginMessage = "登录 Cookie 不完整，请清除网页登录后重新登录"
+                return false
+            }
+            let exchangeResult = await BiliAccessKeyExchange.exchangeWithStatus(credential: credential)
+            if let exchanged = exchangeResult.credential, !exchanged.accessKey.isEmpty {
+                credential = exchanged
+            }
             let account = try await api.validate(credential: credential)
-            self.account = account
-            accountStore.save(account)
-            loginMessage = "已登录 \(account.name)"
-            await loadProfile(account: account)
+            let savedAccount = BiliAccount(
+                uid: account.uid,
+                name: account.name,
+                faceURLString: account.faceURLString,
+                credential: credential
+            )
+            self.account = savedAccount
+            accountStore.save(savedAccount)
+            await api.invalidateWBICache()
+            await api.warmUp(credential: savedAccount.credential)
+            if credential.accessKey.isEmpty {
+                loginMessage = "已登录 \(savedAccount.name)，accessKey 交换失败：\(exchangeResult.status.summary)"
+            } else {
+                loginMessage = "已登录 \(savedAccount.name)"
+            }
+            await loadProfile(account: savedAccount)
+            await refreshHome()
+            await refreshFollowingOnLaunch()
+            await prefetchWatchProgressIndex()
             await reloadSelectedIfNeeded()
             return true
         } catch {
@@ -520,9 +879,42 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func updateAccountCredential(_ credential: BilibiliCredential) {
+        guard var account else { return }
+        guard account.credential != credential else { return }
+        account.credential = credential
+        self.account = account
+        accountStore.save(account)
+    }
+
+    func ensureAccessKey(for account: BiliAccount) async {
+        guard account.credential.accessKey.isEmpty else { return }
+        let prepared = await api.preparedCredentialForExchange(account.credential)
+        let result = await BiliAccessKeyExchange.exchangeWithStatus(credential: prepared)
+        guard let exchanged = result.credential, !exchanged.accessKey.isEmpty else { return }
+        let updated = BiliAccount(
+            uid: account.uid,
+            name: account.name,
+            faceURLString: account.faceURLString,
+            credential: exchanged
+        )
+        self.account = updated
+        accountStore.save(updated)
+    }
+
+    private func refreshStoredAccessKey(for account: BiliAccount) async {
+        await ensureAccessKey(for: account)
+    }
+
     func logout() {
         account = nil
         profile = nil
+        clearFloatingChrome()
+        clearProfilePageHandlers()
+        needsFreshWebLogin = true
+        homeFeedStore.clear()
+        resetHomeForLoggedOut()
+        playURLs = [:]
         followingVideos = []
         followingOffset = nil
         followingHasMore = false
@@ -531,12 +923,20 @@ final class AppModel: ObservableObject {
         historyCursor = nil
         historyHasMore = false
         historyLoadingMore = false
+        watchProgressByKey = [:]
         favoriteVideos = []
         favoritePage = 1
         favoriteHasMore = false
         favoriteLoadingMore = false
         accountStore.clear()
         loginMessage = "已退出登录"
+        Task { await BilibiliWebSession.clearDefaultWebsiteData() }
+    }
+
+    func consumeFreshWebLoginFlag() -> Bool {
+        let shouldPrepare = needsFreshWebLogin
+        needsFreshWebLogin = false
+        return shouldPrepare
     }
 
     private func loadProfile(account: BiliAccount) async {
@@ -631,4 +1031,5 @@ struct ProfilePageHandlers {
     let unfollow: () -> Void
     let openRelationList: (BiliUserRelationTab) -> Void
     let reload: () -> Void
+    var logout: (() -> Void)? = nil
 }

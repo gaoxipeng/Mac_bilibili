@@ -13,45 +13,61 @@ final class RemoteCoverImageLoader: ObservableObject {
 
     private static let cache: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
-        cache.countLimit = 480
-        cache.totalCostLimit = 256 * 1024 * 1024
+        cache.countLimit = 800
+        cache.totalCostLimit = 512 * 1024 * 1024
         return cache
     }()
-    private nonisolated static let maxPixelLength = 720
+    nonisolated static let maxPixelLength = 720
     nonisolated static let fullscreenMaxPixelLength = 4096
     private static let loadGate = ImageLoadGate(limit: 4)
 
-    func load(url: URL?, targetSize: CGSize, scale: CGFloat) {
-        let maxPixel = Self.targetPixelLength(for: targetSize, scale: scale)
-        let pixelSize = CGSize(
-            width: targetSize.width * max(1, scale),
-            height: targetSize.height * max(1, scale)
-        )
-        load(url: url, maxPixelLength: maxPixel, thumbnailPixelSize: pixelSize)
+    func primeFromMemoryCache(
+        url: URL?,
+        maxPixelLength: Int? = nil,
+        pixelCap: Int = RemoteCoverImageLoader.maxPixelLength
+    ) {
+        guard let url, let cached = Self.cachedImage(
+            url: url,
+            maxPixelLength: maxPixelLength,
+            pixelCap: pixelCap
+        ) else {
+            return
+        }
+
+        let maxPixel = maxPixelLength.map { Self.normalizedPixelLength($0, cap: pixelCap) }
+        currentKey = Self.cacheKey(primaryURL: url, maxPixelLength: maxPixel)
+        failed = false
+        image = cached
     }
 
     func load(
         url: URL?,
-        maxPixelLength: Int,
-        pixelCap: Int = RemoteCoverImageLoader.maxPixelLength,
-        thumbnailPixelSize: CGSize? = nil
+        fallbackURLs: [URL] = [],
+        maxPixelLength: Int? = RemoteCoverImageLoader.maxPixelLength,
+        pixelCap: Int = RemoteCoverImageLoader.maxPixelLength
     ) {
         guard let url else {
             resetForMissingURL()
             return
         }
 
-        let maxPixel = Self.normalizedPixelLength(maxPixelLength, cap: pixelCap)
-        let key = Self.cacheKey(
-            url: url,
-            maxPixelLength: maxPixel,
-            thumbnailPixelSize: thumbnailPixelSize
+        let candidates = BiliImageURLResolver.remoteImageCandidates(
+            primary: url,
+            fallbackURLs: fallbackURLs
         )
-        guard key != currentKey else { return }
+        let maxPixel = maxPixelLength.map { Self.normalizedPixelLength($0, cap: pixelCap) }
+        let key = Self.cacheKey(primaryURL: url, maxPixelLength: maxPixel)
+        if key == currentKey, image != nil {
+            return
+        }
         currentKey = key
         failed = false
 
-        if let cached = Self.cache.object(forKey: key as NSString) {
+        if let cached = Self.cachedImage(
+            url: url,
+            maxPixelLength: maxPixelLength,
+            pixelCap: pixelCap
+        ) {
             task?.cancel()
             task = nil
             image = cached
@@ -68,9 +84,8 @@ final class RemoteCoverImageLoader: ObservableObject {
             guard !Task.isCancelled else { return }
 
             guard let loaded = await Self.fetchImage(
-                url: url,
-                maxPixelLength: maxPixel,
-                thumbnailPixelSize: thumbnailPixelSize
+                candidates: candidates,
+                maxPixelLength: maxPixel
             ) else {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
@@ -81,12 +96,20 @@ final class RemoteCoverImageLoader: ObservableObject {
             }
 
             guard !Task.isCancelled else { return }
-            Self.cache.setObject(loaded, forKey: key as NSString, cost: loaded.estimatedPixelCost)
+            Self.store(loaded, forKey: key)
             await MainActor.run {
                 guard self?.currentKey == key else { return }
                 self?.image = loaded
             }
         }
+    }
+
+    func load(url: URL?, targetSize: CGSize, scale: CGFloat, fallbackURLs: [URL] = []) {
+        let displayMax = max(targetSize.width, targetSize.height)
+        let maxPixel = Self.normalizedPixelLength(
+            Int((displayMax * max(1, scale)).rounded(.up))
+        )
+        load(url: url, fallbackURLs: fallbackURLs, maxPixelLength: maxPixel)
     }
 
     func cancel() {
@@ -101,60 +124,57 @@ final class RemoteCoverImageLoader: ObservableObject {
         currentKey = ""
     }
 
-    private static func targetPixelLength(for targetSize: CGSize, scale: CGFloat) -> Int {
-        let displayMax = max(targetSize.width, targetSize.height)
-        let pixels = Int((displayMax * max(1, scale)).rounded(.up))
-        return normalizedPixelLength(max(240, pixels))
-    }
-
     static func cachedImage(
         url: URL?,
-        maxPixelLength: Int,
-        pixelCap: Int = maxPixelLength,
-        thumbnailPixelSize: CGSize? = nil
+        maxPixelLength: Int?,
+        pixelCap: Int = RemoteCoverImageLoader.maxPixelLength
     ) -> NSImage? {
         guard let url else { return nil }
-        let maxPixel = normalizedPixelLength(maxPixelLength, cap: pixelCap)
-        return cache.object(
-            forKey: cacheKey(
-                url: url,
-                maxPixelLength: maxPixel,
-                thumbnailPixelSize: thumbnailPixelSize
-            ) as NSString
-        )
+        let maxPixel = maxPixelLength.map { normalizedPixelLength($0, cap: pixelCap) }
+        return cache.object(forKey: cacheKey(primaryURL: url, maxPixelLength: maxPixel) as NSString)
+    }
+
+    private static func store(_ image: NSImage, forKey key: String) {
+        cache.setObject(image, forKey: key as NSString, cost: image.estimatedPixelCost)
     }
 
     private static func normalizedPixelLength(_ pixelLength: Int, cap: Int = maxPixelLength) -> Int {
         min(cap, max(120, pixelLength))
     }
 
-    private static func cacheKey(url: URL, maxPixelLength: Int, thumbnailPixelSize: CGSize?) -> String {
-        let thumbnailSize = thumbnailDimensions(
-            maxPixelLength: maxPixelLength,
-            thumbnailPixelSize: thumbnailPixelSize
-        )
-        if thumbnailSize.width == 0 || thumbnailSize.height == 0 {
-            return "\(url.absoluteString)#\(maxPixelLength)#source"
+    private static func cacheKey(primaryURL: URL, maxPixelLength: Int?) -> String {
+        if let maxPixelLength {
+            return "\(primaryURL.absoluteString)#\(maxPixelLength)"
         }
-        return "\(url.absoluteString)#\(maxPixelLength)#\(thumbnailSize.width)x\(thumbnailSize.height)"
+        return "\(primaryURL.absoluteString)#source"
+    }
+
+    private nonisolated static func decodeCachedData(_ data: Data?, maxPixelLength: Int?) -> NSImage? {
+        guard let data else { return nil }
+        if let maxPixelLength {
+            return downsample(data: data, maxPixelLength: maxPixelLength)
+        }
+        return decodeFull(data: data)
     }
 
     private nonisolated static func fetchImage(
-        url: URL,
-        maxPixelLength: Int,
-        thumbnailPixelSize: CGSize?
+        candidates: [URL],
+        maxPixelLength: Int?
     ) async -> NSImage? {
-        let primaryURL = thumbnailURL(for: url, maxPixelLength: maxPixelLength, thumbnailPixelSize: thumbnailPixelSize)
-
-        if let image = await fetchAndDownsample(url: primaryURL, maxPixelLength: maxPixelLength) {
-            return image
+        for url in candidates {
+            if let image = await fetchAndDecode(url: url, maxPixelLength: maxPixelLength) {
+                return image
+            }
         }
-
-        guard primaryURL.absoluteString != url.absoluteString else { return nil }
-        return await fetchAndDownsample(url: url, maxPixelLength: maxPixelLength)
+        return nil
     }
 
-    private nonisolated static func fetchAndDownsample(url: URL, maxPixelLength: Int) async -> NSImage? {
+    private nonisolated static func fetchAndDecode(url: URL, maxPixelLength: Int?) async -> NSImage? {
+        if let data = CoverImageDiskCache.data(for: url),
+           let decoded = decodeCachedData(data, maxPixelLength: maxPixelLength) {
+            return decoded
+        }
+
         do {
             var request = URLRequest(url: url)
             request.cachePolicy = .returnCacheDataElseLoad
@@ -171,61 +191,29 @@ final class RemoteCoverImageLoader: ObservableObject {
                 return nil
             }
             try Task.checkCancellation()
-            return downsample(data: data, maxPixelLength: maxPixelLength)
+            CoverImageDiskCache.save(data, for: url)
+            if let maxPixelLength {
+                return downsample(data: data, maxPixelLength: maxPixelLength)
+            }
+            return decodeFull(data: data)
         } catch {
             return nil
         }
     }
 
-    private nonisolated static func thumbnailURL(
-        for url: URL,
-        maxPixelLength: Int,
-        thumbnailPixelSize: CGSize?
-    ) -> URL {
-        guard let host = url.host(percentEncoded: false)?.lowercased(),
-              host.hasSuffix("hdslb.com"),
-              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
-            return url
+    private nonisolated static func decodeFull(data: Data) -> NSImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [
+            kCGImageSourceShouldCache: false
+        ] as CFDictionary) else {
+            return NSImage(data: data)
         }
 
-        let path = components.percentEncodedPath
-        let lowercasePath = path.lowercased()
-        guard path.contains("/bfs/"),
-              !path.contains("@"),
-              lowercasePath.hasSuffix(".jpg")
-                || lowercasePath.hasSuffix(".jpeg")
-                || lowercasePath.hasSuffix(".png")
-                || lowercasePath.hasSuffix(".webp") else {
-            return url
+        guard let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            return NSImage(data: data)
         }
 
-        let size = thumbnailDimensions(maxPixelLength: maxPixelLength, thumbnailPixelSize: thumbnailPixelSize)
-        guard size.width > 0, size.height > 0 else { return url }
-
-        components.percentEncodedPath = "\(path)@\(size.width)w_\(size.height)h_1c.webp"
-        return components.url ?? url
-    }
-
-    private nonisolated static func thumbnailDimensions(
-        maxPixelLength: Int,
-        thumbnailPixelSize: CGSize?
-    ) -> (width: Int, height: Int) {
-        let maxPixel = min(2048, max(48, maxPixelLength))
-        guard maxPixel <= 1200 else {
-            return (0, 0)
-        }
-
-        let fallbackSize: CGSize
-        if maxPixel <= 180 {
-            fallbackSize = CGSize(width: CGFloat(maxPixel), height: CGFloat(maxPixel))
-        } else {
-            fallbackSize = CGSize(width: CGFloat(maxPixel), height: CGFloat(maxPixel) / (16.0 / 9.0))
-        }
-
-        let rawSize = thumbnailPixelSize ?? fallbackSize
-        let width = min(2048, max(48, Int(rawSize.width.rounded(.up))))
-        let height = min(2048, max(48, Int(rawSize.height.rounded(.up))))
-        return (width, height)
+        let size = NSSize(width: image.width, height: image.height)
+        return NSImage(cgImage: image, size: size)
     }
 
     private nonisolated static func downsample(data: Data, maxPixelLength: Int) -> NSImage? {

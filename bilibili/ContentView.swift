@@ -36,13 +36,22 @@ struct ContentView: View {
             await model.loadInitialData()
         }
         .environmentObject(model)
+        .onChange(of: model.homeVideos.map(\.bvid)) { _, _ in
+            model.ensureHomePlayStreamsPrefetched()
+        }
         .onChange(of: model.selectedSection) { oldValue, newValue in
             guard oldValue != newValue else { return }
-            navigationPath = NavigationPath()
-            model.clearFloatingChrome()
-            model.clearProfilePageHandlers()
-            VideoFullscreenPresenter.restoreMainWindowAppearance()
-            MediaPlaybackCoordinator.shared.stopAll()
+            let restoringSearchReturn = model.consumeSearchReturnRestoreFlag()
+            if !restoringSearchReturn {
+                navigationPath = NavigationPath()
+                model.clearFloatingChrome()
+                model.clearProfilePageHandlers()
+                if newValue != .search {
+                    model.clearSearchReturnContext()
+                }
+                VideoFullscreenPresenter.restoreMainWindowAppearance()
+                MediaPlaybackCoordinator.shared.stopAll()
+            }
             if newValue != .search {
                 model.isSearchShowingResults = false
             }
@@ -104,7 +113,7 @@ struct ContentView: View {
                     && navigationPath.isEmpty
                     && model.selectedSection == .search,
                 onExitSearchResults: {
-                    model.requestExitSearchResults()
+                    model.handleExitSearchResults()
                 }
             )
         }
@@ -148,6 +157,11 @@ struct ContentView: View {
             navigationPath.append(request)
             model.pendingUserRelationListRequest = nil
         }
+        .onChange(of: model.pendingPlaybackRequest) { _, request in
+            guard let request else { return }
+            navigationPath.append(request)
+            model.pendingPlaybackRequest = nil
+        }
         .onChange(of: scenePhase) { _, phase in
             switch phase {
             case .active:
@@ -174,15 +188,14 @@ struct ContentView: View {
         case .search:
             SearchDashboard(model: model, navigationPath: $navigationPath)
         case .home:
-            VideoGridView(
+            HomeView(
                 videos: model.homeVideos,
                 loading: model.isSectionLoading(.home),
-                error: model.errorMessage,
-                emptyTitle: "暂无推荐内容",
-                compactHeader: true,
-                showsPageHeader: false,
                 loadingMore: model.homeLoadingMore,
                 hasMore: model.homeHasMore,
+                error: model.errorMessage,
+                loggedIn: model.account != nil,
+                scrollToTopTrigger: model.homeScrollToTopRequest,
                 onLoadMore: {
                     Task { await model.loadMoreHome() }
                 }
@@ -349,6 +362,7 @@ private struct DetailFloatingChrome: View {
                 },
                 onFollow: { model.profilePageHandlers?.follow() },
                 onUnfollow: { model.profilePageHandlers?.unfollow() },
+                onLogout: { model.profilePageHandlers?.logout?() },
                 onFollowingTap: { model.profilePageHandlers?.openRelationList(.following) },
                 onFollowersTap: { model.profilePageHandlers?.openRelationList(.followers) }
             )

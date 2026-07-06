@@ -8,14 +8,19 @@ struct SearchUserResultLayout: Equatable {
 }
 
 enum AppLayout {
-    static let sidebarWidth: CGFloat = 188
-    static let sidebarNavTopInset: CGFloat = 52
+    static let sidebarWidth: CGFloat = 72
+    static let sidebarBackgroundColor = Color(red: 0.97, green: 0.97, blue: 0.975)
+    static let sidebarNavTopInset: CGFloat = 44
+    static let sidebarNavItemSpacing: CGFloat = 4
+    static let sidebarNavItemHeight: CGFloat = 58
+    static let sidebarNavLabelSize: CGFloat = 13
+    static let sidebarBottomInset: CGFloat = 16
     static let floatingChromeInset: CGFloat = 20
     static let floatingChromeBackOnlyHeight: CGFloat = floatingChromeInset + 32 + 8
     static let floatingChromeButtonSize: CGFloat = 32
     static let floatingChromeBottomSpacing: CGFloat = 12
     static let pageHorizontalInset: CGFloat = 20
-    static let feedHorizontalInset: CGFloat = 16
+    static let feedHorizontalInset: CGFloat = 64
     static let feedOverlayScrollbarWidth: CGFloat = 14
     static let feedVerticalInset: CGFloat = 28
     static let mainContentPaddingCompact: CGFloat = 24
@@ -79,11 +84,8 @@ enum AppLayout {
     static var searchBarTopOffset: CGFloat {
         floatingChromeInset
     }
-    static let sidebarBlurWhiteTint: CGFloat = 0.04
-    static let sidebarBlurMaterial: NSVisualEffectView.Material = .hudWindow
     static let sidebarSelectionCornerRadius: CGFloat = 10
-    static let sidebarNavItemHeight: CGFloat = 42
-    static let sidebarSelectionFill = BiliTheme.pink.opacity(0.12)
+    static let sidebarSelectionFill = BiliTheme.pink.opacity(0.10)
     static let sidebarHoverFill = Color.black.opacity(0.04)
     static let searchSurfaceBorder = Color.black.opacity(0.06)
     static let searchChipFill = Color.black.opacity(0.05)
@@ -756,7 +758,6 @@ struct AppScrollView<Content: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .environment(\.feedViewportWidth, viewportWidth)
         }
-        .scrollClipDisabled()
         .background {
             GeometryReader { geometry in
                 Color.clear
@@ -917,51 +918,10 @@ struct TransparentWindowConfigurator: NSViewRepresentable {
 }
 
 extension View {
-    func desktopBlurSidebarBackground() -> some View {
-        background {
-            ZStack {
-                DesktopSidebarBlurBackground()
-                Color.white.opacity(AppLayout.sidebarBlurWhiteTint)
-                LinearGradient(
-                    colors: [
-                        .white.opacity(0.06),
-                        .white.opacity(0.015),
-                        .clear
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            }
-            .overlay(alignment: .trailing) {
-                Rectangle()
-                    .fill(Color.primary.opacity(0.08))
-                    .frame(width: 0.5)
-            }
-        }
-    }
-
     func configureTransparentWindow() -> some View {
         background {
             TransparentWindowConfigurator()
         }
-    }
-}
-
-private struct DesktopSidebarBlurBackground: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = AppLayout.sidebarBlurMaterial
-        view.blendingMode = .behindWindow
-        view.state = .active
-        view.isEmphasized = true
-        return view
-    }
-
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        nsView.material = AppLayout.sidebarBlurMaterial
-        nsView.blendingMode = .behindWindow
-        nsView.state = .active
-        nsView.isEmphasized = true
     }
 }
 
@@ -1073,11 +1033,8 @@ private enum VideoCoverHoverScrollCenter {
     private static var activeViews = NSHashTable<VideoCoverHoverTrackingView>.weakObjects()
     private static var scrollBoundsObservers: [ObjectIdentifier: NSObjectProtocol] = [:]
     private static var scrollIdleWorkItems: [ObjectIdentifier: DispatchWorkItem] = [:]
-    private static var scrollRecheckWorkItems: [ObjectIdentifier: DispatchWorkItem] = [:]
-    private static var lastScrollRecheckTimes: [ObjectIdentifier: CFTimeInterval] = [:]
     private static var activeScrollDeadlines: [ObjectIdentifier: CFTimeInterval] = [:]
-    private static let minimumScrollRecheckInterval: CFTimeInterval = 1.0 / 165.0
-    private static let scrollSettleDelay: TimeInterval = 0.10
+    private static let scrollSettleDelay: TimeInterval = 0.08
 
     static func prepare(_ view: VideoCoverHoverTrackingView) {
         if let scrollView = view.hoverScrollView() {
@@ -1103,13 +1060,6 @@ private enum VideoCoverHoverScrollCenter {
 
     static func deactivate(_ view: VideoCoverHoverTrackingView) {
         activeViews.remove(view)
-    }
-
-    static func isActivelyScrolling(_ scrollView: NSScrollView?) -> Bool {
-        guard let scrollView else { return false }
-        let id = ObjectIdentifier(scrollView)
-        guard let deadline = activeScrollDeadlines[id] else { return false }
-        return CACurrentMediaTime() < deadline
     }
 
     private static func track(_ view: VideoCoverHoverTrackingView, in scrollView: NSScrollView) {
@@ -1141,39 +1091,22 @@ private enum VideoCoverHoverScrollCenter {
         guard let scrollView else { return }
 
         let id = ObjectIdentifier(scrollView)
-        activeScrollDeadlines[id] = CACurrentMediaTime() + scrollSettleDelay
+        let settleDeadline = CACurrentMediaTime() + scrollSettleDelay
+        activeScrollDeadlines[id] = settleDeadline
 
         scrollIdleWorkItems[id]?.cancel()
+        let scrollViewBox = WeakScrollViewBox(scrollView)
         let idleWorkItem = DispatchWorkItem {
             MainActor.assumeIsolated {
+                guard activeScrollDeadlines[id] == settleDeadline else { return }
                 activeScrollDeadlines[id] = nil
                 scrollIdleWorkItems[id] = nil
+                guard let scrollView = scrollViewBox.value else { return }
+                recheckTrackedViews(in: scrollView)
             }
         }
         scrollIdleWorkItems[id] = idleWorkItem
         DispatchQueue.main.asyncAfter(deadline: .now() + scrollSettleDelay, execute: idleWorkItem)
-
-        scheduleHoverRecheck(in: scrollView)
-    }
-
-    private static func scheduleHoverRecheck(in scrollView: NSScrollView) {
-        let id = ObjectIdentifier(scrollView)
-        guard scrollRecheckWorkItems[id] == nil else { return }
-
-        let now = CACurrentMediaTime()
-        let last = lastScrollRecheckTimes[id] ?? 0
-        let delay = max(0, minimumScrollRecheckInterval - (now - last))
-        let scrollViewBox = WeakScrollViewBox(scrollView)
-        let workItem = DispatchWorkItem {
-            MainActor.assumeIsolated {
-                scrollRecheckWorkItems[id] = nil
-                guard let scrollView = scrollViewBox.value else { return }
-                lastScrollRecheckTimes[id] = CACurrentMediaTime()
-                recheckTrackedViews(in: scrollView)
-            }
-        }
-        scrollRecheckWorkItems[id] = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
     }
 
     private static func recheckTrackedViews(in scrollView: NSScrollView) {
@@ -1247,7 +1180,6 @@ final class VideoCoverHoverTrackingView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        guard !VideoCoverHoverScrollCenter.isActivelyScrolling(hoverScrollView()) else { return }
         setHovering(true)
     }
 

@@ -153,10 +153,14 @@ final class AppModel: ObservableObject {
         }
     }
 
+    private static let homeMaxFetchCount = 3
+    private static let homePageSize = 30
+
     private var followingOffset: String?
     private var homeFreshIdx = 1
     private var homeFetchRow = 1
     private var homeLastShowList = ""
+    private var homeFetchCount = 0
     private var favoritePage = 1
     private var historyCursor: BiliHistoryCursor?
 
@@ -245,13 +249,18 @@ final class AppModel: ObservableObject {
                 homeFreshIdx = 1
                 homeFetchRow = 1
                 homeLastShowList = ""
-                let page = try await api.homeRecommend(credential: account?.credential)
+                homeFetchCount = 0
+                let page = try await api.homeRecommend(
+                    credential: account?.credential,
+                    pageSize: Self.homePageSize
+                )
                 guard generation == reloadGeneration, selectedSection == section else { return }
                 homeVideos = page.videos
                 homeFreshIdx = page.nextFreshIdx
                 homeFetchRow = page.nextFetchRow
                 homeLastShowList = page.lastShowList
-                homeHasMore = page.hasMore
+                homeFetchCount = 1
+                homeHasMore = canLoadMoreHome(after: page, appendedNewItems: !page.videos.isEmpty)
             case .following:
                 guard let credential = account?.credential else {
                     guard generation == reloadGeneration else { return }
@@ -401,6 +410,7 @@ final class AppModel: ObservableObject {
     func loadMoreHome() async {
         guard selectedSection == .home,
               homeHasMore,
+              homeFetchCount < Self.homeMaxFetchCount,
               !isSectionLoading(.home),
               !homeLoadingMore else {
             return
@@ -415,7 +425,8 @@ final class AppModel: ObservableObject {
                 credential: account?.credential,
                 freshIdx: homeFreshIdx,
                 fetchRow: homeFetchRow,
-                lastShowList: homeLastShowList
+                lastShowList: homeLastShowList,
+                pageSize: Self.homePageSize
             )
             var seen = Set(homeVideos.map(\.bvid))
             let newVideos = page.videos.filter { seen.insert($0.bvid).inserted }
@@ -423,10 +434,17 @@ final class AppModel: ObservableObject {
             homeFreshIdx = page.nextFreshIdx
             homeFetchRow = page.nextFetchRow
             homeLastShowList = page.lastShowList
-            homeHasMore = page.hasMore && !newVideos.isEmpty
+            homeFetchCount += 1
+            homeHasMore = canLoadMoreHome(after: page, appendedNewItems: !newVideos.isEmpty)
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    private func canLoadMoreHome(after page: BiliHomeRecommendPage, appendedNewItems: Bool) -> Bool {
+        homeFetchCount < Self.homeMaxFetchCount
+            && page.hasMore
+            && appendedNewItems
     }
 
     func loadMoreFollowing() async {

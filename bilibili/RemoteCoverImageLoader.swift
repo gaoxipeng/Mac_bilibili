@@ -23,17 +23,30 @@ final class RemoteCoverImageLoader: ObservableObject {
 
     func load(url: URL?, targetSize: CGSize, scale: CGFloat) {
         let maxPixel = Self.targetPixelLength(for: targetSize, scale: scale)
-        load(url: url, maxPixelLength: maxPixel)
+        let pixelSize = CGSize(
+            width: targetSize.width * max(1, scale),
+            height: targetSize.height * max(1, scale)
+        )
+        load(url: url, maxPixelLength: maxPixel, thumbnailPixelSize: pixelSize)
     }
 
-    func load(url: URL?, maxPixelLength: Int, pixelCap: Int = RemoteCoverImageLoader.maxPixelLength) {
+    func load(
+        url: URL?,
+        maxPixelLength: Int,
+        pixelCap: Int = RemoteCoverImageLoader.maxPixelLength,
+        thumbnailPixelSize: CGSize? = nil
+    ) {
         guard let url else {
             resetForMissingURL()
             return
         }
 
         let maxPixel = Self.normalizedPixelLength(maxPixelLength, cap: pixelCap)
-        let key = Self.cacheKey(url: url, maxPixelLength: maxPixel)
+        let key = Self.cacheKey(
+            url: url,
+            maxPixelLength: maxPixel,
+            thumbnailPixelSize: thumbnailPixelSize
+        )
         guard key != currentKey else { return }
         currentKey = key
         failed = false
@@ -54,7 +67,11 @@ final class RemoteCoverImageLoader: ObservableObject {
             defer { Task { await Self.loadGate.release() } }
             guard !Task.isCancelled else { return }
 
-            guard let loaded = await Self.fetchImage(url: url, maxPixelLength: maxPixel) else {
+            guard let loaded = await Self.fetchImage(
+                url: url,
+                maxPixelLength: maxPixel,
+                thumbnailPixelSize: thumbnailPixelSize
+            ) else {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard self?.currentKey == key else { return }
@@ -90,21 +107,54 @@ final class RemoteCoverImageLoader: ObservableObject {
         return normalizedPixelLength(max(240, pixels))
     }
 
-    static func cachedImage(url: URL?, maxPixelLength: Int, pixelCap: Int = maxPixelLength) -> NSImage? {
+    static func cachedImage(
+        url: URL?,
+        maxPixelLength: Int,
+        pixelCap: Int = maxPixelLength,
+        thumbnailPixelSize: CGSize? = nil
+    ) -> NSImage? {
         guard let url else { return nil }
         let maxPixel = normalizedPixelLength(maxPixelLength, cap: pixelCap)
-        return cache.object(forKey: cacheKey(url: url, maxPixelLength: maxPixel) as NSString)
+        return cache.object(
+            forKey: cacheKey(
+                url: url,
+                maxPixelLength: maxPixel,
+                thumbnailPixelSize: thumbnailPixelSize
+            ) as NSString
+        )
     }
 
     private static func normalizedPixelLength(_ pixelLength: Int, cap: Int = maxPixelLength) -> Int {
         min(cap, max(120, pixelLength))
     }
 
-    private static func cacheKey(url: URL, maxPixelLength: Int) -> String {
-        "\(url.absoluteString)#\(maxPixelLength)"
+    private static func cacheKey(url: URL, maxPixelLength: Int, thumbnailPixelSize: CGSize?) -> String {
+        let thumbnailSize = thumbnailDimensions(
+            maxPixelLength: maxPixelLength,
+            thumbnailPixelSize: thumbnailPixelSize
+        )
+        if thumbnailSize.width == 0 || thumbnailSize.height == 0 {
+            return "\(url.absoluteString)#\(maxPixelLength)#source"
+        }
+        return "\(url.absoluteString)#\(maxPixelLength)#\(thumbnailSize.width)x\(thumbnailSize.height)"
     }
 
-    private nonisolated static func fetchImage(url: URL, maxPixelLength: Int) async -> NSImage? {
+    private nonisolated static func fetchImage(
+        url: URL,
+        maxPixelLength: Int,
+        thumbnailPixelSize: CGSize?
+    ) async -> NSImage? {
+        let primaryURL = thumbnailURL(for: url, maxPixelLength: maxPixelLength, thumbnailPixelSize: thumbnailPixelSize)
+
+        if let image = await fetchAndDownsample(url: primaryURL, maxPixelLength: maxPixelLength) {
+            return image
+        }
+
+        guard primaryURL.absoluteString != url.absoluteString else { return nil }
+        return await fetchAndDownsample(url: url, maxPixelLength: maxPixelLength)
+    }
+
+    private nonisolated static func fetchAndDownsample(url: URL, maxPixelLength: Int) async -> NSImage? {
         do {
             var request = URLRequest(url: url)
             request.cachePolicy = .returnCacheDataElseLoad
@@ -125,6 +175,57 @@ final class RemoteCoverImageLoader: ObservableObject {
         } catch {
             return nil
         }
+    }
+
+    private nonisolated static func thumbnailURL(
+        for url: URL,
+        maxPixelLength: Int,
+        thumbnailPixelSize: CGSize?
+    ) -> URL {
+        guard let host = url.host(percentEncoded: false)?.lowercased(),
+              host.hasSuffix("hdslb.com"),
+              var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url
+        }
+
+        let path = components.percentEncodedPath
+        let lowercasePath = path.lowercased()
+        guard path.contains("/bfs/"),
+              !path.contains("@"),
+              lowercasePath.hasSuffix(".jpg")
+                || lowercasePath.hasSuffix(".jpeg")
+                || lowercasePath.hasSuffix(".png")
+                || lowercasePath.hasSuffix(".webp") else {
+            return url
+        }
+
+        let size = thumbnailDimensions(maxPixelLength: maxPixelLength, thumbnailPixelSize: thumbnailPixelSize)
+        guard size.width > 0, size.height > 0 else { return url }
+
+        components.percentEncodedPath = "\(path)@\(size.width)w_\(size.height)h_1c.webp"
+        return components.url ?? url
+    }
+
+    private nonisolated static func thumbnailDimensions(
+        maxPixelLength: Int,
+        thumbnailPixelSize: CGSize?
+    ) -> (width: Int, height: Int) {
+        let maxPixel = min(2048, max(48, maxPixelLength))
+        guard maxPixel <= 1200 else {
+            return (0, 0)
+        }
+
+        let fallbackSize: CGSize
+        if maxPixel <= 180 {
+            fallbackSize = CGSize(width: CGFloat(maxPixel), height: CGFloat(maxPixel))
+        } else {
+            fallbackSize = CGSize(width: CGFloat(maxPixel), height: CGFloat(maxPixel) / (16.0 / 9.0))
+        }
+
+        let rawSize = thumbnailPixelSize ?? fallbackSize
+        let width = min(2048, max(48, Int(rawSize.width.rounded(.up))))
+        let height = min(2048, max(48, Int(rawSize.height.rounded(.up))))
+        return (width, height)
     }
 
     private nonisolated static func downsample(data: Data, maxPixelLength: Int) -> NSImage? {

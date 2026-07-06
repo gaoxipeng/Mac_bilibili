@@ -304,6 +304,7 @@ struct VideoFeedGrid<Trailing: View>: View {
                             columnWidth: columnWidth,
                             titleAreaHeight: titleAreaHeight
                         )
+                        .equatable()
                         .frame(width: columnWidth, height: cardHeight, alignment: .top)
                     }
                 }
@@ -689,7 +690,6 @@ struct HistoryView: View {
                     }
                     .contentMargins(.top, HistoryLayout.sectionScrollTopInset, for: .scrollContent)
                     .contentMargins(.bottom, AppLayout.feedVerticalInset, for: .scrollContent)
-                    .scrollClipDisabled()
                     .zIndex(1)
                     .onPreferenceChange(HistorySectionViewportKey.self) { updates in
                         var merged = sectionHeaderViewportY
@@ -900,7 +900,7 @@ private struct HistoryItemsGrid: View {
         let titleAreaHeight = HistoryCardLayout.titleAreaHeight(columnWidth: columnWidth)
         let cardHeight = HistoryCardLayout.cardHeight(columnWidth: columnWidth, titleAreaHeight: titleAreaHeight)
 
-        VStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
+        LazyVStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
             ForEach(rowStarts, id: \.self) { rowStart in
                 let rowEnd = min(rowStart + columnCount, items.count)
 
@@ -912,7 +912,8 @@ private struct HistoryItemsGrid: View {
                             titleAreaHeight: titleAreaHeight,
                             onDelete: { onDelete(item) }
                         )
-                            .frame(width: columnWidth, height: cardHeight, alignment: .top)
+                        .equatable()
+                        .frame(width: columnWidth, height: cardHeight, alignment: .top)
                     }
                 }
             }
@@ -933,13 +934,19 @@ private struct HistoryItemsGrid: View {
     }
 }
 
-private struct HistoryVideoCard: View {
+private struct HistoryVideoCard: View, Equatable {
     let item: BiliHistoryItem
     let columnWidth: CGFloat
     let titleAreaHeight: CGFloat
     let onDelete: () -> Void
     @State private var isCoverHovered = false
     @State private var isDeleteHovered = false
+
+    static func == (lhs: HistoryVideoCard, rhs: HistoryVideoCard) -> Bool {
+        lhs.item == rhs.item
+            && lhs.columnWidth == rhs.columnWidth
+            && lhs.titleAreaHeight == rhs.titleAreaHeight
+    }
 
     private var video: BiliVideo { item.video }
 
@@ -1214,7 +1221,7 @@ struct StateBanner: View {
     }
 }
 
-struct VideoCard: View {
+struct VideoCard: View, Equatable {
     let video: BiliVideo
     var largeTypography = false
     var showsLikeCount = true
@@ -1222,6 +1229,15 @@ struct VideoCard: View {
     let columnWidth: CGFloat
     let titleAreaHeight: CGFloat
     @State private var isCoverHovered = false
+
+    static func == (lhs: VideoCard, rhs: VideoCard) -> Bool {
+        lhs.video == rhs.video
+            && lhs.largeTypography == rhs.largeTypography
+            && lhs.showsLikeCount == rhs.showsLikeCount
+            && lhs.showsAuthor == rhs.showsAuthor
+            && lhs.columnWidth == rhs.columnWidth
+            && lhs.titleAreaHeight == rhs.titleAreaHeight
+    }
 
     private var metrics: VideoCardLayout.RowLayoutMetrics {
         .feed(largeTypography: largeTypography, showsAuthor: showsAuthor)
@@ -1599,7 +1615,12 @@ struct RemoteCover: View {
             if let width, let height {
                 imageLoader.load(url: url, targetSize: CGSize(width: width, height: height), scale: displayScale)
             } else {
-                imageLoader.load(url: url, maxPixelLength: VideoCardLayout.feedCoverPixelLength(displayScale: displayScale))
+                let maxPixel = VideoCardLayout.feedCoverPixelLength(displayScale: displayScale)
+                imageLoader.load(
+                    url: url,
+                    maxPixelLength: maxPixel,
+                    thumbnailPixelSize: CGSize(width: CGFloat(maxPixel), height: CGFloat(maxPixel) / aspectRatio)
+                )
             }
         }
         .onDisappear {
@@ -1638,8 +1659,21 @@ struct RemoteCover: View {
         return VideoCardLayout.feedCoverPixelLength(displayScale: displayScale)
     }
 
+    private var coverThumbnailPixelSize: CGSize {
+        let scale = max(1, displayScale)
+        if let width, let height {
+            return CGSize(width: width * scale, height: height * scale)
+        }
+        let maxPixel = VideoCardLayout.feedCoverPixelLength(displayScale: displayScale)
+        return CGSize(width: CGFloat(maxPixel), height: CGFloat(maxPixel) / aspectRatio)
+    }
+
     private var cachedImage: NSImage? {
-        RemoteCoverImageLoader.cachedImage(url: url, maxPixelLength: coverPixelLength)
+        RemoteCoverImageLoader.cachedImage(
+            url: url,
+            maxPixelLength: coverPixelLength,
+            thumbnailPixelSize: coverThumbnailPixelSize
+        )
     }
 
     private func placeholder(systemImage: String) -> some View {

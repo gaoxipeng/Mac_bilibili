@@ -601,12 +601,12 @@ actor BilibiliAPI {
 
     func followingFeed(credential: BilibiliCredential, offset: String? = nil) async throws -> BiliFollowingFeedPage {
         var params: [String: String] = [
-            "timezone_offset": "-480",
-            "type": "video",
-            "platform": "web",
-            "gaia_source": "main_web",
-            "web_location": "333.1365",
-            "features": "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,forwardListHidden,decorationCard,commentsNewVersion,onlyfansAssetsV2,ugcDelete,onlyfansQaCard,endFooterHidden"
+                "timezone_offset": "-480",
+                "type": "video",
+                "platform": "web",
+                "gaia_source": "main_web",
+                "web_location": "333.1365",
+                "features": "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,forwardListHidden,decorationCard,commentsNewVersion,onlyfansAssetsV2,ugcDelete,onlyfansQaCard,endFooterHidden"
         ]
         if let offset, !offset.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             params["offset"] = offset
@@ -1288,8 +1288,8 @@ actor BilibiliAPI {
             return key
         }
 
-        throw APIError.message("无法获取 WBI 密钥")
-    }
+            throw APIError.message("无法获取 WBI 密钥")
+        }
 
     private func loadPersistedGuestBuvid() {
         guard guestBuvid3 == nil, guestBuvid4 == nil else { return }

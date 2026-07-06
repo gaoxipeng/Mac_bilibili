@@ -1737,6 +1737,7 @@ private struct SearchBangumiFeedGrid: View {
                             columnWidth: columnWidth,
                             titleAreaHeight: titleAreaHeight
                         )
+                        .equatable()
                         .frame(width: columnWidth, height: cardHeight, alignment: .top)
                     }
                 }
@@ -1754,11 +1755,17 @@ private struct SearchBangumiFeedGrid: View {
     }
 }
 
-private struct SearchBangumiCard: View {
+private struct SearchBangumiCard: View, Equatable {
     let bangumi: BiliSearchBangumi
     let columnWidth: CGFloat
     let titleAreaHeight: CGFloat
     @State private var isCoverHovered = false
+
+    static func == (lhs: SearchBangumiCard, rhs: SearchBangumiCard) -> Bool {
+        lhs.bangumi == rhs.bangumi
+            && lhs.columnWidth == rhs.columnWidth
+            && lhs.titleAreaHeight == rhs.titleAreaHeight
+    }
 
     private var metrics: VideoCardLayout.RowLayoutMetrics {
         .feed(largeTypography: false)

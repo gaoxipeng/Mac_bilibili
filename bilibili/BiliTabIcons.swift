@@ -38,7 +38,7 @@ struct BiliSidebarIcon: View {
             }
         }
         .foregroundStyle(color)
-        .frame(width: 28, height: 28)
+        .frame(width: 24, height: 24)
     }
 }
 

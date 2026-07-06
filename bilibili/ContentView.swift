@@ -171,9 +171,10 @@ struct ContentView: View {
     }
 
     private var sidebarPane: some View {
-        GlassSidebar(model: model, selection: $sidebarSelection)
+        Sidebar(model: model, selection: $sidebarSelection)
             .frame(width: AppLayout.sidebarWidth)
             .frame(maxHeight: .infinity)
+            .background(AppLayout.sidebarBackgroundColor)
     }
 
     @ViewBuilder
@@ -245,17 +246,6 @@ struct ContentView: View {
         case .mine:
             MineView()
         }
-    }
-}
-
-private struct GlassSidebar: View {
-    @ObservedObject var model: AppModel
-    @Binding var selection: AppSection?
-
-    var body: some View {
-        Sidebar(model: model, selection: $selection)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .desktopBlurSidebarBackground()
     }
 }
 
@@ -456,25 +446,14 @@ private struct DetailFloatingChrome: View {
 private struct Sidebar: View {
     @ObservedObject var model: AppModel
     @Binding var selection: AppSection?
-    @State private var isMineHovered = false
 
     private var isMineSelected: Bool {
         selection == .mine
     }
 
-    private var mineBackgroundFill: Color {
-        if isMineSelected {
-            return AppLayout.sidebarSelectionFill
-        }
-        if isMineHovered {
-            return AppLayout.sidebarHoverFill
-        }
-        return .clear
-    }
-
     var body: some View {
         VStack(spacing: 0) {
-            VStack(spacing: 4) {
+            VStack(spacing: AppLayout.sidebarNavItemSpacing) {
                 ForEach(AppSection.primaryCases) { section in
                     SidebarButton(
                         section: section,
@@ -488,41 +467,31 @@ private struct Sidebar: View {
                 }
             }
             .padding(.top, AppLayout.sidebarNavTopInset)
-            .padding(.horizontal, 10)
 
-            Spacer()
+            Spacer(minLength: 0)
 
             Button {
                 selection = .mine
             } label: {
-                HStack(spacing: 10) {
-                    RemoteAvatar(
-                        url: model.account?.faceURL,
-                        size: 30,
-                        foreground: Color(red: 0.45, green: 0.45, blue: 0.48),
-                        background: Color.white.opacity(0.72),
-                        border: Color.black.opacity(0.06)
-                    )
-
-                    Text(model.account?.name ?? "我的")
-                        .font(.system(size: 14, weight: isMineSelected ? .semibold : .regular))
-                        .lineLimit(1)
-                        .foregroundStyle(isMineSelected ? BiliTheme.pink : Color(red: 0.22, green: 0.22, blue: 0.24))
-
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 12)
-                .frame(height: AppLayout.sidebarNavItemHeight)
-                .background(
-                    mineBackgroundFill,
-                    in: RoundedRectangle(cornerRadius: AppLayout.sidebarSelectionCornerRadius, style: .continuous)
+                RemoteAvatar(
+                    url: model.account?.faceURL,
+                    size: 34,
+                    foreground: Color(red: 0.45, green: 0.45, blue: 0.48),
+                    background: Color.white.opacity(0.72),
+                    border: isMineSelected ? BiliTheme.pink.opacity(0.55) : Color.black.opacity(0.08)
                 )
+                .overlay {
+                    if isMineSelected {
+                        Circle()
+                            .stroke(BiliTheme.pink, lineWidth: 1.5)
+                            .padding(-2)
+                    }
+                }
             }
             .buttonStyle(SidebarPressButtonStyle())
-            .onHover { isMineHovered = $0 }
-            .padding(.horizontal, 10)
-            .padding(.bottom, 16)
+            .padding(.bottom, AppLayout.sidebarBottomInset)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -534,39 +503,25 @@ private struct SidebarButton: View {
     @State private var isHovered = false
 
     private var iconColor: Color {
-        selected ? BiliTheme.pink : BiliTheme.actionInactive
-    }
-
-    private var backgroundFill: Color {
-        if selected {
-            return AppLayout.sidebarSelectionFill
-        }
-        if isHovered {
-            return AppLayout.sidebarHoverFill
-        }
-        return .clear
+        (selected || isHovered) ? BiliTheme.pink : BiliTheme.actionInactive
     }
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
-                BiliSidebarIcon(section: section, color: iconColor, size: 18)
+            VStack(spacing: 4) {
+                BiliSidebarIcon(section: section, color: iconColor, size: 22)
                 Text(section.title)
-                    .font(.system(size: 14, weight: selected ? .semibold : .regular))
+                    .font(.system(size: AppLayout.sidebarNavLabelSize, weight: selected ? .semibold : .regular))
                     .foregroundStyle(iconColor)
-                Spacer(minLength: 0)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
-            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity)
             .frame(height: AppLayout.sidebarNavItemHeight)
-            .background(
-                backgroundFill,
-                in: RoundedRectangle(cornerRadius: AppLayout.sidebarSelectionCornerRadius, style: .continuous)
-            )
         }
         .buttonStyle(SidebarPressButtonStyle())
-        .onHover { hovering in
-            isHovered = hovering
-        }
+        .animation(.easeInOut(duration: 0.2), value: isHovered)
+        .onHover { isHovered = $0 }
     }
 }
 

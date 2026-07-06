@@ -418,6 +418,146 @@ struct FavoritesView: View {
     }
 }
 
+struct ScrollPerformanceTestView: View {
+    private static let sampleImages = ScrollTestSampleImage.makeAll()
+
+    private static let baseParagraphs: [String] = [
+        "这是一段用于滚动性能测试的中文文字。页面里包含少量本地示例图片与纯文本，用于对比滚动表现。",
+        "如果你在这个页面滚动依然感到卡顿，问题可能出在 ScrollView 本身、窗口渲染，或者全局滚动配置。",
+        "如果这里滚动很流畅，而首页或收藏页滚动卡顿，则更可能是视频卡片、图片加载或列表布局导致的。",
+        "春天来了，柳树抽出了嫩绿的新芽。微风拂过，河面上的涟漪一圈圈散开，远处的山峦在薄雾中若隐若现。",
+        "程序员常说，过早优化是万恶之源。但在排查性能问题时，先用最简单的对照实验，往往比盲目改代码更有效。",
+        "这是一段用于滚动性能测试的中文文字。页面里只有纯文本，没有视频封面、网络图片或复杂卡片布局。",
+        "如果你在这个页面滚动依然感到卡顿，问题可能出在 ScrollView 本身、窗口渲染，或者全局滚动配置。",
+        "如果这里滚动很流畅，而首页或收藏页滚动卡顿，则更可能是视频卡片、图片加载或列表布局导致的。",
+        "夏天的傍晚，蝉鸣声此起彼伏。街边的路灯一盏盏亮起，行人放慢了脚步，享受着一天中最惬意的时光。",
+        "调试性能问题时，可以分别测试：纯文本滚动、纯图片滚动、以及完整视频卡片滚动，逐步缩小范围。",
+        "这是一段用于滚动性能测试的中文文字。页面里只有纯文本，没有视频封面、网络图片或复杂卡片布局。",
+        "如果你在这个页面滚动依然感到卡顿，问题可能出在 ScrollView 本身、窗口渲染，或者全局滚动配置。",
+        "如果这里滚动很流畅，而首页或收藏页滚动卡顿，则更可能是视频卡片、图片加载或列表布局导致的。",
+        "秋天的落叶铺满了小路，踩上去发出沙沙的声响。天空高远而清澈，阳光透过枝叶洒下斑驳的光影。",
+        "性能优化没有银弹。先测量，再定位，最后才是修改。对照实验能帮你快速判断瓶颈在哪一层。",
+        "这是一段用于滚动性能测试的中文文字。页面里只有纯文本，没有视频封面、网络图片或复杂卡片布局。",
+        "如果你在这个页面滚动依然感到卡顿，问题可能出在 ScrollView 本身、窗口渲染，或者全局滚动配置。",
+        "如果这里滚动很流畅，而首页或收藏页滚动卡顿，则更可能是视频卡片、图片加载或列表布局导致的。",
+        "冬天的清晨，窗玻璃上结了一层薄霜。热茶捧在手里，白气袅袅升起，屋里屋外是两个截然不同的世界。",
+        "请继续向下滚动，确认大约两页内容时滚动是否依然顺滑。测试完成后，可对比首页与收藏页的表现。",
+        "这是一段用于滚动性能测试的中文文字。页面里只有纯文本，没有视频封面、网络图片或复杂卡片布局。",
+        "如果你在这个页面滚动依然感到卡顿，问题可能出在 ScrollView 本身、窗口渲染，或者全局滚动配置。",
+        "如果这里滚动很流畅，而首页或收藏页滚动卡顿，则更可能是视频卡片、图片加载或列表布局导致的。",
+        "测试页面的文字会重复出现，目的是凑够大约两屏的可滚动高度，便于你感受连续滚动时的帧率变化。",
+        "当你滚动到页面底部时，说明已经浏览完所有测试内容。感谢配合排查，希望这能帮助你定位卡顿原因。",
+    ]
+
+    private static let paragraphs = baseParagraphs + baseParagraphs
+
+    var body: some View {
+        AppScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("滚动性能测试")
+                    .font(.title2.weight(.semibold))
+
+                Text("本页包含中文文字与几张低分辨率本地示例图，约四屏可滚动内容，用于排查滚动卡顿原因。")
+                    .font(.body)
+                    .foregroundStyle(.secondary)
+
+                ScrollTestImageGrid(images: Self.sampleImages, title: "示例图片（320×180）")
+
+                ForEach(Array(Self.paragraphs.enumerated()), id: \.offset) { index, paragraph in
+                    Text("\(index + 1). \(paragraph)")
+                        .font(.body)
+                        .foregroundStyle(.primary)
+                        .lineSpacing(6)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if index == 12 {
+                        ScrollTestImageGrid(images: Array(Self.sampleImages.prefix(3)), title: "示例图片 A")
+                    } else if index == 37 {
+                        ScrollTestImageGrid(images: Array(Self.sampleImages.suffix(3)), title: "示例图片 B")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ScrollTestImageGrid: View {
+    let images: [NSImage]
+    let title: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 180, maximum: 280), spacing: 12)],
+                spacing: 12
+            ) {
+                ForEach(Array(images.enumerated()), id: \.offset) { _, image in
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(maxWidth: .infinity)
+                        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                }
+            }
+        }
+    }
+}
+
+private enum ScrollTestSampleImage {
+    private struct Spec {
+        let label: String
+        let red: CGFloat
+        let green: CGFloat
+        let blue: CGFloat
+    }
+
+    private static let specs: [Spec] = [
+        Spec(label: "示例 1", red: 0.96, green: 0.45, blue: 0.55),
+        Spec(label: "示例 2", red: 0.42, green: 0.62, blue: 0.96),
+        Spec(label: "示例 3", red: 0.45, green: 0.78, blue: 0.58),
+        Spec(label: "示例 4", red: 0.98, green: 0.72, blue: 0.38),
+        Spec(label: "示例 5", red: 0.62, green: 0.52, blue: 0.92),
+        Spec(label: "示例 6", red: 0.38, green: 0.74, blue: 0.82),
+    ]
+
+    static func makeAll() -> [NSImage] {
+        specs.map { makeImage(spec: $0) }
+    }
+
+    private static func makeImage(spec: Spec, width: Int = 320, height: Int = 180) -> NSImage {
+        let size = NSSize(width: width, height: height)
+        let image = NSImage(size: size)
+        image.lockFocus()
+        defer { image.unlockFocus() }
+
+        NSColor(red: spec.red, green: spec.green, blue: spec.blue, alpha: 1).setFill()
+        NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
+
+        let accent = NSColor(white: 1, alpha: 0.22)
+        accent.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 24, y: 36, width: 72, height: 72)).fill()
+        NSBezierPath(ovalIn: NSRect(x: 120, y: 88, width: 140, height: 56)).fill()
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 22, weight: .semibold),
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraph,
+        ]
+        let text = spec.label as NSString
+        let textRect = NSRect(x: 12, y: (CGFloat(height) - 28) / 2, width: CGFloat(width) - 24, height: 28)
+        text.draw(in: textRect, withAttributes: attributes)
+
+        return image
+    }
+}
+
 struct VideoGridView: View {
     var title: String? = nil
     var subtitle: String? = nil
@@ -1416,29 +1556,37 @@ struct VideoCard: View, Equatable {
 }
 
 private func buildHistorySections(from items: [BiliHistoryItem]) -> [HistorySection] {
+    let sortedItems = JSONParser.sortHistoryItems(items)
+    let calendar = Calendar.current
+
     var sections: [HistorySection] = []
-    var currentLabel: String?
+    var currentDay: Date?
     var currentItems: [BiliHistoryItem] = []
 
-    for item in items {
-        let label = historySectionLabel(from: item.viewedAt)
-        if label != currentLabel {
-            if let currentLabel, !currentItems.isEmpty {
-                let anchor = currentItems.first?.viewedAt?.timeIntervalSince1970 ?? 0
-                sections.append(HistorySection(id: "\(currentLabel)-\(Int(anchor))", label: currentLabel, items: currentItems))
-            }
-            currentLabel = label
+    func appendCurrentSection() {
+        guard let currentDay, !currentItems.isEmpty else { return }
+        let label = historySectionLabel(from: currentItems.first?.viewedAt)
+        sections.append(
+            HistorySection(
+                id: "\(Int(currentDay.timeIntervalSince1970))",
+                label: label,
+                items: currentItems
+            )
+        )
+    }
+
+    for item in sortedItems {
+        let itemDay = item.viewedAt.map { calendar.startOfDay(for: $0) }
+        if itemDay != currentDay {
+            appendCurrentSection()
+            currentDay = itemDay
             currentItems = [item]
         } else {
             currentItems.append(item)
         }
     }
 
-    if let currentLabel, !currentItems.isEmpty {
-        let anchor = currentItems.first?.viewedAt?.timeIntervalSince1970 ?? 0
-        sections.append(HistorySection(id: "\(currentLabel)-\(Int(anchor))", label: currentLabel, items: currentItems))
-    }
-
+    appendCurrentSection()
     return sections
 }
 

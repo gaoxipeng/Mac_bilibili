@@ -502,7 +502,18 @@ enum JSONParser {
             }
         }
 
-        return result
+        return sortHistoryItems(result)
+    }
+
+    nonisolated static func sortHistoryItems(_ items: [BiliHistoryItem]) -> [BiliHistoryItem] {
+        items.sorted { lhs, rhs in
+            let leftDate = lhs.viewedAt ?? .distantPast
+            let rightDate = rhs.viewedAt ?? .distantPast
+            if leftDate != rightDate {
+                return leftDate > rightDate
+            }
+            return lhs.id > rhs.id
+        }
     }
 
     nonisolated private static func historyDedupKey(for item: BiliHistoryItem) -> String {

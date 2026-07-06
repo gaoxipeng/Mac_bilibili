@@ -308,6 +308,8 @@ final class AppModel: ObservableObject {
                 if let account {
                     await loadProfile(account: account)
                 }
+            case .scrollTest:
+                break
             }
         } catch {
             guard generation == reloadGeneration else { return }
@@ -555,10 +557,11 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
     case hot
     case history
     case favorites
+    case scrollTest
     case mine
 
     static var primaryCases: [AppSection] {
-        [.search, .home, .following, .hot, .history, .favorites]
+        [.search, .home, .following, .hot, .history, .favorites, .scrollTest]
     }
 
     var id: String { rawValue }
@@ -571,6 +574,7 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
         case .hot: "排行"
         case .history: "历史"
         case .favorites: "收藏"
+        case .scrollTest: "测试"
         case .mine: "我的"
         }
     }
@@ -583,6 +587,7 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
         case .hot: "chart.bar"
         case .history: "clock.arrow.circlepath"
         case .favorites: "star"
+        case .scrollTest: "doc.text"
         case .mine: "person.crop.circle"
         }
     }

@@ -33,6 +33,9 @@ struct BiliSidebarIcon: View {
                     visualScale: 1.08,
                     strokeWidth: 2.15
                 )
+            case .scrollTest:
+                Image(systemName: "doc.text")
+                    .font(.system(size: size * 0.85, weight: .regular))
             case .mine:
                 BiliTabVectorIcon(paths: [BiliTabPaths.mine], color: color, size: size)
             }

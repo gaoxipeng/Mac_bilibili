@@ -3,7 +3,6 @@ import SwiftUI
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = AppModel()
-    @State private var sidebarSelection: AppSection? = .home
     @State private var navigationPath = NavigationPath()
     @State private var detailChromeHeight: CGFloat = 0
     @State private var profileChromeHeaderHeight: CGFloat = 0
@@ -30,24 +29,15 @@ struct ContentView: View {
         HStack(spacing: 0) {
             sidebarPane
             mainPane
+                .ignoresSafeArea(edges: .top)
         }
         .configureTransparentWindow()
-        .ignoresSafeArea(edges: .top)
         .task {
             await model.loadInitialData()
         }
         .environmentObject(model)
-        .onChange(of: sidebarSelection) { _, newValue in
-            guard let newValue else {
-                sidebarSelection = model.selectedSection
-                return
-            }
-            guard newValue != model.selectedSection else { return }
-            model.selectedSection = newValue
-        }
         .onChange(of: model.selectedSection) { oldValue, newValue in
             guard oldValue != newValue else { return }
-            sidebarSelection = newValue
             navigationPath = NavigationPath()
             model.clearFloatingChrome()
             model.clearProfilePageHandlers()
@@ -171,10 +161,11 @@ struct ContentView: View {
     }
 
     private var sidebarPane: some View {
-        Sidebar(model: model, selection: $sidebarSelection)
+        Sidebar(model: model, selection: $model.selectedSection)
             .frame(width: AppLayout.sidebarWidth)
             .frame(maxHeight: .infinity)
             .background(AppLayout.sidebarBackgroundColor)
+            .background(SidebarWindowDragExclusionView())
     }
 
     @ViewBuilder
@@ -243,6 +234,8 @@ struct ContentView: View {
                     Task { await model.loadMoreFavorites() }
                 }
             )
+        case .scrollTest:
+            ScrollPerformanceTestView()
         case .mine:
             MineView()
         }
@@ -276,6 +269,10 @@ private struct DetailFloatingChrome: View {
         detailChrome == nil && profileChrome == nil && relationChrome == nil
     }
 
+    private var showsDefaultRefreshChrome: Bool {
+        showsDefaultChrome && !showsFloatingBackButton
+    }
+
     private var showsActiveChrome: Bool {
         detailChrome != nil || profileChrome != nil || relationChrome != nil
     }
@@ -297,7 +294,7 @@ private struct DetailFloatingChrome: View {
             when: reportsFloatingChromeHeight
         )
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .allowsHitTesting(showsActiveChrome || showsDefaultChrome)
+        .allowsHitTesting(showsActiveChrome || showsFloatingBackButton || canExitSearchResults || showsDefaultRefreshChrome)
         .animation(.easeOut(duration: 0.26), value: showsFloatingBackButton)
         .animation(.easeOut(duration: 0.26), value: canGoBack)
         .animation(.easeOut(duration: 0.26), value: detailChrome?.title)
@@ -398,12 +395,13 @@ private struct DetailFloatingChrome: View {
         HStack(alignment: .top, spacing: 12) {
             if showsFloatingBackButton {
                 profileBackButton
-            } else {
-                Spacer(minLength: 0)
             }
+
+            Spacer(minLength: 0)
 
             floatingRefreshButton
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var floatingRefreshButton: some View {
@@ -445,7 +443,7 @@ private struct DetailFloatingChrome: View {
 
 private struct Sidebar: View {
     @ObservedObject var model: AppModel
-    @Binding var selection: AppSection?
+    @Binding var selection: AppSection
 
     private var isMineSelected: Bool {
         selection == .mine
@@ -459,10 +457,7 @@ private struct Sidebar: View {
                         section: section,
                         selected: selection == section
                     ) {
-                        if section == .search {
-                            model.requestSearchFocus()
-                        }
-                        selection = section
+                        select(section)
                     }
                 }
             }
@@ -471,7 +466,7 @@ private struct Sidebar: View {
             Spacer(minLength: 0)
 
             Button {
-                selection = .mine
+                select(.mine)
             } label: {
                 RemoteAvatar(
                     url: model.account?.faceURL,
@@ -487,11 +482,20 @@ private struct Sidebar: View {
                             .padding(-2)
                     }
                 }
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
             }
-            .buttonStyle(SidebarPressButtonStyle())
+            .buttonStyle(.plain)
             .padding(.bottom, AppLayout.sidebarBottomInset)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func select(_ section: AppSection) {
+        if section == .search {
+            model.requestSearchFocus()
+        }
+        selection = section
     }
 }
 
@@ -518,19 +522,23 @@ private struct SidebarButton: View {
             }
             .frame(maxWidth: .infinity)
             .frame(height: AppLayout.sidebarNavItemHeight)
+            .contentShape(Rectangle())
         }
-        .buttonStyle(SidebarPressButtonStyle())
-        .animation(.easeInOut(duration: 0.2), value: isHovered)
+        .buttonStyle(.plain)
         .onHover { isHovered = $0 }
     }
 }
 
-private struct SidebarPressButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .opacity(configuration.isPressed ? 0.72 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+private struct SidebarWindowDragExclusionView: NSViewRepresentable {
+    func makeNSView(context: Context) -> SidebarWindowDragExclusionNSView {
+        SidebarWindowDragExclusionNSView()
     }
+
+    func updateNSView(_ nsView: SidebarWindowDragExclusionNSView, context: Context) {}
+}
+
+private final class SidebarWindowDragExclusionNSView: NSView {
+    override var mouseDownCanMoveWindow: Bool { false }
 }
 
 #Preview {

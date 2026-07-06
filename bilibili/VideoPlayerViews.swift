@@ -25,6 +25,13 @@ enum VideoPlayerChrome {
         }
         return CGSize(width: width, height: height)
     }
+
+    /// 播放页内嵌播放器：按列宽和视频比例计算尺寸，不预留黑边。
+    static func inlinePlayerSize(maxWidth: CGFloat, aspectRatio: CGFloat) -> CGSize {
+        let ratio = max(aspectRatio, 0.01)
+        let width = max(1, maxWidth)
+        return CGSize(width: width, height: width / ratio)
+    }
 }
 
 final class PlayerClipContainerView: NSView {
@@ -74,7 +81,7 @@ struct VideoPlayerSurface: NSViewRepresentable {
     func makeNSView(context: Context) -> PlayerClipContainerView {
         let container = PlayerClipContainerView(cornerRadius: cornerRadius)
         container.playerView.controlsStyle = .none
-        container.playerView.videoGravity = .resizeAspectFill
+        container.playerView.videoGravity = .resizeAspect
         container.playerView.player = player.avPlayer
         return container
     }

@@ -1035,7 +1035,7 @@ struct VideoDetailChromeHeaderView: View {
     }
 
     private var videoHeader: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(info.title)
                 .font(.title)
                 .foregroundStyle(.primary)
@@ -1109,7 +1109,7 @@ struct VideoDetailView: View {
             let columnWidths = AppLayout.videoDetailColumnWidths(in: geometry.size.width)
             let sidebarWidth = columnWidths.sidebar
             let playerWidth = columnWidths.player
-            let playerTopInset = AppLayout.videoDetailPlayerTopInset(chromeHeight: chromeHeight)
+            let playerTopInset = chromeHeight > 0 ? chromeHeight : AppLayout.videoDetailPlayerTopInset
 
             HStack(alignment: .top, spacing: AppLayout.videoDetailSectionSpacing) {
                 leftColumn(
@@ -1186,43 +1186,28 @@ struct VideoDetailView: View {
         .commentImageFullscreenOverlay(imageURL: $commentFullscreenPictureURL)
     }
 
-    private func playerMaxHeight(
-        in geometry: GeometryProxy,
-        playerTopInset: CGFloat
-    ) -> CGFloat {
-        let reservedBelowPlayer: CGFloat = 150
-        let verticalInsets = playerTopInset + reservedBelowPlayer + 24
-        return max(280, geometry.size.height - verticalInsets)
-    }
-
     @ViewBuilder
     private func leftColumn(
         playerWidth: CGFloat,
         playerTopInset: CGFloat,
         geometry: GeometryProxy
     ) -> some View {
-        let maxHeight = playerMaxHeight(in: geometry, playerTopInset: playerTopInset)
-        let fittedPlayerSize = VideoPlayerChrome.fittedSize(
+        let playerSize = VideoPlayerChrome.inlinePlayerSize(
             maxWidth: playerWidth,
-            maxHeight: maxHeight,
             aspectRatio: model.player.displayAspectRatio
         )
-        let contentWidth = min(fittedPlayerSize.width, playerWidth)
         let introScrollMaxHeight = max(
             120,
             geometry.size.height
                 - playerTopInset
-                - fittedPlayerSize.height
+                - playerSize.height
                 - AppLayout.videoDetailSectionSpacing
                 - 24
         )
 
         VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
-            playerSection(
-                maxWidth: playerWidth,
-                maxHeight: maxHeight
-            )
-            .frame(maxWidth: playerWidth, alignment: .leading)
+            playerSection(maxWidth: playerWidth)
+            .frame(width: playerWidth, alignment: .leading)
             .opacity(fullscreenPresenter.isPresented ? 0 : 1)
             .allowsHitTesting(!fullscreenPresenter.isPresented)
 
@@ -1230,14 +1215,14 @@ struct VideoDetailView: View {
                 VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
                     if (model.detail?.pages.count ?? 0) > 1 {
                         VideoEpisodeSection(model: model)
-                            .frame(width: contentWidth)
+                            .frame(width: playerWidth)
                     }
 
                     VideoIntroCard(
                         model: model,
                         onTagTap: { appModel.openSearch(for: $0) }
                     )
-                    .frame(width: contentWidth)
+                    .frame(width: playerWidth)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.bottom, 8)
@@ -1352,11 +1337,10 @@ struct VideoDetailView: View {
         }
     }
 
-    private func playerSection(maxWidth: CGFloat, maxHeight: CGFloat) -> some View {
+    private func playerSection(maxWidth: CGFloat) -> some View {
         VideoPlayerSection(
             model: model,
             maxWidth: maxWidth,
-            maxHeight: maxHeight,
             rendersDanmaku: !fullscreenPresenter.isPresented,
             acceptsKeyboardShortcuts: !fullscreenPresenter.isPresented,
             onToggleFullscreen: toggleFullscreen
@@ -1719,7 +1703,6 @@ private struct VideoPlayerSection: View {
     @ObservedObject private var player: VideoPlaybackEngine
     @StateObject private var chromeState = VideoPlayerChromeState()
     let maxWidth: CGFloat
-    let maxHeight: CGFloat
     var isFullscreen = false
     var rendersDanmaku = true
     var acceptsKeyboardShortcuts = true
@@ -1728,7 +1711,6 @@ private struct VideoPlayerSection: View {
     init(
         model: VideoDetailModel,
         maxWidth: CGFloat,
-        maxHeight: CGFloat,
         isFullscreen: Bool = false,
         rendersDanmaku: Bool = true,
         acceptsKeyboardShortcuts: Bool = true,
@@ -1736,7 +1718,6 @@ private struct VideoPlayerSection: View {
     ) {
         self.model = model
         self.maxWidth = maxWidth
-        self.maxHeight = maxHeight
         self.isFullscreen = isFullscreen
         self.rendersDanmaku = rendersDanmaku
         self.acceptsKeyboardShortcuts = acceptsKeyboardShortcuts
@@ -1744,76 +1725,78 @@ private struct VideoPlayerSection: View {
         _player = ObservedObject(wrappedValue: model.player)
     }
 
-    private var fittedSize: CGSize {
-        VideoPlayerChrome.fittedSize(
+    private var playerSize: CGSize {
+        VideoPlayerChrome.inlinePlayerSize(
             maxWidth: maxWidth,
-            maxHeight: maxHeight,
             aspectRatio: player.displayAspectRatio
         )
     }
 
     var body: some View {
         ZStack {
-            if let playError = model.playError {
-                Color.black
-                ContentUnavailableView("无法播放", systemImage: "play.slash", description: Text(playError))
-                    .foregroundStyle(.white.opacity(0.86))
-            } else if !player.isReady {
-                Color.black
-            } else {
-                VideoPlayerSurface(
-                    player: player,
-                    cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius
-                )
-                if model.danmakuVisible, !model.danmakuItems.isEmpty, rendersDanmaku {
-                    DanmakuOverlayView(
-                        items: model.danmakuItems,
-                        positionMs: Int64(playbackTimeMs(player).rounded()),
-                        isPlaying: player.isPlaying && !player.isScrubbing,
-                        enabled: model.danmakuVisible,
-                        settings: model.danmakuSettings,
-                        layoutMode: isFullscreen ? .fullscreen : .inline,
-                        isActive: rendersDanmaku,
-                        playbackEngine: player
-                    )
-                    .equatable()
-                }
-            }
-            if model.showDanmakuSettings {
-                DanmakuSettingsOverlay(
-                    settings: model.danmakuSettings,
-                    onSettingsChange: model.updateDanmakuSettings,
-                    onDismiss: { model.showDanmakuSettings = false }
-                )
-            }
-            VideoPlayerClickOverlay(
-                onSingleClick: {
-                    chromeState.revealControls()
-                    player.togglePlayback()
-                },
-                onDoubleClick: {
-                    chromeState.revealControls()
-                    onToggleFullscreen?()
-                },
-                onActivity: { chromeState.revealControls() }
-            )
-            VStack {
-                Spacer()
-                if !model.showDanmakuSettings {
-                    VideoControlCapsule(
+            Color.black
+
+            ZStack {
+                if let playError = model.playError {
+                    ContentUnavailableView("无法播放", systemImage: "play.slash", description: Text(playError))
+                        .foregroundStyle(.white.opacity(0.86))
+                } else if !player.isReady {
+                    Color.clear
+                } else {
+                    VideoPlayerSurface(
                         player: player,
-                        danmakuVisible: model.danmakuVisible,
-                        onDanmakuToggle: model.toggleDanmakuVisible,
-                        onDanmakuRightClick: { model.showDanmakuSettings = true },
-                        onInteraction: { chromeState.revealControls() }
+                        cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius
                     )
-                    .opacity(chromeState.showsControls ? 1 : 0)
-                    .allowsHitTesting(chromeState.showsControls)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, isFullscreen ? 32 : 28)
+                    if model.danmakuVisible, !model.danmakuItems.isEmpty, rendersDanmaku {
+                        DanmakuOverlayView(
+                            items: model.danmakuItems,
+                            positionMs: Int64(playbackTimeMs(player).rounded()),
+                            isPlaying: player.isPlaying && !player.isScrubbing,
+                            enabled: model.danmakuVisible,
+                            settings: model.danmakuSettings,
+                            layoutMode: isFullscreen ? .fullscreen : .inline,
+                            isActive: rendersDanmaku,
+                            playbackEngine: player
+                        )
+                        .equatable()
+                    }
                 }
+                if model.showDanmakuSettings {
+                    DanmakuSettingsOverlay(
+                        settings: model.danmakuSettings,
+                        onSettingsChange: model.updateDanmakuSettings,
+                        onDismiss: { model.showDanmakuSettings = false }
+                    )
+                }
+                VideoPlayerClickOverlay(
+                    onSingleClick: {
+                        chromeState.revealControls()
+                        player.togglePlayback()
+                    },
+                    onDoubleClick: {
+                        chromeState.revealControls()
+                        onToggleFullscreen?()
+                    },
+                    onActivity: { chromeState.revealControls() }
+                )
+                VStack {
+                    Spacer()
+                    if !model.showDanmakuSettings {
+                        VideoControlCapsule(
+                            player: player,
+                            danmakuVisible: model.danmakuVisible,
+                            onDanmakuToggle: model.toggleDanmakuVisible,
+                            onDanmakuRightClick: { model.showDanmakuSettings = true },
+                            onInteraction: { chromeState.revealControls() }
+                        )
+                        .opacity(chromeState.showsControls ? 1 : 0)
+                        .allowsHitTesting(chromeState.showsControls)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, isFullscreen ? 32 : 28)
+                    }
+                }
+                .animation(.easeInOut(duration: 0.28), value: chromeState.showsControls)
             }
-            .animation(.easeInOut(duration: 0.28), value: chromeState.showsControls)
         }
         .background {
             VideoPlayerKeyboardMonitor(handlers: keyboardHandlers)
@@ -1828,7 +1811,7 @@ private struct VideoPlayerSection: View {
             VideoScrollWheelMonitor(player: player)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: fittedSize.width, height: fittedSize.height)
+        .frame(width: isFullscreen ? nil : playerSize.width, height: isFullscreen ? nil : playerSize.height)
         .compositingGroup()
         .clipShape(RoundedRectangle(cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius, style: .continuous))
         .overlay {
@@ -1838,10 +1821,6 @@ private struct VideoPlayerSection: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: player.displayAspectRatio)
-        .frame(
-            width: isFullscreen ? nil : fittedSize.width,
-            height: isFullscreen ? nil : fittedSize.height
-        )
     }
 
     private func playbackTimeMs(_ player: VideoPlaybackEngine) -> Double {

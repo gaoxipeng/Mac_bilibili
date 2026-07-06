@@ -193,7 +193,7 @@ struct DynamicDetailView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let topInset = AppLayout.videoDetailPlayerTopInset(chromeHeight: chromeHeight)
+            let topInset = chromeHeight > 0 ? chromeHeight : AppLayout.videoDetailPlayerTopInset
             let contentHeight = max(0, geometry.size.height - topInset - 24)
             let leftWidth = geometry.size.width * 0.62
             let rightWidth = geometry.size.width * 0.34

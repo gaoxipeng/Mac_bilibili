@@ -98,20 +98,20 @@ enum AppLayout {
 
     /// 播放器顶部留白：避开浮动返回栏与标题，略低于标题底边。
     static var videoDetailPlayerTopInset: CGFloat {
-        floatingChromeReservedHeight + 22
+        floatingChromeReservedHeight + 12
     }
 
     static let videoDetailPageBackground = Color(red: 0.961, green: 0.963, blue: 0.969)
     static let videoDetailCardCornerRadius: CGFloat = 12
     static let videoDetailCardPadding: CGFloat = 16
-    static let videoDetailLeadingInset: CGFloat = 12
-    static let videoDetailTrailingInset: CGFloat = 16
+    static let videoDetailLeadingInset: CGFloat = 8
+    static let videoDetailTrailingInset: CGFloat = 12
     static let videoDetailSectionSpacing: CGFloat = 8
-    static let videoDetailSidebarMinWidth: CGFloat = 260
+    static let videoDetailSidebarMinWidth: CGFloat = 240
     static let videoDetailSidebarMinContentWidth: CGFloat = 200
-    static let videoDetailSidebarWidthRatio: CGFloat = 0.28
-    static let videoDetailSidebarMaxWidthRatio: CGFloat = 0.36
-    static let videoDetailChromeBottomSpacing: CGFloat = 10
+    static let videoDetailSidebarWidthRatio: CGFloat = 0.24
+    static let videoDetailSidebarMaxWidthRatio: CGFloat = 0.32
+    static let videoDetailChromeBottomSpacing: CGFloat = 4
     static let userProfileFallbackChromeHeight: CGFloat = 152
     static let userProfileChromeShadowOverflow: CGFloat = 8
 

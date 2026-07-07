@@ -2228,6 +2228,7 @@ private struct VideoControlCapsule: View {
             .padding(.vertical, VideoControlLayout.verticalPadding)
         }
         .frame(height: VideoControlLayout.capsuleHeight)
+        .clipShape(Capsule(style: .continuous))
         .modifier(VideoControlCapsuleChrome())
         .onChange(of: progress) { _, newValue in
             if player.isScrubbing || !player.isPlaying {
@@ -2304,15 +2305,16 @@ private struct VideoControlCapsuleProgress: View {
     var body: some View {
         GeometryReader { proxy in
             let clamped = min(1, max(0, progress))
+            let lineWidth = VideoControlLayout.progressLineWidth
+            let trackHeight = proxy.size.height
             if clamped > 0 {
-                let lineWidth = VideoControlLayout.progressLineWidth
                 let offset = min(
-                    max(0, proxy.size.width * clamped - lineWidth),
+                    max(0, proxy.size.width * clamped - lineWidth / 2),
                     max(0, proxy.size.width - lineWidth)
                 )
-                Capsule()
+                Capsule(style: .continuous)
                     .fill(BiliTheme.pink)
-                    .frame(width: lineWidth)
+                    .frame(width: lineWidth, height: trackHeight)
                     .offset(x: offset)
             }
         }

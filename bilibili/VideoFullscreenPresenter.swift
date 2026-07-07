@@ -34,6 +34,9 @@ final class VideoFullscreenPresenter: ObservableObject {
         let hosting = NSHostingView(rootView: rootView)
         hosting.frame = NSRect(origin: .zero, size: sourceFrame.size)
         hosting.layerContentsRedrawPolicy = .onSetNeedsDisplay
+        hosting.wantsLayer = true
+        hosting.layer?.backgroundColor = NSColor.clear.cgColor
+        hosting.layer?.isOpaque = false
 
         let container = FullscreenWindowContainerView(contentView: hosting)
         container.frame = NSRect(origin: .zero, size: sourceFrame.size)
@@ -42,7 +45,7 @@ final class VideoFullscreenPresenter: ObservableObject {
 
         let window = NSWindow(
             contentRect: sourceFrame,
-            styleMask: [.borderless],
+            styleMask: [.titled, .fullSizeContentView],
             backing: .buffered,
             defer: false,
             screen: screen
@@ -50,6 +53,16 @@ final class VideoFullscreenPresenter: ObservableObject {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = false
+        [
+            NSWindow.ButtonType.closeButton,
+            .miniaturizeButton,
+            .zoomButton,
+        ].forEach { buttonType in
+            window.standardWindowButton(buttonType)?.isHidden = true
+        }
         // Stay above the main window but below the menu bar and Dock so edge hover can reveal them.
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
@@ -76,6 +89,7 @@ final class VideoFullscreenPresenter: ObservableObject {
             opening: true
         ) {
             window.setFrame(screen.frame, display: true)
+            self.setFullscreenBackdropOpaque(true, for: window)
             window.alphaValue = 1
             container.cornerRadius = 0
             container.transitionProgress = 1
@@ -92,6 +106,7 @@ final class VideoFullscreenPresenter: ObservableObject {
         let targetFrame = sourceFrameProvider?() ?? window.frame
         removeEscapeMonitor()
         prepareForSystemChromeRestoration(window: window)
+        setFullscreenBackdropOpaque(false, for: window)
 
         animateWindow(
             window,
@@ -133,6 +148,11 @@ final class VideoFullscreenPresenter: ObservableObject {
         isRestoringSystemChrome = false
         removeEscapeMonitor()
         Self.restoreMainWindowAppearance()
+    }
+
+    private func setFullscreenBackdropOpaque(_ opaque: Bool, for window: NSWindow) {
+        window.isOpaque = opaque
+        window.backgroundColor = opaque ? .black : .clear
     }
 
     private func enterSystemFullscreenChrome() {
@@ -510,7 +530,11 @@ private final class FullscreenWindowContainerView: NSView {
     private func updateTransitionAppearance() {
         wantsLayer = true
         let progress = transitionProgress.clamped(to: 0...1)
-        layer?.backgroundColor = NSColor.black.withAlphaComponent(0.88 + 0.12 * progress).cgColor
+        if progress >= 1 {
+            layer?.backgroundColor = NSColor.clear.cgColor
+        } else {
+            layer?.backgroundColor = NSColor.black.withAlphaComponent(0.88 + 0.12 * progress).cgColor
+        }
     }
 }
 

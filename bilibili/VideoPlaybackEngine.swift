@@ -91,7 +91,7 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     func resumePlayback() {
-        guard let player, isReady else { return }
+        guard isReady, player != nil else { return }
         startPlayback()
     }
 

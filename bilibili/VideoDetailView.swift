@@ -1786,6 +1786,7 @@ private struct VideoPlayerSection: View {
     let maxWidth: CGFloat
     let maxHeight: CGFloat
     var isFullscreen = false
+    var fullscreenTitle: String? = nil
     var rendersDanmaku = true
     var acceptsKeyboardShortcuts = true
     var onToggleFullscreen: (() -> Void)?
@@ -1795,6 +1796,7 @@ private struct VideoPlayerSection: View {
         maxWidth: CGFloat,
         maxHeight: CGFloat,
         isFullscreen: Bool = false,
+        fullscreenTitle: String? = nil,
         rendersDanmaku: Bool = true,
         acceptsKeyboardShortcuts: Bool = true,
         onToggleFullscreen: (() -> Void)? = nil
@@ -1803,6 +1805,7 @@ private struct VideoPlayerSection: View {
         self.maxWidth = maxWidth
         self.maxHeight = maxHeight
         self.isFullscreen = isFullscreen
+        self.fullscreenTitle = fullscreenTitle
         self.rendersDanmaku = rendersDanmaku
         self.acceptsKeyboardShortcuts = acceptsKeyboardShortcuts
         self.onToggleFullscreen = onToggleFullscreen
@@ -1821,67 +1824,10 @@ private struct VideoPlayerSection: View {
         ZStack {
             Color.black
 
-            ZStack {
-                if let playError = model.playError {
-                    ContentUnavailableView("无法播放", systemImage: "play.slash", description: Text(playError))
-                        .foregroundStyle(.white.opacity(0.86))
-                } else if !player.isReady {
-                    Color.clear
-                } else {
-                    VideoPlayerSurface(
-                        player: player,
-                        cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius
-                    )
-                    if model.danmakuVisible, !model.danmakuItems.isEmpty, rendersDanmaku {
-                        DanmakuOverlayView(
-                            items: model.danmakuItems,
-                            positionMs: Int64(playbackTimeMs(player).rounded()),
-                            isPlaying: player.isPlaying && !player.isScrubbing,
-                            enabled: model.danmakuVisible,
-                            settings: model.danmakuSettings,
-                            layoutMode: isFullscreen ? .fullscreen : .inline,
-                            isActive: rendersDanmaku,
-                            playbackEngine: player
-                        )
-                        .equatable()
-                    }
-                }
-                if model.showDanmakuSettings {
-                    DanmakuSettingsOverlay(
-                        settings: model.danmakuSettings,
-                        onSettingsChange: model.updateDanmakuSettings,
-                        onDismiss: { model.showDanmakuSettings = false }
-                    )
-                }
-                VideoPlayerClickOverlay(
-                    onSingleClick: {
-                        chromeState.revealControls()
-                        player.togglePlayback()
-                    },
-                    onDoubleClick: {
-                        chromeState.revealControls()
-                        onToggleFullscreen?()
-                    },
-                    onActivity: { chromeState.revealControls() }
-                )
-                VStack {
-                    Spacer()
-                    if !model.showDanmakuSettings {
-                        VideoControlCapsule(
-                            player: player,
-                            danmakuVisible: model.danmakuVisible,
-                            onDanmakuToggle: model.toggleDanmakuVisible,
-                            onDanmakuRightClick: { model.showDanmakuSettings = true },
-                            onInteraction: { chromeState.revealControls() }
-                        )
-                        .opacity(chromeState.showsControls ? 1 : 0)
-                        .allowsHitTesting(chromeState.showsControls)
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, isFullscreen ? 32 : 28)
-                    }
-                }
-                .animation(.easeInOut(duration: 0.28), value: chromeState.showsControls)
-            }
+            playerContentStack
+                .compositingGroup()
+
+            playerChromeOverlay
         }
         .background {
             VideoPlayerKeyboardMonitor(handlers: keyboardHandlers)
@@ -1897,7 +1843,6 @@ private struct VideoPlayerSection: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(width: isFullscreen ? nil : fittedSize.width, height: isFullscreen ? nil : fittedSize.height)
-        .compositingGroup()
         .clipShape(RoundedRectangle(cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius, style: .continuous))
         .overlay {
             if !isFullscreen {
@@ -1906,6 +1851,85 @@ private struct VideoPlayerSection: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: player.displayAspectRatio)
+    }
+
+    @ViewBuilder
+    private var playerContentStack: some View {
+        ZStack {
+            if let playError = model.playError {
+                ContentUnavailableView("无法播放", systemImage: "play.slash", description: Text(playError))
+                    .foregroundStyle(.white.opacity(0.86))
+            } else if !player.isReady {
+                Color.clear
+            } else {
+                VideoPlayerSurface(
+                    player: player,
+                    cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius
+                )
+                if model.danmakuVisible, !model.danmakuItems.isEmpty, rendersDanmaku {
+                    DanmakuOverlayView(
+                        items: model.danmakuItems,
+                        positionMs: Int64(playbackTimeMs(player).rounded()),
+                        isPlaying: player.isPlaying && !player.isScrubbing,
+                        enabled: model.danmakuVisible,
+                        settings: model.danmakuSettings,
+                        layoutMode: isFullscreen ? .fullscreen : .inline,
+                        isActive: rendersDanmaku,
+                        playbackEngine: player
+                    )
+                    .equatable()
+                }
+            }
+            VideoPlayerClickOverlay(
+                onSingleClick: {
+                    chromeState.revealControls()
+                    player.togglePlayback()
+                },
+                onDoubleClick: {
+                    chromeState.revealControls()
+                    onToggleFullscreen?()
+                },
+                onActivity: { chromeState.revealControls() }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var playerChromeOverlay: some View {
+        ZStack {
+            if model.showDanmakuSettings {
+                DanmakuSettingsOverlay(
+                    settings: model.danmakuSettings,
+                    onSettingsChange: model.updateDanmakuSettings,
+                    onDismiss: { model.showDanmakuSettings = false }
+                )
+            }
+
+            VStack(spacing: 0) {
+                if isFullscreen, let fullscreenTitle {
+                    VideoFullscreenTitleBar(title: fullscreenTitle)
+                        .opacity(chromeState.showsControls ? 1 : 0)
+                        .allowsHitTesting(false)
+                }
+
+                Spacer()
+
+                if !model.showDanmakuSettings {
+                    VideoControlCapsule(
+                        player: player,
+                        danmakuVisible: model.danmakuVisible,
+                        onDanmakuToggle: model.toggleDanmakuVisible,
+                        onDanmakuRightClick: { model.showDanmakuSettings = true },
+                        onInteraction: { chromeState.revealControls() }
+                    )
+                    .opacity(chromeState.showsControls ? 1 : 0)
+                    .allowsHitTesting(chromeState.showsControls)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, isFullscreen ? 32 : 28)
+                }
+            }
+            .animation(.easeInOut(duration: 0.28), value: chromeState.showsControls)
+        }
     }
 
     private func playbackTimeMs(_ player: VideoPlaybackEngine) -> Double {
@@ -1945,122 +1969,20 @@ private struct VideoPlayerSection: View {
 
 private struct VideoPlayerFullscreenContent: View {
     @ObservedObject var model: VideoDetailModel
-    @ObservedObject private var player: VideoPlaybackEngine
-    @StateObject private var chromeState = VideoPlayerChromeState()
     let onClose: () -> Void
 
-    init(model: VideoDetailModel, onClose: @escaping () -> Void) {
-        self.model = model
-        self.onClose = onClose
-        _player = ObservedObject(wrappedValue: model.player)
-    }
-
     var body: some View {
-        ZStack {
-            FullscreenPlayerHostView(
-                model: model,
-                keyboardHandlers: fullscreenKeyboardHandlers
-            )
-
-            if model.danmakuVisible, !model.danmakuItems.isEmpty {
-                DanmakuOverlayView(
-                    items: model.danmakuItems,
-                    positionMs: currentPositionMs,
-                    isPlaying: player.isPlaying && !player.isScrubbing,
-                    enabled: model.danmakuVisible,
-                    settings: model.danmakuSettings,
-                    layoutMode: .fullscreen,
-                    isActive: true,
-                    playbackEngine: player
-                )
-                .allowsHitTesting(false)
-                .ignoresSafeArea()
-            }
-
-            if model.showDanmakuSettings {
-                DanmakuSettingsOverlay(
-                    settings: model.danmakuSettings,
-                    onSettingsChange: model.updateDanmakuSettings,
-                    onDismiss: { model.showDanmakuSettings = false }
-                )
-            }
-
-            VideoPlayerClickOverlay(
-                onSingleClick: {
-                    chromeState.revealControls()
-                    player.togglePlayback()
-                },
-                onDoubleClick: {
-                    chromeState.revealControls()
-                    onClose()
-                },
-                onActivity: { chromeState.revealControls() }
-            )
-
-            VStack(spacing: 0) {
-                VideoFullscreenTitleBar(title: model.displayVideo.title)
-                    .opacity(chromeState.showsControls ? 1 : 0)
-                    .allowsHitTesting(false)
-
-                Spacer()
-
-                if !model.showDanmakuSettings {
-                    VideoControlCapsule(
-                        player: player,
-                        danmakuVisible: model.danmakuVisible,
-                        onDanmakuToggle: model.toggleDanmakuVisible,
-                        onDanmakuRightClick: { model.showDanmakuSettings = true },
-                        onInteraction: { chromeState.revealControls() }
-                    )
-                    .opacity(chromeState.showsControls ? 1 : 0)
-                    .allowsHitTesting(chromeState.showsControls)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 32)
-                }
-            }
-            .animation(.easeInOut(duration: 0.28), value: chromeState.showsControls)
-        }
-        .onAppear {
-            syncChromeVisibility()
-        }
-        .onChange(of: player.isPlaying) { _, _ in
-            syncChromeVisibility()
-        }
+        VideoPlayerSection(
+            model: model,
+            maxWidth: 0,
+            maxHeight: 0,
+            isFullscreen: true,
+            fullscreenTitle: model.displayVideo.title,
+            onToggleFullscreen: onClose
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
         .ignoresSafeArea()
-    }
-
-    private var currentPositionMs: Int64 {
-        let seconds = player.isScrubbing ? (player.scrubPreviewTime ?? player.preciseCurrentTime) : player.preciseCurrentTime
-        return Int64((seconds * 1000).rounded())
-    }
-
-    private func syncChromeVisibility() {
-        if player.isPlaying {
-            chromeState.revealControls()
-        } else {
-            chromeState.showControlsPersistently()
-        }
-    }
-
-    private var fullscreenKeyboardHandlers: VideoPlayerKeyboardHandlers {
-        VideoPlayerKeyboardHandlers(
-            isFullscreen: true,
-            shouldHandle: {
-                guard !model.showDanmakuSettings else { return false }
-                return VideoPlayerKeyboardRouting.shouldHandleInVideoDetail()
-            },
-            onInteraction: { chromeState.revealControls() },
-            onTogglePlayback: { player.togglePlayback() },
-            onSeekBackward: { player.seek(by: -5) },
-            onSeekForward: { player.seek(by: 5) },
-            onVolumeUp: { SystemAudioVolume.adjust(by: 0.1) },
-            onVolumeDown: { SystemAudioVolume.adjust(by: -0.1) },
-            onToggleFullscreen: onClose,
-            onExitFullscreen: onClose,
-            onToggleMute: { player.toggleMute() },
-            onToggleDanmaku: { model.toggleDanmakuVisible() }
-        )
     }
 }
 
@@ -2306,11 +2228,7 @@ private struct VideoControlCapsule: View {
             .padding(.vertical, VideoControlLayout.verticalPadding)
         }
         .frame(height: VideoControlLayout.capsuleHeight)
-        .clipShape(Capsule())
-        .overlay {
-            Capsule()
-                .stroke(BiliTheme.videoControlBorder, lineWidth: 0.5)
-        }
+        .modifier(VideoControlCapsuleChrome())
         .onChange(of: progress) { _, newValue in
             if player.isScrubbing || !player.isPlaying {
                 displayedProgress = newValue
@@ -2365,6 +2283,18 @@ private struct VideoControlCapsule: View {
             return String(format: "%d:%02d:%02d", hours, minutes, secs)
         }
         return String(format: "%d:%02d", minutes, secs)
+    }
+}
+
+private struct VideoControlCapsuleChrome: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .glassEffect(.clear, in: .capsule)
+        .overlay {
+            Capsule(style: .continuous)
+                .strokeBorder(BiliTheme.videoControlBorder, lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.22), radius: 10, x: 0, y: 3)
     }
 }
 

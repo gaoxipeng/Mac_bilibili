@@ -48,11 +48,19 @@ final class PlayerClipContainerView: NSView {
     var cornerRadius: CGFloat {
         didSet { applyRoundedMask() }
     }
+    var allowsPictureInPicture = true
+    var lastHandledPictureInPictureRequestID = 0
+
+    private let pictureInPictureLayer = AVPlayerLayer()
+    private var pictureInPictureController: AVPictureInPictureController?
+    private weak var playbackEngine: VideoPlaybackEngine?
 
     init(cornerRadius: CGFloat = VideoPlayerChrome.cornerRadius) {
         self.cornerRadius = cornerRadius
         super.init(frame: .zero)
         wantsLayer = true
+        pictureInPictureLayer.videoGravity = .resizeAspect
+        layer?.addSublayer(pictureInPictureLayer)
         applyRoundedMask()
         addSubview(playerView)
     }
@@ -64,6 +72,7 @@ final class PlayerClipContainerView: NSView {
 
     override func layout() {
         super.layout()
+        pictureInPictureLayer.frame = bounds
         playerView.frame = bounds
         playerView.autoresizingMask = [.width, .height]
         applyRoundedMask()
@@ -75,6 +84,86 @@ final class PlayerClipContainerView: NSView {
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = cornerRadius > 0
     }
+
+    func handlePictureInPictureRequest(_ requestID: Int) {
+        guard requestID > lastHandledPictureInPictureRequestID else { return }
+        lastHandledPictureInPictureRequestID = requestID
+        guard allowsPictureInPicture,
+              AVPictureInPictureController.isPictureInPictureSupported(),
+              let player = playerView.player else { return }
+
+        guard let controller = pictureInPictureController(for: player) else { return }
+        if controller.isPictureInPictureActive {
+            controller.stopPictureInPicture()
+        } else {
+            PictureInPictureWindowPreserver.capture(from: self)
+            controller.startPictureInPicture()
+        }
+    }
+
+    func updatePictureInPicturePlayer(_ player: AVPlayer?) {
+        guard pictureInPictureLayer.player !== player else { return }
+        pictureInPictureLayer.player = player
+        pictureInPictureController = nil
+    }
+
+    private func pictureInPictureController(for player: AVPlayer) -> AVPictureInPictureController? {
+        if pictureInPictureLayer.player !== player {
+            pictureInPictureLayer.player = player
+            pictureInPictureController = nil
+        }
+        if let pictureInPictureController {
+            return pictureInPictureController
+        }
+        guard let controller = AVPictureInPictureController(playerLayer: pictureInPictureLayer) else {
+            return nil
+        }
+        pictureInPictureController = controller
+        controller.delegate = self
+        return controller
+    }
+}
+
+extension PlayerClipContainerView: AVPictureInPictureControllerDelegate {
+    func bindPlaybackEngine(_ playbackEngine: VideoPlaybackEngine) {
+        self.playbackEngine = playbackEngine
+    }
+
+    func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        playbackEngine?.setPictureInPictureActive(true)
+        DispatchQueue.main.async {
+            PictureInPictureWindowPreserver.restoreIfNeeded()
+        }
+    }
+
+    func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        PictureInPictureWindowPreserver.restoreIfNeeded()
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        failedToStartPictureInPictureWithError error: Error
+    ) {
+        playbackEngine?.setPictureInPictureActive(false)
+        PictureInPictureWindowPreserver.clear()
+    }
+
+    func pictureInPictureControllerWillStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        playbackEngine?.setPictureInPictureActive(false)
+    }
+
+    func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        playbackEngine?.setPictureInPictureActive(false)
+        PictureInPictureWindowPreserver.clear()
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void
+    ) {
+        playbackEngine?.setPictureInPictureActive(false)
+        completionHandler(true)
+    }
 }
 
 final class NonSeekingPlayerView: AVPlayerView {
@@ -83,22 +172,113 @@ final class NonSeekingPlayerView: AVPlayerView {
     }
 }
 
+@MainActor
+private enum PictureInPictureWindowPreserver {
+    private struct Snapshot {
+        weak var window: NSWindow?
+        let frame: NSRect
+        let isFullScreen: Bool
+    }
+
+    private static var snapshot: Snapshot?
+    private static var restoreAttempts = 0
+    private static let maxRestoreAttempts = 8
+
+    static func capture(from view: NSView) {
+        guard let window = view.window else { return }
+        snapshot = Snapshot(
+            window: window,
+            frame: window.frame,
+            isFullScreen: window.styleMask.contains(.fullScreen)
+        )
+        restoreAttempts = 0
+    }
+
+    static func restoreIfNeeded() {
+        guard let snapshot, let window = snapshot.window else {
+            clear()
+            return
+        }
+
+        let targetFrame = snapshot.frame
+        let wantsFullScreen = snapshot.isFullScreen
+        let isFullScreen = window.styleMask.contains(.fullScreen)
+
+        if wantsFullScreen {
+            if !isFullScreen {
+                window.toggleFullScreen(nil)
+                scheduleRetry()
+                return
+            }
+            clear()
+            return
+        }
+
+        if isFullScreen {
+            window.toggleFullScreen(nil)
+            scheduleRetry()
+            return
+        }
+
+        if !framesMatch(window.frame, targetFrame) {
+            window.setFrame(targetFrame, display: true)
+            scheduleRetry()
+            return
+        }
+
+        clear()
+    }
+
+    static func clear() {
+        snapshot = nil
+        restoreAttempts = 0
+    }
+
+    private static func scheduleRetry() {
+        guard restoreAttempts < maxRestoreAttempts else {
+            clear()
+            return
+        }
+        restoreAttempts += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            restoreIfNeeded()
+        }
+    }
+
+    private static func framesMatch(_ lhs: NSRect, _ rhs: NSRect) -> Bool {
+        abs(lhs.origin.x - rhs.origin.x) < 0.5
+            && abs(lhs.origin.y - rhs.origin.y) < 0.5
+            && abs(lhs.width - rhs.width) < 0.5
+            && abs(lhs.height - rhs.height) < 0.5
+    }
+}
+
 struct VideoPlayerSurface: NSViewRepresentable {
     @ObservedObject var player: VideoPlaybackEngine
     var cornerRadius: CGFloat = VideoPlayerChrome.cornerRadius
+    var allowsPictureInPicture = true
 
     func makeNSView(context: Context) -> PlayerClipContainerView {
         let container = PlayerClipContainerView(cornerRadius: cornerRadius)
         container.playerView.controlsStyle = .none
+        container.playerView.allowsPictureInPicturePlayback = false
         container.playerView.videoGravity = .resizeAspect
         container.playerView.player = player.avPlayer
+        container.bindPlaybackEngine(player)
+        container.updatePictureInPicturePlayer(player.avPlayer)
+        container.allowsPictureInPicture = allowsPictureInPicture
+        container.lastHandledPictureInPictureRequestID = player.pictureInPictureRequestID
         return container
     }
 
     func updateNSView(_ nsView: PlayerClipContainerView, context: Context) {
         _ = player.isReady
         nsView.cornerRadius = cornerRadius
+        nsView.allowsPictureInPicture = allowsPictureInPicture
         nsView.playerView.player = player.avPlayer
+        nsView.bindPlaybackEngine(player)
+        nsView.updatePictureInPicturePlayer(player.avPlayer)
+        nsView.handlePictureInPictureRequest(player.pictureInPictureRequestID)
     }
 }
 

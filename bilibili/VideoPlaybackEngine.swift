@@ -23,6 +23,8 @@ final class VideoPlaybackEngine: ObservableObject {
     @Published private(set) var volume: Float = 1
     @Published private(set) var isMuted = false
     @Published private(set) var playbackRate: Float = 1
+    @Published private(set) var pictureInPictureRequestID = 0
+    @Published private(set) var isPictureInPictureActive = false
 
     private var presentationSizeObservation: NSKeyValueObservation?
     private var volumeBeforeMute: Float = 1
@@ -83,6 +85,15 @@ final class VideoPlaybackEngine: ObservableObject {
         default:
             return "2x"
         }
+    }
+
+    func requestPictureInPicture() {
+        guard isReady, player != nil else { return }
+        pictureInPictureRequestID += 1
+    }
+
+    func setPictureInPictureActive(_ isActive: Bool) {
+        isPictureInPictureActive = isActive
     }
 
     func pausePlayback() {
@@ -226,6 +237,7 @@ final class VideoPlaybackEngine: ObservableObject {
         scrubPreviewTime = nil
         videoAspectRatio = 16.0 / 9.0
         playbackRate = 1
+        isPictureInPictureActive = false
     }
 
     private func startPlayback() {

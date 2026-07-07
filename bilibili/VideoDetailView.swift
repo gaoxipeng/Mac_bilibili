@@ -1412,6 +1412,7 @@ struct VideoDetailView: View {
             maxHeight: maxHeight,
             rendersDanmaku: !fullscreenPresenter.isPresented,
             acceptsKeyboardShortcuts: !fullscreenPresenter.isPresented,
+            allowsPictureInPicture: !fullscreenPresenter.isPresented,
             onToggleFullscreen: toggleFullscreen
         )
         .background {
@@ -1789,6 +1790,7 @@ private struct VideoPlayerSection: View {
     var fullscreenTitle: String? = nil
     var rendersDanmaku = true
     var acceptsKeyboardShortcuts = true
+    var allowsPictureInPicture = true
     var onToggleFullscreen: (() -> Void)?
 
     init(
@@ -1799,6 +1801,7 @@ private struct VideoPlayerSection: View {
         fullscreenTitle: String? = nil,
         rendersDanmaku: Bool = true,
         acceptsKeyboardShortcuts: Bool = true,
+        allowsPictureInPicture: Bool = true,
         onToggleFullscreen: (() -> Void)? = nil
     ) {
         self.model = model
@@ -1808,6 +1811,7 @@ private struct VideoPlayerSection: View {
         self.fullscreenTitle = fullscreenTitle
         self.rendersDanmaku = rendersDanmaku
         self.acceptsKeyboardShortcuts = acceptsKeyboardShortcuts
+        self.allowsPictureInPicture = allowsPictureInPicture
         self.onToggleFullscreen = onToggleFullscreen
         _player = ObservedObject(wrappedValue: model.player)
     }
@@ -1864,9 +1868,10 @@ private struct VideoPlayerSection: View {
             } else {
                 VideoPlayerSurface(
                     player: player,
-                    cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius
+                    cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius,
+                    allowsPictureInPicture: allowsPictureInPicture
                 )
-                if model.danmakuVisible, !model.danmakuItems.isEmpty, rendersDanmaku {
+                if model.danmakuVisible, !model.danmakuItems.isEmpty, rendersDanmaku, !player.isPictureInPictureActive {
                     DanmakuOverlayView(
                         items: model.danmakuItems,
                         positionMs: Int64(playbackTimeMs(player).rounded()),
@@ -1878,6 +1883,9 @@ private struct VideoPlayerSection: View {
                         playbackEngine: player
                     )
                     .equatable()
+                }
+                if player.isPictureInPictureActive {
+                    Color.black
                 }
             }
             VideoPlayerClickOverlay(
@@ -2104,19 +2112,44 @@ private final class VideoPlayerClickView: NSView {
 }
 
 private enum VideoControlLayout {
-    static let capsuleHeight: CGFloat = 54
-    static let horizontalPadding: CGFloat = 14
-    static let verticalPadding: CGFloat = 12
-    static let itemSpacing: CGFloat = 10
-    static let timeMinWidth: CGFloat = 48
-    static let speedMinWidth: CGFloat = 36
-    static let speedToRemainingSpacing: CGFloat = 20
-    static let playIconSize: CGFloat = 19
-    static let playButtonSize: CGFloat = 36
-    static let danmakuFontSize: CGFloat = 17
-    static let danmakuButtonSize: CGFloat = 38
-    static let progressLineWidth: CGFloat = 5
-    static let chromeHitTestClearance: CGFloat = 72
+    static let capsuleHeight: CGFloat = 62
+    static let horizontalPadding: CGFloat = 16
+    static let verticalPadding: CGFloat = 13
+    static let itemSpacing: CGFloat = 12
+    static let timeMinWidth: CGFloat = 54
+    static let speedMinWidth: CGFloat = 42
+    static let trailingControlSpacing: CGFloat = 12
+    static let pictureInPictureButtonSize: CGFloat = 50
+    static let pictureInPictureIconSize: CGFloat = 26
+    static let playIconSize: CGFloat = 22
+    static let playButtonSize: CGFloat = 42
+    static let danmakuFontSize: CGFloat = 20
+    static let danmakuButtonSize: CGFloat = 44
+    static let progressLineWidth: CGFloat = 6
+    static let chromeHitTestClearance: CGFloat = 80
+}
+
+private struct VideoControlInteractiveForeground: ViewModifier {
+    var isEnabled: Bool = true
+    var baseOpacity: CGFloat = 1
+
+    @State private var isHovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .foregroundStyle(isHovered && isEnabled ? BiliTheme.pink : .white.opacity(baseOpacity))
+            .animation(.easeOut(duration: 0.15), value: isHovered)
+            .onHover { hovering in
+                guard isEnabled else { return }
+                isHovered = hovering
+            }
+    }
+}
+
+private extension View {
+    func videoControlHoverForeground(isEnabled: Bool = true, baseOpacity: CGFloat = 1) -> some View {
+        modifier(VideoControlInteractiveForeground(isEnabled: isEnabled, baseOpacity: baseOpacity))
+    }
 }
 
 private struct VideoFullscreenTitleBar: View {
@@ -2182,7 +2215,7 @@ private struct VideoControlCapsule: View {
                 }) {
                     Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: VideoControlLayout.playIconSize, weight: .bold))
-                        .foregroundStyle(.white)
+                        .videoControlHoverForeground()
                         .frame(
                             width: VideoControlLayout.playButtonSize,
                             height: VideoControlLayout.playButtonSize
@@ -2205,14 +2238,41 @@ private struct VideoControlCapsule: View {
                 Spacer(minLength: 0)
                     .allowsHitTesting(false)
 
-                HStack(spacing: VideoControlLayout.speedToRemainingSpacing) {
+                HStack(spacing: VideoControlLayout.trailingControlSpacing) {
+                    let pictureInPictureEnabled = AVPictureInPictureController.isPictureInPictureSupported() && player.isReady
+
+                    Button(action: {
+                        onInteraction()
+                        player.requestPictureInPicture()
+                    }) {
+                        Image(nsImage: player.isPictureInPictureActive
+                            ? AVPictureInPictureController.pictureInPictureButtonStopImage
+                            : AVPictureInPictureController.pictureInPictureButtonStartImage
+                        )
+                            .renderingMode(.template)
+                            .resizable()
+                            .scaledToFit()
+                            .videoControlHoverForeground(isEnabled: pictureInPictureEnabled)
+                            .frame(
+                                width: VideoControlLayout.pictureInPictureIconSize,
+                                height: VideoControlLayout.pictureInPictureIconSize
+                            )
+                            .frame(
+                                width: VideoControlLayout.pictureInPictureButtonSize,
+                                height: VideoControlLayout.pictureInPictureButtonSize
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!pictureInPictureEnabled)
+                    .opacity(pictureInPictureEnabled ? 1 : 0.42)
+
                     Button(action: {
                         onInteraction()
                         player.cyclePlaybackRate()
                     }) {
                         Text(player.playbackRateLabel)
                             .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
-                            .foregroundStyle(.white)
+                            .videoControlHoverForeground()
                             .frame(minWidth: VideoControlLayout.speedMinWidth, alignment: .center)
                     }
                     .buttonStyle(.plain)
@@ -2326,17 +2386,26 @@ private struct DanmakuToggleButton: View {
     let onTap: () -> Void
     let onRightClick: () -> Void
 
+    @State private var isHovered = false
+
     var body: some View {
         Text("弹")
             .font(.system(size: VideoControlLayout.danmakuFontSize, weight: visible ? .bold : .regular))
-            .foregroundStyle(.white.opacity(visible ? 1 : 0.42))
+            .foregroundStyle(
+                isHovered ? BiliTheme.pink : .white.opacity(visible ? 1 : 0.42)
+            )
+            .animation(.easeOut(duration: 0.15), value: isHovered)
             .frame(
                 minWidth: VideoControlLayout.danmakuButtonSize,
                 minHeight: VideoControlLayout.danmakuButtonSize
             )
             .contentShape(Rectangle())
             .overlay {
-                DanmakuToggleClickView(onTap: onTap, onRightClick: onRightClick)
+                DanmakuToggleClickView(
+                    onTap: onTap,
+                    onRightClick: onRightClick,
+                    onHoverChange: { isHovered = $0 }
+                )
             }
     }
 }
@@ -2344,23 +2413,52 @@ private struct DanmakuToggleButton: View {
 private struct DanmakuToggleClickView: NSViewRepresentable {
     let onTap: () -> Void
     let onRightClick: () -> Void
+    let onHoverChange: (Bool) -> Void
 
     func makeNSView(context: Context) -> DanmakuToggleClickNSView {
         let view = DanmakuToggleClickNSView()
         view.onTap = onTap
         view.onRightClick = onRightClick
+        view.onHoverChange = onHoverChange
         return view
     }
 
     func updateNSView(_ nsView: DanmakuToggleClickNSView, context: Context) {
         nsView.onTap = onTap
         nsView.onRightClick = onRightClick
+        nsView.onHoverChange = onHoverChange
     }
 }
 
 private final class DanmakuToggleClickNSView: NSView {
     var onTap: (() -> Void)?
     var onRightClick: (() -> Void)?
+    var onHoverChange: ((Bool) -> Void)?
+
+    private var trackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea {
+            removeTrackingArea(trackingArea)
+        }
+        let options: NSTrackingArea.Options = [.activeAlways, .mouseEnteredAndExited, .inVisibleRect]
+        let area = NSTrackingArea(rect: bounds, options: options, owner: self, userInfo: nil)
+        addTrackingArea(area)
+        trackingArea = area
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        DispatchQueue.main.async { [weak self] in
+            self?.onHoverChange?(true)
+        }
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        DispatchQueue.main.async { [weak self] in
+            self?.onHoverChange?(false)
+        }
+    }
 
     override func mouseDown(with event: NSEvent) {
         onTap?()

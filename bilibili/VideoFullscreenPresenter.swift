@@ -43,6 +43,8 @@ final class VideoFullscreenPresenter: ObservableObject {
         container.cornerRadius = 14
         container.transitionProgress = 0
 
+        let targetFrame = targetFullscreenFrame(on: screen, excluding: nil)
+
         let window = NSWindow(
             contentRect: sourceFrame,
             styleMask: [.titled, .fullSizeContentView],
@@ -83,12 +85,12 @@ final class VideoFullscreenPresenter: ObservableObject {
             window,
             container: container,
             from: sourceFrame,
-            to: screen.frame,
+            to: targetFrame,
             duration: 0.54,
-            mainWindowAlpha: 0.72,
+            mainWindowAlpha: 0,
             opening: true
         ) {
-            window.setFrame(screen.frame, display: true)
+            window.setFrame(targetFrame, display: true)
             self.setFullscreenBackdropOpaque(true, for: window)
             window.alphaValue = 1
             container.cornerRadius = 0
@@ -220,6 +222,16 @@ final class VideoFullscreenPresenter: ObservableObject {
     private func screenContaining(_ frame: NSRect) -> NSScreen? {
         let center = NSPoint(x: frame.midX, y: frame.midY)
         return NSScreen.screens.first { $0.frame.contains(center) } ?? NSScreen.main
+    }
+
+    private func targetFullscreenFrame(on screen: NSScreen, excluding overlayWindow: NSWindow?) -> NSRect {
+        if let mainWindow = NSApp.mainWindow,
+           mainWindow !== overlayWindow,
+           mainWindow.styleMask.contains(.fullScreen),
+           mainWindow.screen == screen {
+            return mainWindow.frame
+        }
+        return screen.frame
     }
 
     private func fadeMainWindow(to alpha: CGFloat, duration: TimeInterval) {

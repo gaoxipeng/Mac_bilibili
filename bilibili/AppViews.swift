@@ -45,12 +45,18 @@ enum VideoCardLayout {
         let includesStats: Bool
         let statsAuthorSpacing: CGFloat
 
-        static func feed(largeTypography: Bool, showsAuthor: Bool = true) -> RowLayoutMetrics {
-            RowLayoutMetrics(
+        static func feed(largeTypography: Bool, showsAuthor: Bool = true, showsPublishTime: Bool = false) -> RowLayoutMetrics {
+            let bottomRowHeight: CGFloat = {
+                if showsAuthor || showsPublishTime {
+                    return largeTypography ? 30 : 26
+                }
+                return 0
+            }()
+            return RowLayoutMetrics(
                 metadataPadding: VideoCardLayout.feedMetadataPadding,
                 usesLargeTitleFont: largeTypography,
                 statsHeight: 0,
-                authorRowHeight: showsAuthor ? (largeTypography ? 30 : 26) : 0,
+                authorRowHeight: bottomRowHeight,
                 includesStats: false,
                 statsAuthorSpacing: 0
             )
@@ -106,13 +112,15 @@ enum VideoCardLayout {
         titleAreaHeight: CGFloat,
         metrics: RowLayoutMetrics,
         usesCardSurface: Bool = true,
-        showsAuthor: Bool = true
+        showsAuthor: Bool = true,
+        showsPublishTime: Bool = false
     ) -> CGFloat {
         coverHeight(columnWidth: columnWidth) + metadataHeight(
             titleAreaHeight: titleAreaHeight,
             metrics: metrics,
             usesCardSurface: usesCardSurface,
-            showsAuthor: showsAuthor
+            showsAuthor: showsAuthor,
+            showsPublishTime: showsPublishTime
         )
     }
 
@@ -120,10 +128,11 @@ enum VideoCardLayout {
         titleAreaHeight: CGFloat,
         metrics: RowLayoutMetrics,
         usesCardSurface: Bool = true,
-        showsAuthor: Bool = true
+        showsAuthor: Bool = true,
+        showsPublishTime: Bool = false
     ) -> CGFloat {
         var height = metrics.metadataHeight(titleAreaHeight: titleAreaHeight)
-        if !usesCardSurface, !showsAuthor {
+        if !usesCardSurface, !showsAuthor, !showsPublishTime {
             height -= metrics.metadataPadding.bottom
         }
         return height
@@ -424,9 +433,11 @@ struct VideoFeedGrid<Trailing: View>: View {
         let baseColumnCount = VideoCardLayout.columnCount(for: layoutWidth)
         let columnCount = maxColumnCount.map { min($0, baseColumnCount) } ?? baseColumnCount
         let columnWidth = VideoCardLayout.columnWidth(for: layoutWidth, columnCount: columnCount)
+        let showsPublishTime = !showsAuthor
         let metrics = VideoCardLayout.RowLayoutMetrics.feed(
             largeTypography: largeTypography,
-            showsAuthor: showsAuthor
+            showsAuthor: showsAuthor,
+            showsPublishTime: showsPublishTime
         )
         let rowStarts = VideoCardLayout.rowStartIndices(itemCount: videos.count, columnCount: columnCount)
         let titleAreaHeight = VideoCardLayout.titleAreaHeight(
@@ -439,7 +450,8 @@ struct VideoFeedGrid<Trailing: View>: View {
             titleAreaHeight: titleAreaHeight,
             metrics: metrics,
             usesCardSurface: usesCardSurface,
-            showsAuthor: showsAuthor
+            showsAuthor: showsAuthor,
+            showsPublishTime: showsPublishTime
         )
 
         LazyVStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
@@ -453,6 +465,7 @@ struct VideoFeedGrid<Trailing: View>: View {
                             largeTypography: largeTypography,
                             showsLikeCount: showsLikeCount,
                             showsAuthor: showsAuthor,
+                            showsPublishTime: showsPublishTime,
                             usesCardSurface: usesCardSurface,
                             resolveWatchProgress: resolveWatchProgress,
                             columnWidth: columnWidth,
@@ -1287,6 +1300,7 @@ struct VideoCard: View, Equatable {
     var largeTypography = false
     var showsLikeCount = true
     var showsAuthor = true
+    var showsPublishTime = false
     var usesCardSurface = true
     var resolveWatchProgress = false
     let columnWidth: CGFloat
@@ -1298,6 +1312,7 @@ struct VideoCard: View, Equatable {
             && lhs.largeTypography == rhs.largeTypography
             && lhs.showsLikeCount == rhs.showsLikeCount
             && lhs.showsAuthor == rhs.showsAuthor
+            && lhs.showsPublishTime == rhs.showsPublishTime
             && lhs.usesCardSurface == rhs.usesCardSurface
             && lhs.resolveWatchProgress == rhs.resolveWatchProgress
             && lhs.columnWidth == rhs.columnWidth
@@ -1305,7 +1320,11 @@ struct VideoCard: View, Equatable {
     }
 
     private var metrics: VideoCardLayout.RowLayoutMetrics {
-        .feed(largeTypography: largeTypography, showsAuthor: showsAuthor)
+        .feed(
+            largeTypography: largeTypography,
+            showsAuthor: showsAuthor,
+            showsPublishTime: showsPublishTime
+        )
     }
 
     private var coverHeight: CGFloat {
@@ -1322,7 +1341,8 @@ struct VideoCard: View, Equatable {
             titleAreaHeight: titleAreaHeight,
             metrics: metrics,
             usesCardSurface: usesCardSurface,
-            showsAuthor: showsAuthor
+            showsAuthor: showsAuthor,
+            showsPublishTime: showsPublishTime
         )
     }
 
@@ -1394,9 +1414,22 @@ struct VideoCard: View, Equatable {
                 authorRow
                     .frame(height: metrics.authorRowHeight, alignment: .center)
                     .padding(.bottom, metrics.metadataPadding.bottom)
+            } else if showsPublishTime, let publishTime = video.publishTime {
+                publishTimeRow(publishTime)
+                    .frame(height: metrics.authorRowHeight, alignment: .center)
+                    .padding(.bottom, metrics.metadataPadding.bottom)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func publishTimeRow(_ publishTime: Date) -> some View {
+        HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            Text(BiliCommentFormats.formatTime(publishTime))
+                .font(.system(size: statsFontSize))
+                .foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder

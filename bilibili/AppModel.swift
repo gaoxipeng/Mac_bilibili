@@ -175,6 +175,7 @@ final class AppModel: ObservableObject {
     private var homeFetchCount = 0
     private var favoritePage = 1
     private var historyCursor: BiliHistoryCursor?
+    private var lastOpenedHistoryKid: String?
     private var watchProgressByKey: [String: BiliWatchProgress] = [:]
 
     private let api = BilibiliAPI()
@@ -223,7 +224,7 @@ final class AppModel: ObservableObject {
             await reloadSelected()
         case .hot where hotVideos.isEmpty:
             await reloadSelected()
-        case .history where historyItems.isEmpty:
+        case .history:
             await reloadSelected()
         case .favorites where favoriteVideos.isEmpty:
             await reloadSelected()
@@ -308,6 +309,7 @@ final class AppModel: ObservableObject {
     }
 
     func openHistoryVideo(_ item: BiliHistoryItem) {
+        lastOpenedHistoryKid = item.kid.isEmpty ? nil : item.kid
         Task {
             pendingPlaybackRequest = await api.resolveHistoryPlaybackRequest(
                 item: item,
@@ -497,10 +499,26 @@ final class AppModel: ObservableObject {
         case .favorites:
             await refreshFavoritesQuietly()
         case .history:
-            await refreshHistoryQuietly()
+            promoteOpenedHistoryItemAfterPlayback()
         default:
             break
         }
+    }
+
+    private func promoteOpenedHistoryItemAfterPlayback() {
+        guard let kid = lastOpenedHistoryKid, !kid.isEmpty else { return }
+        lastOpenedHistoryKid = nil
+        guard let index = historyItems.firstIndex(where: { $0.kid == kid }) else { return }
+
+        let item = historyItems[index]
+        let progressSeconds = cachedWatchProgress(for: item.video)?.progressSeconds
+        let updated = item.withUpdatedViewing(at: Date(), progressSeconds: progressSeconds)
+
+        var items = historyItems
+        items.remove(at: index)
+        items.append(updated)
+        historyItems = JSONParser.sortHistoryItems(items)
+        mergeWatchProgress(from: historyItems)
     }
 
     private func refreshFavoritesQuietly() async {
@@ -516,26 +534,12 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func refreshHistoryQuietly() async {
-        guard let credential = account?.credential else { return }
-        do {
-            let page = try await api.history(credential: credential)
-            historyItems = page.items
-            historyCursor = page.cursor
-            historyHasMore = page.hasMore
-            mergeWatchProgress(from: page.items)
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
     func deleteHistoryItem(_ item: BiliHistoryItem) async {
         guard let credential = account?.credential, !item.kid.isEmpty else { return }
         do {
             let deleted = try await api.deleteWatchHistory(kid: item.kid, credential: credential)
             guard deleted else { return }
-            historyItems.removeAll { $0.id == item.id }
+            historyItems.removeAll { $0.listIdentity == item.listIdentity }
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription

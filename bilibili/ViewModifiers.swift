@@ -107,10 +107,10 @@ enum AppLayout {
     static let videoDetailLeadingInset: CGFloat = 8
     static let videoDetailTrailingInset: CGFloat = 12
     static let videoDetailSectionSpacing: CGFloat = 8
-    static let videoDetailSidebarMinWidth: CGFloat = 240
+    static let videoDetailSidebarMinWidth: CGFloat = 224
     static let videoDetailSidebarMinContentWidth: CGFloat = 200
-    static let videoDetailSidebarWidthRatio: CGFloat = 0.24
-    static let videoDetailSidebarMaxWidthRatio: CGFloat = 0.32
+    static let videoDetailSidebarWidthRatio: CGFloat = 0.22
+    static let videoDetailSidebarMaxWidthRatio: CGFloat = 0.30
     static let videoDetailChromeBottomSpacing: CGFloat = 4
     static let userProfileFallbackChromeHeight: CGFloat = 152
     static let userProfileChromeShadowOverflow: CGFloat = 8
@@ -960,6 +960,107 @@ private final class MacOverlayScrollFinderView: NSView {
     }
 }
 
+struct ScrollIdleObserver: NSViewRepresentable {
+    var onScrollActivity: () -> Void
+    var onScrollIdle: () -> Void
+
+    func makeNSView(context: Context) -> ScrollIdleObserverView {
+        let view = ScrollIdleObserverView()
+        view.onScrollActivity = onScrollActivity
+        view.onScrollIdle = onScrollIdle
+        return view
+    }
+
+    func updateNSView(_ nsView: ScrollIdleObserverView, context: Context) {
+        nsView.onScrollActivity = onScrollActivity
+        nsView.onScrollIdle = onScrollIdle
+    }
+
+    static func dismantleNSView(_ nsView: ScrollIdleObserverView, coordinator: ()) {
+        nsView.tearDown()
+    }
+}
+
+@MainActor
+final class ScrollIdleObserverView: NSView {
+    var onScrollActivity: (() -> Void)?
+    var onScrollIdle: (() -> Void)?
+
+    private weak var observedScrollView: NSScrollView?
+    private var boundsObserver: NSObjectProtocol?
+    private var idleWorkItem: DispatchWorkItem?
+    private static let idleDelay: TimeInterval = 0.12
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil {
+            installObserverIfNeeded()
+        } else {
+            tearDown()
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        installObserverIfNeeded()
+    }
+
+    func installObserverIfNeeded() {
+        guard boundsObserver == nil else { return }
+        guard let scrollView = enclosingScrollView ?? findEnclosingScrollView() else { return }
+
+        observedScrollView = scrollView
+        let clipView = scrollView.contentView
+        boundsObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clipView,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.handleBoundsChanged()
+            }
+        }
+        clipView.postsBoundsChangedNotifications = true
+    }
+
+    func tearDown() {
+        idleWorkItem?.cancel()
+        idleWorkItem = nil
+        if let boundsObserver {
+            NotificationCenter.default.removeObserver(boundsObserver)
+            self.boundsObserver = nil
+        }
+        observedScrollView = nil
+    }
+
+    private func findEnclosingScrollView() -> NSScrollView? {
+        var candidate: NSView? = superview
+        while let view = candidate {
+            if let scrollView = view as? NSScrollView {
+                return scrollView
+            }
+            candidate = view.superview
+        }
+        return nil
+    }
+
+    private func handleBoundsChanged() {
+        onScrollActivity?()
+        idleWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.onScrollIdle?()
+        }
+        idleWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleDelay, execute: work)
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            tearDown()
+        }
+    }
+}
+
 final class TransparentWindowConfiguratorView: NSView {
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
@@ -1072,16 +1173,73 @@ struct VideoCoverDurationBadge: View {
 
     var body: some View {
         Text(text)
-            .font(.caption.monospacedDigit().weight(.semibold))
+            .font(.system(size: VideoCardLayout.coverOverlayFontSize, weight: .medium).monospacedDigit())
             .foregroundStyle(.white)
-            .shadow(color: .black.opacity(0.28), radius: 1, x: 0, y: 0.5)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(Color.black.opacity(0.58), in: Capsule())
-            .overlay {
-                Capsule()
-                    .stroke(.white.opacity(0.24), lineWidth: 0.5)
+            .shadow(color: .black.opacity(0.55), radius: 2, x: 0, y: 1)
+    }
+}
+
+struct VideoCoverBottomScrim: View {
+    var heightFraction: CGFloat = VideoCardLayout.coverOverlayScrimHeightFraction
+
+    var body: some View {
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0),
+                        .init(color: .black.opacity(0.28), location: 0.45),
+                        .init(color: .black.opacity(0.72), location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: max(0, geometry.size.height * heightFraction))
             }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+struct VideoCoverFeedMetaOverlay: View {
+    var playCount: String? = nil
+    var danmakuCount: String? = nil
+    var likeCount: String? = nil
+    let durationText: String
+
+    var body: some View {
+        ZStack {
+            VideoCoverBottomScrim()
+
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                HStack(alignment: .bottom, spacing: 8) {
+                    if let playCount, let danmakuCount {
+                        FeedCardStatsRowRepresentable(
+                            playCount: playCount,
+                            danmakuCount: danmakuCount,
+                            likeCount: likeCount,
+                            iconSize: VideoCardLayout.coverOverlayIconSize,
+                            likeIconSize: VideoCardLayout.coverOverlayIconSize,
+                            fontSize: VideoCardLayout.coverOverlayFontSize,
+                            itemSpacing: VideoCardLayout.coverOverlayItemSpacing,
+                            displayStyle: .coverOverlay
+                        )
+                        .fixedSize(horizontal: true, vertical: true)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    if !durationText.isEmpty {
+                        VideoCoverDurationBadge(text: durationText)
+                    }
+                }
+                .padding(.horizontal, VideoCardLayout.coverOverlayPadding)
+                .padding(.bottom, VideoCardLayout.coverOverlayBottomPadding)
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -1319,6 +1477,10 @@ private enum VideoCoverHoverScrollCenter {
                 guard view.hoverScrollView() === scrollView else { continue }
                 view.setHovering(false, suppressAnimation: true)
             }
+            FeedCardHoverScrollCenter.syncHoverOnScroll(
+                in: scrollView,
+                allowsHover: false
+            )
             return
         }
 
@@ -1346,6 +1508,11 @@ private enum VideoCoverHoverScrollCenter {
             guard view.isHoveringActive != shouldHover else { continue }
             view.setHovering(shouldHover, suppressAnimation: true)
         }
+
+        FeedCardHoverScrollCenter.syncHoverOnScroll(
+            in: scrollView,
+            allowsHover: !FeedScrollActivity.isScrolling
+        )
     }
 }
 

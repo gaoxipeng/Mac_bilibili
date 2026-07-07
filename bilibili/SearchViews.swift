@@ -734,7 +734,7 @@ struct SearchDashboard: View {
                                 .padding(.bottom, 12)
                         }
 
-                        VideoFeedGrid(videos: searchModel.videos)
+                        VideoFeedGrid(videos: searchModel.videos, largeTypography: true)
 
                         if searchModel.videoHasMore {
                             FeedLoadMoreFooter(

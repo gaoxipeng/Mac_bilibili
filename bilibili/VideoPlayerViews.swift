@@ -32,6 +32,15 @@ enum VideoPlayerChrome {
         let width = max(1, maxWidth)
         return CGSize(width: width, height: width / ratio)
     }
+
+    /// 播放页：竖屏优先占满可用高度，横屏优先占满列宽。
+    static func detailPlayerSize(maxWidth: CGFloat, maxHeight: CGFloat, aspectRatio: CGFloat) -> CGSize {
+        let ratio = max(aspectRatio, 0.01)
+        if ratio < 1 {
+            return fittedSize(maxWidth: maxWidth, maxHeight: maxHeight, aspectRatio: aspectRatio)
+        }
+        return inlinePlayerSize(maxWidth: maxWidth, aspectRatio: aspectRatio)
+    }
 }
 
 final class PlayerClipContainerView: NSView {

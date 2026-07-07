@@ -1257,50 +1257,47 @@ struct VideoDetailView: View {
         .commentImageFullscreenOverlay(imageURL: $commentFullscreenPictureURL)
     }
 
+    private func playerMaxHeight(
+        in geometry: GeometryProxy,
+        playerTopInset: CGFloat
+    ) -> CGFloat {
+        let bottomPadding: CGFloat = 24
+        return max(280, geometry.size.height - playerTopInset - bottomPadding)
+    }
+
     @ViewBuilder
     private func leftColumn(
         playerWidth: CGFloat,
         playerTopInset: CGFloat,
         geometry: GeometryProxy
     ) -> some View {
-        let playerSize = VideoPlayerChrome.inlinePlayerSize(
-            maxWidth: playerWidth,
-            aspectRatio: model.player.displayAspectRatio
-        )
-        let introScrollMaxHeight = max(
-            120,
-            geometry.size.height
-                - playerTopInset
-                - playerSize.height
-                - AppLayout.videoDetailSectionSpacing
-                - 24
-        )
+        let maxHeight = playerMaxHeight(in: geometry, playerTopInset: playerTopInset)
 
-        VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
-            playerSection(maxWidth: playerWidth)
-            .frame(width: playerWidth, alignment: .leading)
-            .opacity(fullscreenPresenter.isPresented ? 0 : 1)
-            .allowsHitTesting(!fullscreenPresenter.isPresented)
-
-            MacOverlayScrollView(usesOverlayScrollers: false) {
-                VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
-                    if (model.detail?.pages.count ?? 0) > 1 {
-                        VideoEpisodeSection(model: model)
-                            .frame(width: playerWidth)
-                    }
-
-                    VideoIntroCard(
-                        model: model,
-                        onTagTap: { appModel.openSearch(for: $0, returningTo: model.makePlaybackRequest()) }
+        MacOverlayScrollView(usesOverlayScrollers: false, clipsContent: true) {
+            VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
+                playerSection(maxWidth: playerWidth, maxHeight: maxHeight)
+                    .frame(
+                        width: playerWidth,
+                        alignment: model.player.displayAspectRatio < 1 ? .center : .leading
                     )
-                    .frame(width: playerWidth)
+                    .opacity(fullscreenPresenter.isPresented ? 0 : 1)
+                    .allowsHitTesting(!fullscreenPresenter.isPresented)
+
+                if (model.detail?.pages.count ?? 0) > 1 {
+                    VideoEpisodeSection(model: model)
+                        .frame(width: playerWidth)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.bottom, 8)
+
+                VideoIntroCard(
+                    model: model,
+                    onTagTap: { appModel.openSearch(for: $0, returningTo: model.makePlaybackRequest()) }
+                )
+                .frame(width: playerWidth)
             }
-            .frame(maxHeight: introScrollMaxHeight)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, playerTopInset)
+            .padding(.bottom, 8)
         }
-        .padding(.top, playerTopInset)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -1408,10 +1405,11 @@ struct VideoDetailView: View {
         }
     }
 
-    private func playerSection(maxWidth: CGFloat) -> some View {
+    private func playerSection(maxWidth: CGFloat, maxHeight: CGFloat) -> some View {
         VideoPlayerSection(
             model: model,
             maxWidth: maxWidth,
+            maxHeight: maxHeight,
             rendersDanmaku: !fullscreenPresenter.isPresented,
             acceptsKeyboardShortcuts: !fullscreenPresenter.isPresented,
             onToggleFullscreen: toggleFullscreen
@@ -1776,6 +1774,7 @@ private struct VideoPlayerSection: View {
     @ObservedObject private var player: VideoPlaybackEngine
     @StateObject private var chromeState = VideoPlayerChromeState()
     let maxWidth: CGFloat
+    let maxHeight: CGFloat
     var isFullscreen = false
     var rendersDanmaku = true
     var acceptsKeyboardShortcuts = true
@@ -1784,6 +1783,7 @@ private struct VideoPlayerSection: View {
     init(
         model: VideoDetailModel,
         maxWidth: CGFloat,
+        maxHeight: CGFloat,
         isFullscreen: Bool = false,
         rendersDanmaku: Bool = true,
         acceptsKeyboardShortcuts: Bool = true,
@@ -1791,6 +1791,7 @@ private struct VideoPlayerSection: View {
     ) {
         self.model = model
         self.maxWidth = maxWidth
+        self.maxHeight = maxHeight
         self.isFullscreen = isFullscreen
         self.rendersDanmaku = rendersDanmaku
         self.acceptsKeyboardShortcuts = acceptsKeyboardShortcuts
@@ -1798,9 +1799,10 @@ private struct VideoPlayerSection: View {
         _player = ObservedObject(wrappedValue: model.player)
     }
 
-    private var playerSize: CGSize {
-        VideoPlayerChrome.inlinePlayerSize(
+    private var fittedSize: CGSize {
+        VideoPlayerChrome.detailPlayerSize(
             maxWidth: maxWidth,
+            maxHeight: maxHeight,
             aspectRatio: player.displayAspectRatio
         )
     }
@@ -1884,7 +1886,7 @@ private struct VideoPlayerSection: View {
             VideoScrollWheelMonitor(player: player)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(width: isFullscreen ? nil : playerSize.width, height: isFullscreen ? nil : playerSize.height)
+        .frame(width: isFullscreen ? nil : fittedSize.width, height: isFullscreen ? nil : fittedSize.height)
         .compositingGroup()
         .clipShape(RoundedRectangle(cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius, style: .continuous))
         .overlay {

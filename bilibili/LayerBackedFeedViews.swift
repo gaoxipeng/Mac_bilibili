@@ -45,11 +45,13 @@ struct RemoteCoverImageRepresentable: NSViewRepresentable {
     let image: NSImage?
     let failed: Bool
     var cornerRadius: CGFloat = 0
+    var scalesToFill: Bool = true
     var placeholderSystemImage = "play.rectangle"
 
     func makeNSView(context: Context) -> RemoteCoverImageLayerView {
         let view = RemoteCoverImageLayerView()
         view.cornerRadius = cornerRadius
+        view.scalesToFill = scalesToFill
         view.placeholderSystemImage = placeholderSystemImage
         view.updateDisplay(image: image, failed: failed)
         return view
@@ -57,6 +59,7 @@ struct RemoteCoverImageRepresentable: NSViewRepresentable {
 
     func updateNSView(_ nsView: RemoteCoverImageLayerView, context: Context) {
         nsView.cornerRadius = cornerRadius
+        nsView.scalesToFill = scalesToFill
         nsView.placeholderSystemImage = placeholderSystemImage
         nsView.updateDisplay(image: image, failed: failed)
     }
@@ -64,7 +67,11 @@ struct RemoteCoverImageRepresentable: NSViewRepresentable {
 
 final class RemoteCoverImageLayerView: NSView {
     var cornerRadius: CGFloat = 0 {
-        didSet { layer?.cornerRadius = cornerRadius }
+        didSet { needsLayout = true }
+    }
+
+    var scalesToFill: Bool = true {
+        didSet { layer?.contentsGravity = scalesToFill ? .resizeAspectFill : .resizeAspect }
     }
 
     var placeholderSystemImage = "play.rectangle"
@@ -226,7 +233,6 @@ private extension NSColor {
 struct FeedCardTitleRepresentable: NSViewRepresentable, Equatable {
     let title: String
     let usesLargeFont: Bool
-    let textWidth: CGFloat
     let areaHeight: CGFloat
 
     func makeCoordinator() -> FeedCardHoverCoordinator {
@@ -239,7 +245,6 @@ struct FeedCardTitleRepresentable: NSViewRepresentable, Equatable {
         view.apply(
             title: title,
             usesLargeFont: usesLargeFont,
-            textWidth: textWidth,
             areaHeight: areaHeight
         )
         return view
@@ -250,13 +255,18 @@ struct FeedCardTitleRepresentable: NSViewRepresentable, Equatable {
         nsView.apply(
             title: title,
             usesLargeFont: usesLargeFont,
-            textWidth: textWidth,
             areaHeight: areaHeight
         )
     }
 
     static func dismantleNSView(_ nsView: FeedCardTitleView, coordinator: FeedCardHoverCoordinator) {
         coordinator.teardown()
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: FeedCardTitleView, context: Context) -> CGSize? {
+        guard let width = proposal.width, width.isFinite, width > 0 else { return nil }
+        let height = proposal.height.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? areaHeight
+        return CGSize(width: width, height: height)
     }
 }
 
@@ -283,6 +293,24 @@ final class FeedCardTitleView: NSView {
     override func layout() {
         super.layout()
         textLayer.frame = bounds
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        refreshFeedCardHoverTracking()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        refreshFeedCardHoverTracking()
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil {
+            FeedCardHoverScrollCenter.unregister(self)
+            setHovered(false)
+        }
     }
 
     override func updateTrackingAreas() {
@@ -313,22 +341,45 @@ final class FeedCardTitleView: NSView {
         updateTextColor()
     }
 
-    func apply(title: String, usesLargeFont: Bool, textWidth: CGFloat, areaHeight: CGFloat) {
+    private func refreshFeedCardHoverTracking() {
+        guard window != nil else { return }
+        FeedCardHoverScrollCenter.register(self)
+    }
+
+    func apply(title: String, usesLargeFont: Bool, areaHeight: CGFloat) {
         self.usesLargeFont = usesLargeFont
         let font = VideoCardLayout.titleNSFont(
             for: .feed(largeTypography: usesLargeFont, showsAuthor: true)
         )
-        if (textLayer.string as? String) != title {
-            textLayer.string = title
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineBreakMode = .byWordWrapping
+        paragraphStyle.alignment = .left
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: (isHovered ? NSColor.biliBlue : NSColor.labelColor),
+            .paragraphStyle: paragraphStyle,
+        ]
+        let attributedTitle = NSAttributedString(string: title, attributes: attributes)
+        let currentTitle = (textLayer.string as? NSAttributedString)?.string ?? textLayer.string as? String ?? ""
+        if currentTitle != title {
+            textLayer.string = attributedTitle
+        } else {
+            textLayer.font = font
+            textLayer.fontSize = font.pointSize
         }
-        textLayer.font = font
-        textLayer.fontSize = font.pointSize
         updateTextColor()
         needsLayout = true
     }
 
     private func updateTextColor() {
-        textLayer.foregroundColor = (isHovered ? NSColor.biliBlue : NSColor.labelColor).cgColor
+        let color = (isHovered ? NSColor.biliBlue : NSColor.labelColor).cgColor
+        if let attributed = textLayer.string as? NSAttributedString, attributed.length > 0 {
+            let mutable = NSMutableAttributedString(attributedString: attributed)
+            mutable.addAttribute(.foregroundColor, value: color, range: NSRange(location: 0, length: mutable.length))
+            textLayer.string = mutable
+            return
+        }
+        textLayer.foregroundColor = color
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
@@ -390,6 +441,13 @@ struct FeedCardAuthorRowRepresentable: NSViewRepresentable, Equatable {
 
     static func dismantleNSView(_ nsView: FeedCardAuthorRowView, coordinator: Coordinator) {
         coordinator.teardown()
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: FeedCardAuthorRowView, context: Context) -> CGSize? {
+        CGSize(
+            width: proposal.width ?? rowWidth,
+            height: proposal.height ?? avatarSize
+        )
     }
 
     @MainActor
@@ -508,23 +566,72 @@ final class FeedCardAuthorRowView: NSView {
 
     override func layout() {
         super.layout()
-        avatarView.frame = NSRect(x: 0, y: (bounds.height - avatarSize) / 2, width: avatarSize, height: avatarSize)
+        avatarView.frame = NSRect(
+            x: 0,
+            y: (bounds.height - avatarSize) / 2,
+            width: avatarSize,
+            height: avatarSize
+        )
+        let avatarCenterY = avatarView.frame.midY
 
-        let textHeight = max(nameLayer.fontSize, trailingLayer.fontSize) * 1.2
-        nameLayer.frame = CGRect(
-            x: avatarSize + 8,
-            y: (bounds.height - textHeight) / 2,
+        let nameFont = NSFont.systemFont(ofSize: nameLayer.fontSize)
+        let nameText = (nameLayer.string as? String) ?? ""
+        nameLayer.frame = Self.textLayerFrame(
+            text: nameText,
+            font: nameFont,
             width: nameWidth,
-            height: textHeight
+            x: avatarSize + 8,
+            centerY: avatarCenterY
         )
 
         if showsTrailing {
-            trailingLayer.frame = CGRect(
-                x: bounds.width - trailingWidth,
-                y: (bounds.height - textHeight) / 2,
+            let trailingFont = NSFont.systemFont(ofSize: trailingLayer.fontSize)
+            let trailingText = (trailingLayer.string as? String) ?? ""
+            trailingLayer.frame = Self.textLayerFrame(
+                text: trailingText,
+                font: trailingFont,
                 width: trailingWidth,
-                height: textHeight
+                x: bounds.width - trailingWidth,
+                centerY: avatarCenterY
             )
+        }
+    }
+
+    private static func textLayerFrame(
+        text: String,
+        font: NSFont,
+        width: CGFloat,
+        x: CGFloat,
+        centerY: CGFloat
+    ) -> CGRect {
+        let lineHeight = ceil(font.ascender - font.descender)
+        let measuredHeight = ceil(
+            (text as NSString).size(withAttributes: [.font: font]).height
+        )
+        let height = max(lineHeight, measuredHeight)
+        return CGRect(
+            x: x,
+            y: centerY - height / 2,
+            width: width,
+            height: height
+        )
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        refreshFeedCardHoverTracking()
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        refreshFeedCardHoverTracking()
+    }
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        super.viewWillMove(toWindow: newWindow)
+        if newWindow == nil {
+            FeedCardHoverScrollCenter.unregister(self)
+            setHovered(false)
         }
     }
 
@@ -550,6 +657,11 @@ final class FeedCardAuthorRowView: NSView {
         setHovered(false)
     }
 
+    private func refreshFeedCardHoverTracking() {
+        guard window != nil else { return }
+        FeedCardHoverScrollCenter.register(self)
+    }
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
     }
@@ -557,25 +669,23 @@ final class FeedCardAuthorRowView: NSView {
 
 class FeedCardHoverCoordinator {
     private weak var view: (NSView & FeedCardHoverResettable)?
-    private var scrollListenerID: UUID?
 
     func bind(to view: NSView & FeedCardHoverResettable) {
-        guard self.view !== view else { return }
-        self.view = view
-        if scrollListenerID == nil {
-            scrollListenerID = FeedScrollActivity.addListener { [weak view] scrolling in
-                if scrolling {
-                    view?.setHovered(false)
-                }
-            }
+        guard self.view !== view else {
+            FeedCardHoverScrollCenter.register(view)
+            return
         }
+        if let previous = self.view {
+            FeedCardHoverScrollCenter.unregister(previous)
+        }
+        self.view = view
+        FeedCardHoverScrollCenter.register(view)
     }
 
     @MainActor
     func teardown() {
-        if let scrollListenerID {
-            FeedScrollActivity.removeListener(scrollListenerID)
-            self.scrollListenerID = nil
+        if let view {
+            FeedCardHoverScrollCenter.unregister(view)
         }
         view = nil
     }
@@ -588,9 +698,164 @@ protocol FeedCardHoverResettable: AnyObject {
 extension FeedCardTitleView: FeedCardHoverResettable {}
 extension FeedCardAuthorRowView: FeedCardHoverResettable {}
 
+@MainActor
+enum FeedCardHoverScrollCenter {
+    private static var trackedViewsByScrollView: [ObjectIdentifier: NSHashTable<NSView>] = [:]
+    private static var scrollBoundsObservers: [ObjectIdentifier: [NSObjectProtocol]] = [:]
+    private static var scrollIdleWorkItems: [ObjectIdentifier: DispatchWorkItem] = [:]
+    private static var activeScrollDeadlines: [ObjectIdentifier: CFTimeInterval] = [:]
+    private static var lastSyncTime: [ObjectIdentifier: CFTimeInterval] = [:]
+    private static let scrollSettleDelay: TimeInterval = 0.08
+    private static let syncInterval: CFTimeInterval = 1.0 / 30.0
+
+    static func syncHoverOnScroll(in scrollView: NSScrollView, allowsHover: Bool = true) {
+        syncHover(in: scrollView, force: true, allowsHover: allowsHover)
+    }
+
+    static func register(_ view: NSView & FeedCardHoverResettable) {
+        guard let scrollView = enclosingScrollView(for: view) else { return }
+        let id = ObjectIdentifier(scrollView)
+        let table = trackedViewsByScrollView[id] ?? NSHashTable<NSView>.weakObjects()
+        table.add(view)
+        trackedViewsByScrollView[id] = table
+        registerScrollViewIfNeeded(scrollView)
+        syncHover(in: scrollView, force: true, allowsHover: !FeedScrollActivity.isScrolling)
+    }
+
+    static func unregister(_ view: NSView) {
+        (view as? FeedCardHoverResettable)?.setHovered(false)
+        for (id, table) in trackedViewsByScrollView {
+            table.remove(view)
+            if table.allObjects.isEmpty {
+                trackedViewsByScrollView.removeValue(forKey: id)
+            }
+        }
+    }
+
+    private static func enclosingScrollView(for view: NSView) -> NSScrollView? {
+        var candidate: NSView? = view
+        while let current = candidate {
+            if let scrollView = current as? NSScrollView {
+                return scrollView
+            }
+            candidate = current.superview
+        }
+        return nil
+    }
+
+    private static func registerScrollViewIfNeeded(_ scrollView: NSScrollView) {
+        let id = ObjectIdentifier(scrollView)
+        guard scrollBoundsObservers[id] == nil else { return }
+
+        let clipView = scrollView.contentView
+        clipView.postsBoundsChangedNotifications = true
+        let scrollViewBox = WeakScrollViewBox(scrollView)
+
+        var observers: [NSObjectProtocol] = []
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clipView,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                handleScrollBoundsChanged(in: scrollViewBox.value)
+            }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSScrollView.willStartLiveScrollNotification,
+            object: scrollView,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                guard let scrollView = scrollViewBox.value else { return }
+                FeedScrollActivity.setScrolling(true)
+                syncHover(in: scrollView, force: true, allowsHover: false)
+            }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSScrollView.didEndLiveScrollNotification,
+            object: scrollView,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                scheduleScrollEnd(in: scrollViewBox.value)
+            }
+        })
+        scrollBoundsObservers[id] = observers
+    }
+
+    private static func handleScrollBoundsChanged(in scrollView: NSScrollView?) {
+        guard let scrollView else { return }
+        FeedScrollActivity.setScrolling(true)
+        syncHover(in: scrollView, force: true, allowsHover: false)
+        scheduleScrollEnd(in: scrollView)
+    }
+
+    private static func scheduleScrollEnd(in scrollView: NSScrollView?) {
+        guard let scrollView else { return }
+        let id = ObjectIdentifier(scrollView)
+        let settleDeadline = CACurrentMediaTime() + scrollSettleDelay
+        activeScrollDeadlines[id] = settleDeadline
+
+        scrollIdleWorkItems[id]?.cancel()
+        let scrollViewBox = WeakScrollViewBox(scrollView)
+        let idleWorkItem = DispatchWorkItem {
+            MainActor.assumeIsolated {
+                guard activeScrollDeadlines[id] == settleDeadline else { return }
+                activeScrollDeadlines[id] = nil
+                scrollIdleWorkItems[id] = nil
+                guard let scrollView = scrollViewBox.value else { return }
+                FeedScrollActivity.setScrolling(false)
+                syncHover(in: scrollView, force: true)
+            }
+        }
+        scrollIdleWorkItems[id] = idleWorkItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + scrollSettleDelay, execute: idleWorkItem)
+    }
+
+    private static func syncHover(
+        in scrollView: NSScrollView,
+        force: Bool = false,
+        allowsHover: Bool = true
+    ) {
+        let id = ObjectIdentifier(scrollView)
+        let now = CACurrentMediaTime()
+        if !force, now - (lastSyncTime[id] ?? 0) < syncInterval {
+            return
+        }
+        lastSyncTime[id] = now
+
+        let tracked = trackedViewsByScrollView[id]?.allObjects ?? []
+        for case let view as FeedCardHoverResettable in tracked {
+            guard let nsView = view as? NSView else { continue }
+            view.setHovered(allowsHover && isMouseOver(nsView))
+        }
+    }
+
+    private static func isMouseOver(_ view: NSView) -> Bool {
+        guard let window = view.window else { return false }
+        let mouseInWindow = window.mouseLocationOutsideOfEventStream
+        let mouseInView = view.convert(mouseInWindow, from: nil)
+        return view.bounds.contains(mouseInView)
+    }
+}
+
+private final class WeakScrollViewBox: @unchecked Sendable {
+    weak var value: NSScrollView?
+
+    init(_ value: NSScrollView?) {
+        self.value = value
+    }
+}
+
 // MARK: - Feed card stats row (layer-backed)
 
 struct FeedCardStatsRowRepresentable: NSViewRepresentable, Equatable {
+    enum DisplayStyle: Equatable {
+        case metadata
+        case coverOverlay
+    }
+
     let playCount: String
     let danmakuCount: String
     let likeCount: String?
@@ -598,9 +863,28 @@ struct FeedCardStatsRowRepresentable: NSViewRepresentable, Equatable {
     let likeIconSize: CGFloat
     let fontSize: CGFloat
     let itemSpacing: CGFloat
+    var displayStyle: DisplayStyle = .metadata
 
     func makeNSView(context: Context) -> FeedCardStatsRowView {
         let view = FeedCardStatsRowView()
+        apply(to: view)
+        return view
+    }
+
+    func updateNSView(_ nsView: FeedCardStatsRowView, context: Context) {
+        apply(to: nsView)
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: FeedCardStatsRowView, context: Context) -> CGSize? {
+        let intrinsic = nsView.intrinsicContentSize
+        guard intrinsic.width > 0, intrinsic.height > 0 else { return nil }
+        return intrinsic
+    }
+
+    private func apply(to view: FeedCardStatsRowView) {
+        let colors = displayStyle == .coverOverlay
+            ? (NSColor.white, NSColor.white)
+            : (NSColor.secondaryLabelColor, NSColor.secondaryLabelColor)
         view.apply(
             playCount: playCount,
             danmakuCount: danmakuCount,
@@ -608,20 +892,9 @@ struct FeedCardStatsRowRepresentable: NSViewRepresentable, Equatable {
             iconSize: iconSize,
             likeIconSize: likeIconSize,
             fontSize: fontSize,
-            itemSpacing: itemSpacing
-        )
-        return view
-    }
-
-    func updateNSView(_ nsView: FeedCardStatsRowView, context: Context) {
-        nsView.apply(
-            playCount: playCount,
-            danmakuCount: danmakuCount,
-            likeCount: likeCount,
-            iconSize: iconSize,
-            likeIconSize: likeIconSize,
-            fontSize: fontSize,
-            itemSpacing: itemSpacing
+            itemSpacing: itemSpacing,
+            iconColor: colors.0,
+            textColor: colors.1
         )
     }
 }
@@ -656,13 +929,13 @@ final class FeedCardStatsRowView: NSView {
         iconSize: CGFloat,
         likeIconSize: CGFloat,
         fontSize: CGFloat,
-        itemSpacing: CGFloat
+        itemSpacing: CGFloat,
+        iconColor: NSColor = .secondaryLabelColor,
+        textColor: NSColor = .secondaryLabelColor
     ) {
         configuredItemSpacing = itemSpacing
         showsLike = likeCount != nil
 
-        let iconColor = NSColor.secondaryLabelColor
-        let textColor = NSColor.secondaryLabelColor
         playItem.apply(
             icon: .play,
             value: playCount,

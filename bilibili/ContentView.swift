@@ -362,11 +362,11 @@ private struct DetailFloatingChrome: View {
                 onUnfollow: { model.profilePageHandlers?.unfollow() },
                 onLogout: { model.profilePageHandlers?.logout?() },
                 onFollowingTap: { model.profilePageHandlers?.openRelationList(.following) },
-                onFollowersTap: { model.profilePageHandlers?.openRelationList(.followers) }
+                onFollowersTap: { model.profilePageHandlers?.openRelationList(.followers) },
+                onReload: { performRefresh() },
+                isReloadDisabled: isRefreshDisabled
             )
             .frame(maxWidth: .infinity, alignment: .leading)
-
-            floatingRefreshButton
         }
     }
 

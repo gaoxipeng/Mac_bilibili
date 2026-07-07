@@ -383,6 +383,8 @@ struct UserProfileChromeHeaderView: View {
     var onLogout: () -> Void = {}
     var onFollowingTap: (() -> Void)?
     var onFollowersTap: (() -> Void)?
+    var onReload: (() -> Void)? = nil
+    var isReloadDisabled = false
 
     private let primaryText = Color(red: 0.11, green: 0.11, blue: 0.12)
     private let secondaryText = Color(red: 0.39, green: 0.39, blue: 0.4)
@@ -500,6 +502,12 @@ struct UserProfileChromeHeaderView: View {
             }
 
             GlassMoreButton(webURL: info.webURL)
+
+            if let onReload {
+                GlassRefreshButton(action: onReload)
+                    .disabled(isReloadDisabled)
+                    .opacity(isReloadDisabled ? 0.45 : 1)
+            }
         }
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -746,6 +754,18 @@ struct UserProfileView: View {
     private let profileSectionHeaderHeight: CGFloat = 48
     private let profileDynamicColumnWidthRatio: CGFloat = 0.24
 
+    private var videoColumnTrailingInset: CGFloat {
+        columnInnerPadding + AppLayout.feedOverlayScrollbarWidth
+    }
+
+    private var dynamicColumnTrailingInset: CGFloat {
+        columnInnerPadding
+    }
+
+    private func columnContentWidth(for columnWidth: CGFloat, trailingInset: CGFloat) -> CGFloat {
+        max(0, columnWidth - columnInnerPadding - trailingInset)
+    }
+
     init(
         mid: Int64,
         credential: BilibiliCredential?,
@@ -764,10 +784,14 @@ struct UserProfileView: View {
         GeometryReader { geometry in
             let contentWidth = geometry.size.width - AppLayout.videoDetailLeadingInset
             let dividerWidth: CGFloat = 0.5
-            let columnGutter = columnInnerPadding * 2 + dividerWidth
-            let dynamicColumnWidth = (contentWidth - columnGutter) * profileDynamicColumnWidthRatio
-            let videoColumnWidth = contentWidth - columnGutter - dynamicColumnWidth
+            let splitWidth = contentWidth - dividerWidth
+            let dynamicColumnWidth = splitWidth * profileDynamicColumnWidthRatio
+            let videoColumnWidth = splitWidth - dynamicColumnWidth
             let contentTopInset = AppLayout.userProfileContentTopInset(chromeHeight: chromeHeight)
+            let videoContentWidth = columnContentWidth(
+                for: videoColumnWidth,
+                trailingInset: videoColumnTrailingInset
+            )
 
             VStack(alignment: .leading, spacing: 0) {
                 Color.clear
@@ -777,13 +801,14 @@ struct UserProfileView: View {
                     profileScrollColumn(width: videoColumnWidth) {
                         videoSectionHeader
                             .padding(.leading, columnInnerPadding)
+                            .padding(.trailing, videoColumnTrailingInset)
                     } content: {
                         videosScrollContent
                             .padding(.leading, columnInnerPadding)
-                            .environment(\.feedViewportWidth, videoColumnWidth - columnInnerPadding)
+                            .padding(.trailing, videoColumnTrailingInset)
+                            .environment(\.feedViewportWidth, videoContentWidth)
                             .environment(\.feedUsesDirectViewportWidth, true)
                     }
-                    .padding(.trailing, columnInnerPadding)
 
                     Rectangle()
                         .fill(Color.black.opacity(0.08))
@@ -792,9 +817,11 @@ struct UserProfileView: View {
                     profileScrollColumn(width: dynamicColumnWidth) {
                         dynamicSectionHeader
                             .padding(.leading, columnInnerPadding)
+                            .padding(.trailing, dynamicColumnTrailingInset)
                     } content: {
                         dynamicsScrollContent
                             .padding(.leading, columnInnerPadding)
+                            .padding(.trailing, dynamicColumnTrailingInset)
                     }
                 }
                 .padding(.leading, AppLayout.videoDetailLeadingInset)
@@ -898,8 +925,10 @@ struct UserProfileView: View {
             MacOverlayScrollView(usesOverlayScrollers: true, clipsContent: true) {
                 content()
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(width: width)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var videoSectionHeader: some View {
@@ -945,7 +974,13 @@ struct UserProfileView: View {
                 .padding(.vertical, 40)
         } else {
             VStack(alignment: .leading, spacing: 0) {
-                VideoFeedGrid(videos: model.videos, showsAuthor: false, resolveWatchProgress: appModel.account != nil)
+                VideoFeedGrid(
+                    videos: model.videos,
+                    largeTypography: true,
+                    showsAuthor: false,
+                    usesCardSurface: false,
+                    resolveWatchProgress: appModel.account != nil
+                )
 
                 if model.videosHasMore {
                     FeedLoadMoreFooter(
@@ -1134,14 +1169,14 @@ private struct DynamicVideoPreview: View {
         ) {
             VStack(alignment: .leading, spacing: 8) {
                 ZStack(alignment: .bottomTrailing) {
-                    HoverZoomVideoCover {
-                        RemoteCover(
-                            url: video.coverURL,
-                            aspectRatio: VideoCardLayout.coverAspect,
-                            cornerRadius: 8
-                        )
-                        .frame(maxWidth: .infinity)
-                    }
+                    RemoteCover(
+                        url: video.coverURL,
+                        aspectRatio: VideoCardLayout.coverAspect,
+                        cornerRadius: 8,
+                        scalesToFill: false,
+                        matchesImageAspectRatio: true
+                    )
+                    .frame(maxWidth: .infinity)
 
                     if video.duration > 0 {
                         Text(video.durationText)

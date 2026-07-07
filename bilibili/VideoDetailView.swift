@@ -1448,6 +1448,7 @@ struct VideoDetailView: View {
     private var authorRowContent: some View {
         HStack(alignment: .center, spacing: 12) {
             authorAvatarLink
+                .fixedSize(horizontal: true, vertical: true)
 
             VStack(alignment: .leading, spacing: 6) {
                 authorNameLink
@@ -1459,14 +1460,24 @@ struct VideoDetailView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
+
+                if let ipLocation = model.authorIpLocation, !ipLocation.isEmpty {
+                    Text("IP属地：\(ipLocation)")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if model.showAuthorFollowControl {
                 AuthorFollowButton(
                     isFollowing: model.authorRelation.following,
+                    followerMe: model.authorRelation.followerMe,
                     followerCount: model.authorFollowerCount,
                     isLoading: model.authorFollowLoading,
+                    usesProfileChromeSizing: true,
+                    fixedCapsuleHeight: ProfileChromeCapsuleMetrics.height,
                     onFollow: {
                         Task { await model.followAuthor() }
                     },
@@ -1474,6 +1485,7 @@ struct VideoDetailView: View {
                         Task { await model.unfollowAuthor() }
                     }
                 )
+                .fixedSize(horizontal: true, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1515,16 +1527,14 @@ struct VideoDetailView: View {
             ) {
                 VideoDetailAuthorNameLabel(
                     name: model.displayVideo.authorName,
-                    level: model.authorLevel,
-                    ipLocation: model.authorIpLocation
+                    level: model.authorLevel
                 )
             }
             .buttonStyle(.plain)
         } else {
             VideoDetailAuthorNameLabel(
                 name: model.displayVideo.authorName,
-                level: model.authorLevel,
-                ipLocation: model.authorIpLocation
+                level: model.authorLevel
             )
         }
     }
@@ -2539,7 +2549,6 @@ private struct VideoCommentsPanel: View {
 private struct VideoDetailAuthorNameLabel: View {
     let name: String
     let level: Int
-    let ipLocation: String?
 
     @State private var isHovered = false
 
@@ -2556,13 +2565,6 @@ private struct VideoDetailAuthorNameLabel: View {
 
             if level > 0 {
                 BiliUserLevelIcon(level: level, width: 28, height: 18)
-            }
-
-            if let ipLocation, !ipLocation.isEmpty {
-                Text("IP属地：\(ipLocation)")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
         }
         .animation(.easeInOut(duration: 0.2), value: isHovered)

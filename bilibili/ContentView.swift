@@ -102,6 +102,7 @@ struct ContentView: View {
                         .environmentObject(model)
                     }
             }
+            .environment(\.profileNavigationDepth, navigationPath.count)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .environment(\.videoDetailChromeHeight, effectiveChromeHeight)
 

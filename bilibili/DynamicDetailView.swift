@@ -244,7 +244,7 @@ struct DynamicDetailView: View {
             }
 
             if !model.item.imageURLs.isEmpty {
-                dynamicImageGrid(model.item.imageURLs)
+                DynamicImageGrid(urls: model.item.imageURLs)
             }
 
             if let ip = model.item.ipLocation, !ip.isEmpty {
@@ -269,34 +269,11 @@ struct DynamicDetailView: View {
                 BiliCommentText(text: origin.text, emoticons: origin.emoticons, fontSize: 16)
             }
             if !origin.imageURLs.isEmpty {
-                dynamicImageGrid(origin.imageURLs)
+                DynamicImageGrid(urls: origin.imageURLs)
             }
         }
         .padding(12)
         .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-    }
-
-    @ViewBuilder
-    private func dynamicImageGrid(_ urls: [URL]) -> some View {
-        let columns = urls.count == 1 ? 1 : 2
-        LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: columns),
-            spacing: 6
-        ) {
-            ForEach(urls, id: \.absoluteString) { url in
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    default:
-                        Color.secondary.opacity(0.08)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .aspectRatio(urls.count == 1 ? 16 / 9 : 1, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            }
-        }
     }
 
     private var commentsCard: some View {

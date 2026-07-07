@@ -389,8 +389,14 @@ struct AuthorFollowButton: View {
             .background(backgroundColor, in: Capsule(style: .continuous))
             .overlay {
                 Capsule(style: .continuous)
-                    .stroke(borderColor, lineWidth: 0.5)
+                    .stroke(borderColor, lineWidth: borderLineWidth)
             }
+            .shadow(
+                color: profileChromeShadowColor,
+                radius: profileChromeShadowRadius,
+                x: ProfileChromeCapsuleMetrics.shadowX,
+                y: profileChromeShadowY
+            )
             .foregroundStyle(foregroundColor)
             .contentTransition(.interpolate)
             .animation(.easeInOut(duration: 0.2), value: isFollowing)
@@ -428,10 +434,13 @@ struct AuthorFollowButton: View {
 
     private var backgroundColor: Color {
         if isFollowing {
+            if usesProfileChromeSizing {
+                return ProfileChromeCapsuleMetrics.fillColor
+            }
             if overlayOnCover && !coverIsLight {
                 return Color.white.opacity(0.92)
             }
-            return Color(red: 245 / 255, green: 245 / 255, blue: 245 / 255)
+            return ProfileChromeCapsuleMetrics.fillColor
         }
         if overlayOnCover && !coverIsLight {
             return Color.white.opacity(isHovered ? 0.98 : 0.94)
@@ -444,10 +453,13 @@ struct AuthorFollowButton: View {
 
     private var borderColor: Color {
         if isFollowing {
+            if usesProfileChromeSizing {
+                return ProfileChromeCapsuleMetrics.borderColor
+            }
             if overlayOnCover && !coverIsLight {
                 return Color.white.opacity(0.35)
             }
-            return Color.black.opacity(0.06)
+            return ProfileChromeCapsuleMetrics.borderColor
         }
         if overlayOnCover && !coverIsLight {
             return Color.white.opacity(isHovered ? 0.55 : 0.42)
@@ -456,6 +468,28 @@ struct AuthorFollowButton: View {
             return Color.black.opacity(isHovered ? 0.1 : 0.06)
         }
         return isHovered ? BiliTheme.blueHover.opacity(0.45) : BiliTheme.blue.opacity(0.22)
+    }
+
+    private var borderLineWidth: CGFloat {
+        usesProfileChromeSizing ? ProfileChromeCapsuleMetrics.borderLineWidth : 0.5
+    }
+
+    private var profileChromeShadowColor: Color {
+        usesProfileChromeSizing && isFollowing
+            ? ProfileChromeCapsuleMetrics.shadowColor
+            : .clear
+    }
+
+    private var profileChromeShadowRadius: CGFloat {
+        usesProfileChromeSizing && isFollowing
+            ? ProfileChromeCapsuleMetrics.shadowRadius
+            : 0
+    }
+
+    private var profileChromeShadowY: CGFloat {
+        usesProfileChromeSizing && isFollowing
+            ? ProfileChromeCapsuleMetrics.shadowY
+            : 0
     }
 }
 

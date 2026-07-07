@@ -23,6 +23,7 @@ enum AppLayout {
     static let feedHorizontalInset: CGFloat = 64
     static let feedOverlayScrollbarWidth: CGFloat = 14
     static let feedVerticalInset: CGFloat = 28
+    static let listRemovalAnimation = Animation.easeInOut(duration: 0.28)
     static let mainContentPaddingCompact: CGFloat = 24
     static let searchPageMaxWidth: CGFloat = 1040
     static let searchPageCompactBreakpoint: CGFloat = 900
@@ -222,6 +223,17 @@ extension EnvironmentValues {
     var videoDetailChromeHeight: CGFloat {
         get { self[VideoDetailChromeHeightEnvironmentKey.self] }
         set { self[VideoDetailChromeHeightEnvironmentKey.self] = newValue }
+    }
+}
+
+private struct ProfileNavigationDepthEnvironmentKey: EnvironmentKey {
+    static let defaultValue = 0
+}
+
+extension EnvironmentValues {
+    var profileNavigationDepth: Int {
+        get { self[ProfileNavigationDepthEnvironmentKey.self] }
+        set { self[ProfileNavigationDepthEnvironmentKey.self] = newValue }
     }
 }
 
@@ -888,22 +900,22 @@ private struct MacOverlayScrollClipModifier: ViewModifier {
     }
 }
 
-private struct MacOverlayScrollConfigurator: NSViewRepresentable {
+struct MacOverlayScrollConfigurator: NSViewRepresentable {
     var usesOverlayScrollers: Bool = true
 
-    fileprivate func makeNSView(context: Context) -> MacOverlayScrollFinderView {
+    func makeNSView(context: Context) -> MacOverlayScrollFinderView {
         let view = MacOverlayScrollFinderView()
         view.usesOverlayScrollers = usesOverlayScrollers
         return view
     }
 
-    fileprivate func updateNSView(_ nsView: MacOverlayScrollFinderView, context: Context) {
+    func updateNSView(_ nsView: MacOverlayScrollFinderView, context: Context) {
         nsView.usesOverlayScrollers = usesOverlayScrollers
         nsView.applyOverlayStyle()
     }
 }
 
-private final class MacOverlayScrollFinderView: NSView {
+final class MacOverlayScrollFinderView: NSView {
     private weak var configuredScrollView: NSScrollView?
     var usesOverlayScrollers = true
 

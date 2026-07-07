@@ -398,6 +398,11 @@ enum JSONParser {
         return [int64(data, "video"), int64(archive ?? [:], "count")].first(where: { $0 > 0 }) ?? 0
     }
 
+    nonisolated static func parseUserRelationStatFollower(from object: Any) -> Int64 {
+        let data = dictionary(object)["data"] as? [String: Any] ?? [:]
+        return int64(data, "follower")
+    }
+
     nonisolated static func parseUserRelation(from object: Any) -> BiliAuthorRelation {
         let data = dictionary(object)["data"] as? [String: Any] ?? [:]
         return relationFromAttribute(Int(int64(data, "attribute")))
@@ -450,6 +455,7 @@ enum JSONParser {
             int64(item, "follower"),
             int64(item["official"] as? [String: Any] ?? [:], "fans"),
         ]
+        // followings/followers list items do not include fan count; enriched via /x/relation/stat.
         let fanCount = fanCandidates.first(where: { $0 > 0 }) ?? Int64(0)
 
         return BiliRelationUser(

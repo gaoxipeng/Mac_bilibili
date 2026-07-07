@@ -726,7 +726,19 @@ actor BilibiliAPI {
                 credential: credential,
                 referer: "https://space.bilibili.com/\(hostMid)"
             )
-            return JSONParser.parseRelationUserPage(from: json, pageSize: pageSize)
+            let result = JSONParser.parseRelationUserPage(from: json, pageSize: pageSize)
+            guard result.errorMessage == nil, !result.users.isEmpty else { return result }
+            let users = await enrichRelationUsersFanCounts(
+                result.users,
+                hostMid: hostMid,
+                credential: credential
+            )
+            return BiliRelationUserPage(
+                users: users,
+                hasMore: result.hasMore,
+                total: result.total,
+                errorMessage: nil
+            )
         } catch {
             return BiliRelationUserPage(
                 users: [],
@@ -735,6 +747,68 @@ actor BilibiliAPI {
                 errorMessage: error.localizedDescription
             )
         }
+    }
+
+    func enrichRelationUsersFanCounts(
+        _ users: [BiliRelationUser],
+        hostMid: Int64,
+        credential: BilibiliCredential? = nil
+    ) async -> [BiliRelationUser] {
+        let pending = users.enumerated().filter { $0.element.fanCount == 0 && $0.element.mid > 0 }
+        guard !pending.isEmpty else { return users }
+
+        var enriched = users
+        let referer = "https://space.bilibili.com/\(hostMid)"
+        let concurrency = 6
+        var start = 0
+        while start < pending.count {
+            let chunk = Array(pending[start..<min(start + concurrency, pending.count)])
+            start += concurrency
+            await withTaskGroup(of: (Int, Int64).self) { group in
+                for (index, user) in chunk {
+                    let mid = user.mid
+                    group.addTask {
+                        let count = await self.relationStatFollower(
+                            mid: mid,
+                            credential: credential,
+                            referer: referer
+                        )
+                        return (index, count)
+                    }
+                }
+                for await (index, count) in group {
+                    guard count > 0, enriched.indices.contains(index) else { continue }
+                    let user = enriched[index]
+                    enriched[index] = BiliRelationUser(
+                        mid: user.mid,
+                        name: user.name,
+                        faceURL: user.faceURL,
+                        sign: user.sign,
+                        relation: user.relation,
+                        fanCount: count,
+                        ipLocation: user.ipLocation
+                    )
+                }
+            }
+        }
+        return enriched
+    }
+
+    private func relationStatFollower(
+        mid: Int64,
+        credential: BilibiliCredential?,
+        referer: String
+    ) async -> Int64 {
+        guard mid > 0 else { return 0 }
+        guard let json = try? await jsonAllowNonZero(
+            url: "https://api.bilibili.com/x/relation/stat",
+            params: ["vmid": "\(mid)"],
+            credential: credential,
+            referer: referer
+        ) else {
+            return 0
+        }
+        return JSONParser.parseUserRelationStatFollower(from: json)
     }
 
     func followingFeed(credential: BilibiliCredential, offset: String? = nil) async throws -> BiliFollowingFeedPage {

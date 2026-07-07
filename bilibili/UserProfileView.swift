@@ -366,12 +366,20 @@ struct UserProfileChromeMeasuredHeightKey: PreferenceKey {
     }
 }
 
-private enum ProfileChromeCapsuleMetrics {
+enum ProfileChromeCapsuleMetrics {
     static let height: CGFloat = 48
     static let horizontalPadding: CGFloat = 14
     static let selectedInset: CGFloat = 6
     static let statColumnCount: CGFloat = 4
     static let barWidth: CGFloat = 300
+
+    static let fillColor = Color(red: 245 / 255, green: 245 / 255, blue: 245 / 255)
+    static let borderColor = Color.black.opacity(0.06)
+    static let borderLineWidth: CGFloat = 0.5
+    static let shadowColor = Color.black.opacity(0.08)
+    static let shadowRadius: CGFloat = 10
+    static let shadowX: CGFloat = 0
+    static let shadowY: CGFloat = 4
 }
 
 struct UserProfileChromeHeaderView: View {
@@ -385,6 +393,8 @@ struct UserProfileChromeHeaderView: View {
     var onFollowersTap: (() -> Void)?
     var onReload: (() -> Void)? = nil
     var isReloadDisabled = false
+
+    @State private var isLogoutHovered = false
 
     private let primaryText = Color(red: 0.11, green: 0.11, blue: 0.12)
     private let secondaryText = Color(red: 0.39, green: 0.39, blue: 0.4)
@@ -516,16 +526,24 @@ struct UserProfileChromeHeaderView: View {
         Button(action: onLogout) {
             Text("退出登录")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(secondaryText)
+                .foregroundStyle(isLogoutHovered ? Color.white : secondaryText)
                 .padding(.horizontal, 14)
                 .frame(height: ProfileChromeCapsuleMetrics.height)
-                .background(Color.black.opacity(0.06), in: Capsule())
+                .background(isLogoutHovered ? Color.red : Color.white, in: Capsule())
                 .overlay {
                     Capsule()
-                        .strokeBorder(Color.black.opacity(0.08), lineWidth: 0.8)
+                        .strokeBorder(
+                            isLogoutHovered ? Color.clear : Color.black.opacity(0.08),
+                            lineWidth: 0.8
+                        )
                 }
         }
         .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.16)) {
+                isLogoutHovered = hovering
+            }
+        }
     }
 
     private var profileAvatar: some View {
@@ -578,59 +596,69 @@ private struct ProfileStatsBar: View {
         }
     }
 
-    private var borderedChromeBody: some View {
-        GeometryReader { geometry in
-            let columnWidth = geometry.size.width / ProfileChromeCapsuleMetrics.statColumnCount
+    private var statsColumnWidth: CGFloat {
+        let innerWidth = ProfileChromeCapsuleMetrics.barWidth
+            - ProfileChromeCapsuleMetrics.horizontalPadding * 2
+        return max(0, innerWidth / ProfileChromeCapsuleMetrics.statColumnCount)
+    }
 
-            HStack(spacing: 0) {
-                ProfileStatItem(
-                    title: "关注",
-                    value: following?.compactCount ?? "-",
-                    primaryText: primaryText,
-                    secondaryText: secondaryText,
-                    fixedWidth: columnWidth,
-                    fixedHeight: ProfileChromeCapsuleMetrics.height,
-                    leadingHoverExtension: ProfileChromeCapsuleMetrics.horizontalPadding,
-                    action: onFollowingTap
-                )
-                ProfileStatItem(
-                    title: "粉丝",
-                    value: follower?.compactCount ?? "-",
-                    primaryText: primaryText,
-                    secondaryText: secondaryText,
-                    fixedWidth: columnWidth,
-                    fixedHeight: ProfileChromeCapsuleMetrics.height,
-                    action: onFollowersTap
-                )
-                ProfileStatItem(
-                    title: "获赞",
-                    value: likes?.compactCount ?? "-",
-                    primaryText: primaryText,
-                    secondaryText: secondaryText,
-                    fixedWidth: columnWidth,
-                    fixedHeight: ProfileChromeCapsuleMetrics.height
-                )
-                ProfileStatItem(
-                    title: "投稿",
-                    value: videoCount?.compactCount ?? "-",
-                    primaryText: primaryText,
-                    secondaryText: secondaryText,
-                    fixedWidth: columnWidth,
-                    fixedHeight: ProfileChromeCapsuleMetrics.height
-                )
-            }
+    private var borderedChromeBody: some View {
+        HStack(spacing: 0) {
+            ProfileStatItem(
+                title: "关注",
+                value: following?.compactCount ?? "-",
+                primaryText: primaryText,
+                secondaryText: secondaryText,
+                fixedWidth: statsColumnWidth,
+                fixedHeight: ProfileChromeCapsuleMetrics.height,
+                leadingHoverExtension: ProfileChromeCapsuleMetrics.horizontalPadding,
+                action: onFollowingTap
+            )
+            ProfileStatItem(
+                title: "粉丝",
+                value: follower?.compactCount ?? "-",
+                primaryText: primaryText,
+                secondaryText: secondaryText,
+                fixedWidth: statsColumnWidth,
+                fixedHeight: ProfileChromeCapsuleMetrics.height,
+                action: onFollowersTap
+            )
+            ProfileStatItem(
+                title: "获赞",
+                value: likes?.compactCount ?? "-",
+                primaryText: primaryText,
+                secondaryText: secondaryText,
+                fixedWidth: statsColumnWidth,
+                fixedHeight: ProfileChromeCapsuleMetrics.height
+            )
+            ProfileStatItem(
+                title: "投稿",
+                value: videoCount?.compactCount ?? "-",
+                primaryText: primaryText,
+                secondaryText: secondaryText,
+                fixedWidth: statsColumnWidth,
+                fixedHeight: ProfileChromeCapsuleMetrics.height
+            )
         }
         .padding(.horizontal, ProfileChromeCapsuleMetrics.horizontalPadding)
         .frame(width: ProfileChromeCapsuleMetrics.barWidth, height: ProfileChromeCapsuleMetrics.height)
         .background {
             Capsule(style: .continuous)
-                .fill(Color.white.opacity(0.42))
+                .fill(ProfileChromeCapsuleMetrics.fillColor)
         }
         .overlay {
             Capsule(style: .continuous)
-                .strokeBorder(Color.black.opacity(0.10), lineWidth: 0.8)
+                .stroke(
+                    ProfileChromeCapsuleMetrics.borderColor,
+                    lineWidth: ProfileChromeCapsuleMetrics.borderLineWidth
+                )
         }
-        .clipShape(Capsule(style: .continuous))
+        .shadow(
+            color: ProfileChromeCapsuleMetrics.shadowColor,
+            radius: ProfileChromeCapsuleMetrics.shadowRadius,
+            x: ProfileChromeCapsuleMetrics.shadowX,
+            y: ProfileChromeCapsuleMetrics.shadowY
+        )
     }
 
     private var plainBody: some View {
@@ -747,8 +775,10 @@ private struct ProfileStatItem: View {
 struct UserProfileView: View {
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.videoDetailChromeHeight) private var chromeHeight
+    @Environment(\.profileNavigationDepth) private var navigationDepth
     @StateObject private var model: UserProfileModel
     @State private var publishesFloatingChrome = false
+    @State private var chromeNavigationDepth: Int?
 
     private let columnInnerPadding: CGFloat = 14
     private let profileSectionHeaderHeight: CGFloat = 48
@@ -838,35 +868,21 @@ struct UserProfileView: View {
             Task { await model.refreshProfileIpLocationIfNeeded() }
         }
         .onAppear {
+            chromeNavigationDepth = navigationDepth
             model.syncCredential(appModel.account?.credential)
             Task { await model.load() }
-            publishesFloatingChrome = true
-            publishProfileFloatingChrome()
-            appModel.profilePageHandlers = ProfilePageHandlers(
-                follow: { Task { await model.followAuthor() } },
-                unfollow: { Task { await model.unfollowAuthor() } },
-                openRelationList: { tab in
-                    appModel.requestUserRelationList(
-                        UserRelationListRequest(
-                            hostMid: model.mid,
-                            hostName: model.chromeInfo.name,
-                            hostFaceURL: model.chromeInfo.faceURL,
-                            hostSign: model.chromeInfo.sign,
-                            initialTab: tab
-                        )
-                    )
-                },
-                reload: { Task { await model.load() } },
-                logout: model.isOwnProfile ? { appModel.logout() } : nil
-            )
+            syncProfileChromePublishing()
             MediaPlaybackCoordinator.shared.notifyObscuringPageVisible()
         }
         .onDisappear {
+            chromeNavigationDepth = nil
             publishesFloatingChrome = false
-            appModel.popProfileFloatingChrome()
+            appModel.popProfileFloatingChrome(ownerMid: model.mid)
             appModel.restoreRelationListChrome()
-            appModel.clearProfilePageHandlers()
             MediaPlaybackCoordinator.shared.notifyObscuringPageHidden()
+        }
+        .onChange(of: navigationDepth) { _, _ in
+            syncProfileChromePublishing()
         }
         .onChange(of: model.profile?.name) { _, _ in updateFloatingProfileChrome() }
         .onChange(of: model.profile?.sign) { _, _ in updateFloatingProfileChrome() }
@@ -876,18 +892,54 @@ struct UserProfileView: View {
         .onChange(of: model.relation.following) { _, _ in updateFloatingProfileChrome() }
         .onChange(of: model.followLoading) { _, _ in updateFloatingProfileChrome() }
         .onChange(of: model.loading) { _, _ in updateFloatingProfileChrome() }
-    }
-
-    private func updateFloatingProfileChrome() {
-        if publishesFloatingChrome {
-            publishProfileFloatingChrome()
-        } else {
-            appModel.refreshProfileFloatingChrome(profileChromePreference)
+        .onChange(of: appModel.activeFloatingChromeKind) { _, kind in
+            guard kind == .profile else { return }
+            syncProfileChromePublishing()
         }
     }
 
+    private var managesProfileChrome: Bool {
+        guard let chromeNavigationDepth else { return false }
+        return navigationDepth == chromeNavigationDepth
+    }
+
+    private func syncProfileChromePublishing() {
+        if managesProfileChrome {
+            publishesFloatingChrome = true
+            publishProfileFloatingChrome()
+            publishProfilePageHandlers()
+        } else {
+            publishesFloatingChrome = false
+        }
+    }
+
+    private func updateFloatingProfileChrome() {
+        guard managesProfileChrome else { return }
+        publishProfileFloatingChrome()
+    }
+
     private func publishProfileFloatingChrome() {
-        appModel.presentProfileFloatingChrome(profileChromePreference)
+        appModel.presentProfileFloatingChrome(profileChromePreference, ownerMid: model.mid)
+    }
+
+    private func publishProfilePageHandlers() {
+        appModel.profilePageHandlers = ProfilePageHandlers(
+            follow: { Task { await model.followAuthor() } },
+            unfollow: { Task { await model.unfollowAuthor() } },
+            openRelationList: { tab in
+                appModel.requestUserRelationList(
+                    UserRelationListRequest(
+                        hostMid: model.mid,
+                        hostName: model.chromeInfo.name,
+                        hostFaceURL: model.chromeInfo.faceURL,
+                        hostSign: model.chromeInfo.sign,
+                        initialTab: tab
+                    )
+                )
+            },
+            reload: { Task { await model.load() } },
+            logout: model.isOwnProfile ? { appModel.logout() } : nil
+        )
     }
 
     private var profileChromePreference: UserProfileChromeInfo? {
@@ -1152,7 +1204,7 @@ private struct DynamicContentPreview: View {
             }
 
             if !imageURLs.isEmpty {
-                DynamicImageGridPreview(urls: imageURLs)
+                DynamicImageGrid(urls: imageURLs, maxCount: 4)
             }
         }
     }
@@ -1238,16 +1290,63 @@ private struct DynamicLinkPreview: View {
     }
 }
 
-private struct DynamicImageGridPreview: View {
+struct DynamicImageGrid: View {
     let urls: [URL]
+    var maxCount = 9
+
+    private let spacing: CGFloat = 6
+    private let cornerRadius: CGFloat = 8
+
+    private var displayURLs: [URL] {
+        Array(urls.prefix(maxCount))
+    }
+
+    private var columnCount: Int {
+        switch displayURLs.count {
+        case 0: return 1
+        case 1: return 1
+        case 2, 4: return 2
+        default: return 3
+        }
+    }
+
+    private var rowCount: Int {
+        guard !displayURLs.isEmpty else { return 0 }
+        return (displayURLs.count + columnCount - 1) / columnCount
+    }
 
     var body: some View {
-        let columns = urls.count == 1 ? 1 : min(2, urls.count)
-        LazyVGrid(
-            columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: columns),
-            spacing: 6
-        ) {
-            ForEach(urls.prefix(4), id: \.absoluteString) { url in
+        if displayURLs.isEmpty {
+            EmptyView()
+        } else if displayURLs.count == 1, let url = displayURLs.first {
+            gridCell(url: url, aspectRatio: 16 / 9)
+        } else {
+            VStack(spacing: spacing) {
+                ForEach(0..<rowCount, id: \.self) { row in
+                    HStack(spacing: spacing) {
+                        ForEach(0..<columnCount, id: \.self) { column in
+                            let index = row * columnCount + column
+                            if index < displayURLs.count {
+                                gridCell(url: displayURLs[index], aspectRatio: 1)
+                                    .frame(maxWidth: .infinity)
+                            } else {
+                                Color.clear
+                                    .aspectRatio(1, contentMode: .fit)
+                                    .frame(maxWidth: .infinity)
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func gridCell(url: URL, aspectRatio: CGFloat) -> some View {
+        Color.clear
+            .aspectRatio(aspectRatio, contentMode: .fit)
+            .overlay {
                 AsyncImage(url: url) { phase in
                     switch phase {
                     case .success(let image):
@@ -1256,11 +1355,8 @@ private struct DynamicImageGridPreview: View {
                         Color.secondary.opacity(0.08)
                     }
                 }
-                .frame(maxWidth: .infinity)
-                .aspectRatio(urls.count == 1 ? 16 / 9 : 1, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
-        }
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }
 

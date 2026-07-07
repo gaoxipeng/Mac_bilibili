@@ -334,65 +334,78 @@ private struct UserRelationTabPage: View {
     }
 
     var body: some View {
-        let columns = Array(
-            repeating: GridItem(.flexible(), spacing: AppLayout.searchUserResultColumnSpacing, alignment: .center),
-            count: layout.columnCount
-        )
+        GeometryReader { geometry in
+            let columns = Array(
+                repeating: GridItem(.flexible(), spacing: AppLayout.searchUserResultColumnSpacing, alignment: .center),
+                count: layout.columnCount
+            )
 
-        ScrollView {
-            LazyVGrid(columns: columns, alignment: .center, spacing: 10) {
+            Group {
                 if model.loading, model.users.isEmpty {
-                    ProgressView("正在加载\(tab.title)列表")
-                        .gridCellColumns(layout.columnCount)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 40)
-                } else if let errorMessage = model.errorMessage, model.users.isEmpty {
-                    ContentUnavailableView(errorMessage, systemImage: "person.2.slash")
-                        .gridCellColumns(layout.columnCount)
-                        .padding(.vertical, 40)
-                } else if model.users.isEmpty {
-                    ContentUnavailableView("暂无\(tab.title)", systemImage: "person.crop.circle")
-                        .gridCellColumns(layout.columnCount)
-                        .padding(.vertical, 40)
-                } else {
-                    ForEach(model.users) { user in
-                        BiliRelationUserCapsuleRow(
-                            user: user,
-                            showFollowButton: credential != nil
-                                && viewerMid != nil
-                                && user.mid != viewerMid,
-                            isFollowLoading: model.followLoadingMid == user.mid,
-                            onFollow: {
-                                Task { await model.toggleFollow(for: user) }
-                            },
-                            onUnfollow: {
-                                Task { await model.toggleFollow(for: user) }
-                            }
-                        )
+                    relationListCenteredState(in: geometry.size) {
+                        ProgressView("正在加载\(tab.title)列表")
                     }
-
-                    if model.hasMore {
-                        FeedLoadMoreFooter(
-                            anchorID: model.users.count,
-                            hasMore: model.hasMore,
-                            loadingMore: model.loadingMore,
-                            onLoadMore: {
-                                model.loadMoreIfNeeded()
+                } else if let errorMessage = model.errorMessage, model.users.isEmpty {
+                    relationListCenteredState(in: geometry.size) {
+                        ContentUnavailableView(errorMessage, systemImage: "person.2.slash")
+                    }
+                } else if model.users.isEmpty {
+                    relationListCenteredState(in: geometry.size) {
+                        ContentUnavailableView("暂无\(tab.title)", systemImage: "person.crop.circle")
+                    }
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: columns, alignment: .center, spacing: 10) {
+                            ForEach(model.users) { user in
+                                BiliRelationUserCapsuleRow(
+                                    user: user,
+                                    showFollowButton: credential != nil
+                                        && viewerMid != nil
+                                        && user.mid != viewerMid,
+                                    isFollowLoading: model.followLoadingMid == user.mid,
+                                    onFollow: {
+                                        Task { await model.toggleFollow(for: user) }
+                                    },
+                                    onUnfollow: {
+                                        Task { await model.toggleFollow(for: user) }
+                                    }
+                                )
                             }
-                        )
-                        .gridCellColumns(layout.columnCount)
+
+                            if model.hasMore {
+                                FeedLoadMoreFooter(
+                                    anchorID: model.users.count,
+                                    hasMore: model.hasMore,
+                                    loadingMore: model.loadingMore,
+                                    onLoadMore: {
+                                        model.loadMoreIfNeeded()
+                                    }
+                                )
+                                .gridCellColumns(layout.columnCount)
+                            }
+                        }
+                        .frame(width: layout.gridWidth)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, AppLayout.searchUserResultsHorizontalInset)
+                        .padding(.top, 16)
+                        .padding(.bottom, 24)
                     }
                 }
             }
-            .frame(width: layout.gridWidth)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, AppLayout.searchUserResultsHorizontalInset)
-            .padding(.top, 16)
-            .padding(.bottom, 24)
+            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
         }
         .task(id: tab) {
             await model.load(reset: true)
         }
+    }
+
+    private func relationListCenteredState<Content: View>(
+        in size: CGSize,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .multilineTextAlignment(.center)
+            .frame(width: size.width, height: size.height, alignment: .center)
     }
 }
 

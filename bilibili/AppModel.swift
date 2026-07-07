@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import SwiftUI
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -50,7 +51,13 @@ final class AppModel: ObservableObject {
     @Published private(set) var relationListSelectedTab: BiliUserRelationTab = .following
 
     private var relationListTabChangeHandler: ((BiliUserRelationTab) -> Void)?
-    private var profileChromeStack: [UserProfileChromeInfo] = []
+    private struct ProfileChromeStackEntry {
+        let mid: Int64
+        let chrome: UserProfileChromeInfo
+    }
+
+    private var profileChromeStack: [ProfileChromeStackEntry] = []
+    private var profileChromeOwnerMid: Int64?
 
     func presentVideoFloatingChrome(_ info: VideoDetailChromeInfo?) {
         if let info {
@@ -65,20 +72,24 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func presentProfileFloatingChrome(_ info: UserProfileChromeInfo?) {
+    func presentProfileFloatingChrome(_ info: UserProfileChromeInfo?, ownerMid: Int64) {
         if let info {
-            if let current = floatingProfileChrome, current != info {
-                profileChromeStack.append(current)
+            if profileChromeOwnerMid != ownerMid {
+                if let currentMid = profileChromeOwnerMid, let current = floatingProfileChrome {
+                    profileChromeStack.append(ProfileChromeStackEntry(mid: currentMid, chrome: current))
+                }
+                profileChromeOwnerMid = ownerMid
+                floatingProfileChrome = info
+            } else {
+                floatingProfileChrome = info
             }
-            floatingProfileChrome = info
         }
         activeFloatingChromeKind = .profile
     }
 
-    func refreshProfileFloatingChrome(_ info: UserProfileChromeInfo?) {
-        if let info {
-            floatingProfileChrome = info
-        }
+    func refreshProfileFloatingChrome(_ info: UserProfileChromeInfo?, ownerMid: Int64) {
+        guard profileChromeOwnerMid == ownerMid, let info else { return }
+        floatingProfileChrome = info
     }
 
     func resignProfileFloatingChrome() {
@@ -91,11 +102,13 @@ final class AppModel: ObservableObject {
         activeFloatingChromeKind = .profile
     }
 
-    func popProfileFloatingChrome() {
-        guard activeFloatingChromeKind == .profile else { return }
+    func popProfileFloatingChrome(ownerMid: Int64) {
+        guard profileChromeOwnerMid == ownerMid else { return }
+        profileChromeOwnerMid = nil
         activeFloatingChromeKind = nil
         if let restored = profileChromeStack.popLast() {
-            floatingProfileChrome = restored
+            profileChromeOwnerMid = restored.mid
+            floatingProfileChrome = restored.chrome
         }
     }
 
@@ -149,6 +162,7 @@ final class AppModel: ObservableObject {
         floatingRelationChrome = nil
         relationListTabChangeHandler = nil
         profileChromeStack.removeAll()
+        profileChromeOwnerMid = nil
         activeFloatingChromeKind = nil
     }
 
@@ -157,6 +171,7 @@ final class AppModel: ObservableObject {
         floatingRelationChrome = nil
         relationListTabChangeHandler = nil
         profileChromeStack.removeAll()
+        profileChromeOwnerMid = nil
         if selectedSection == .mine, floatingProfileChrome != nil {
             activeFloatingChromeKind = .profile
         } else {
@@ -536,12 +551,27 @@ final class AppModel: ObservableObject {
 
     func deleteHistoryItem(_ item: BiliHistoryItem) async {
         guard let credential = account?.credential, !item.kid.isEmpty else { return }
+
+        let identity = item.listIdentity
+        let rollbackItems = historyItems
+
+        withAnimation(AppLayout.listRemovalAnimation) {
+            historyItems.removeAll { $0.listIdentity == identity }
+        }
+
         do {
             let deleted = try await api.deleteWatchHistory(kid: item.kid, credential: credential)
-            guard deleted else { return }
-            historyItems.removeAll { $0.listIdentity == item.listIdentity }
+            guard deleted else {
+                withAnimation(AppLayout.listRemovalAnimation) {
+                    historyItems = rollbackItems
+                }
+                return
+            }
             errorMessage = nil
         } catch {
+            withAnimation(AppLayout.listRemovalAnimation) {
+                historyItems = rollbackItems
+            }
             errorMessage = error.localizedDescription
         }
     }

@@ -666,6 +666,18 @@ struct HomeView: View {
     }
 }
 
+private enum HistoryCardTransition {
+    static let removal = AnyTransition.asymmetric(
+        insertion: .opacity,
+        removal: .opacity.combined(with: .scale(scale: 0.94))
+    )
+
+    static let sectionRemoval = AnyTransition.asymmetric(
+        insertion: .opacity,
+        removal: .opacity.combined(with: .move(edge: .top))
+    )
+}
+
 private enum HistoryCardLayout {
     static let metrics = VideoCardLayout.RowLayoutMetrics.feed(largeTypography: true, showsAuthor: true)
     static let deleteButtonSize: CGFloat = 18
@@ -685,31 +697,66 @@ private enum HistoryCardLayout {
 }
 
 private enum HistoryLayout {
-    static let sectionSpacing: CGFloat = 28
-    static let timelineGutterWidth: CGFloat = 68
-    static let timelineTrackColumnWidth: CGFloat = 16
-    static let labelLeadingOverflow: CGFloat = 24
-    static let trackToContentSpacing: CGFloat = 28
-    static let labelFontSize: CGFloat = 16
-    static let dotSize: CGFloat = 12
-    static let dotShrunkSize: CGFloat = 4
-    static let dotBorderWidth: CGFloat = 2
-    static let dotShrunkBorderWidth: CGFloat = 1.5
+    static let pageLeadingInset: CGFloat = 24
     static let lineWidth: CGFloat = 1
-    static let labelToTrackSpacing: CGFloat = 10
-    static let pinnedRowPitch: CGFloat = 40
-    static let maxNormalTopStickies = 4
+    static let lineX: CGFloat = 104
+    static let labelTrailingGap: CGFloat = 10
+    static let contentSpacingFromLine: CGFloat = 22
+    static let sectionSpacing: CGFloat = 28
     static let sectionScrollTopInset: CGFloat = AppLayout.feedVerticalInset
+    static let topLabelHeight: CGFloat = 44
+    static let labelFontSize: CGFloat = 20
     static let labelColor = Color(red: 0.38, green: 0.40, blue: 0.43)
-    static let labelHoverColor = BiliTheme.blue
     static let lineColor = Color(red: 0.788, green: 0.804, blue: 0.816)
+    static let lineTopOverscan: CGFloat = 32
 
-    static var timelineTrackCenterX: CGFloat {
-        timelineGutterWidth - timelineTrackColumnWidth / 2
+    static var labelAreaWidth: CGFloat {
+        max(0, lineX - labelTrailingGap - lineWidth / 2)
     }
 
-    static var labelTrailingX: CGFloat {
-        timelineTrackCenterX - labelToTrackSpacing - dotSize / 2
+    static var contentLeadingInset: CGFloat {
+        lineX + lineWidth / 2 + contentSpacingFromLine
+    }
+
+    static var stickyPinLine: CGFloat {
+        sectionScrollTopInset
+    }
+
+    static var stickyHeaderWidth: CGFloat {
+        lineX + lineWidth / 2
+    }
+
+    static func contentWidth(viewportWidth: CGFloat) -> CGFloat {
+        max(0, viewportWidth - pageLeadingInset - AppLayout.feedTrailingInset)
+    }
+}
+
+private struct HistoryVerticalLine: View {
+    let height: CGFloat
+
+    var body: some View {
+        Rectangle()
+            .fill(HistoryLayout.lineColor)
+            .frame(width: HistoryLayout.lineWidth, height: max(height, 1))
+            .offset(x: HistoryLayout.lineX - HistoryLayout.lineWidth / 2)
+    }
+}
+
+private struct HistorySectionDateLabel: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .font(.system(size: HistoryLayout.labelFontSize, weight: .medium))
+            .foregroundStyle(HistoryLayout.labelColor)
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .allowsTightening(true)
+            .frame(
+                width: HistoryLayout.labelAreaWidth,
+                height: HistoryLayout.topLabelHeight,
+                alignment: .trailing
+            )
     }
 }
 
@@ -735,108 +782,6 @@ private struct HistorySection: Identifiable {
     let items: [BiliHistoryItem]
 }
 
-private struct HistoryTimelinePinState {
-    let viewingIndex: Int?
-    let deepestIndex: Int
-    let isSplitMode: Bool
-    let topPinnedIndices: [Int]
-    let bottomPinnedIndices: [Int]
-    let normalPinnedIndices: [Int]
-    let displayedNormalTopPinnedIndices: [Int]
-
-    static func make(
-        sectionIDs: [String],
-        headerY: [String: CGFloat],
-        deepestIndex: Int,
-        jumpAnchorIndex: Int?,
-        stickyPinLine: CGFloat,
-        pitch: CGFloat
-    ) -> HistoryTimelinePinState {
-        let deepest = max(deepestIndex, 0)
-        if let viewing = jumpAnchorIndex, viewing < deepest {
-            return HistoryTimelinePinState(
-                viewingIndex: viewing,
-                deepestIndex: deepest,
-                isSplitMode: true,
-                topPinnedIndices: Array(0...viewing),
-                bottomPinnedIndices: Array((viewing + 1)...deepest),
-                normalPinnedIndices: [],
-                displayedNormalTopPinnedIndices: []
-            )
-        }
-
-        var normal: [Int] = []
-        for (index, id) in sectionIDs.enumerated() {
-            guard let y = headerY[id] else { continue }
-            let slotY = stickyPinLine + CGFloat(index) * pitch
-            if y < slotY {
-                normal.append(index)
-            }
-        }
-        let displayedNormalTop = Array(normal.suffix(HistoryLayout.maxNormalTopStickies))
-        return HistoryTimelinePinState(
-            viewingIndex: jumpAnchorIndex,
-            deepestIndex: deepest,
-            isSplitMode: false,
-            topPinnedIndices: [],
-            bottomPinnedIndices: [],
-            normalPinnedIndices: normal,
-            displayedNormalTopPinnedIndices: displayedNormalTop
-        )
-    }
-
-    func showsStickyOverlay(for index: Int) -> Bool {
-        if isSplitMode {
-            return topPinnedIndices.contains(index) || bottomPinnedIndices.contains(index)
-        }
-        return displayedNormalTopPinnedIndices.contains(index)
-    }
-
-    func shouldHideInlineHeader(for index: Int) -> Bool {
-        showsStickyOverlay(for: index)
-    }
-
-    func stickyY(
-        for index: Int,
-        viewportHeight: CGFloat,
-        stickyPinLine: CGFloat,
-        pitch: CGFloat
-    ) -> CGFloat? {
-        guard showsStickyOverlay(for: index) else { return nil }
-
-        if isSplitMode {
-            if let topSlot = topPinnedIndices.firstIndex(of: index) {
-                return stickyPinLine + CGFloat(topSlot) * pitch
-            }
-            if let bottomSlot = bottomPinnedIndices.firstIndex(of: index) {
-                let stackHeight = CGFloat(bottomPinnedIndices.count) * pitch
-                let bottomLine = viewportHeight - AppLayout.feedVerticalInset
-                return bottomLine - stackHeight + CGFloat(bottomSlot) * pitch
-            }
-            return nil
-        }
-
-        if let topSlot = displayedNormalTopPinnedIndices.firstIndex(of: index) {
-            return stickyPinLine + CGFloat(topSlot) * pitch
-        }
-        return nil
-    }
-
-    func isActivePinned(_ index: Int) -> Bool {
-        if isSplitMode, let viewing = viewingIndex {
-            if topPinnedIndices.contains(index) {
-                return index == viewing
-            }
-            if bottomPinnedIndices.contains(index) {
-                return index == bottomPinnedIndices.last
-            }
-            return false
-        }
-
-        return index == displayedNormalTopPinnedIndices.last
-    }
-}
-
 struct HistoryView: View {
     let items: [BiliHistoryItem]
     let loading: Bool
@@ -848,12 +793,6 @@ struct HistoryView: View {
     let onDelete: (BiliHistoryItem) -> Void
 
     @State private var sectionHeaderViewportY: [String: CGFloat] = [:]
-    @State private var deepestReachedSectionIndex: Int = -1
-    @State private var jumpAnchorSectionID: String?
-    @State private var viewportCommitTask: Task<Void, Never>?
-    @State private var pendingViewportUpdates: [String: CGFloat] = [:]
-    @State private var isHistoryScrolling = false
-    @State private var frozenPinState: HistoryTimelinePinState?
     @State private var loadMoreSentinelY: CGFloat?
     @State private var requestedLoadMoreItemCount: Int?
 
@@ -861,99 +800,23 @@ struct HistoryView: View {
         buildHistorySections(from: items)
     }
 
-    private var stickyPinLine: CGFloat {
-        AppLayout.feedVerticalInset
-    }
-
-    private func jumpAnchorIndex() -> Int? {
-        guard let jumpAnchorSectionID else { return nil }
-        return sections.firstIndex(where: { $0.id == jumpAnchorSectionID })
-    }
-
-    private func pinState() -> HistoryTimelinePinState {
-        HistoryTimelinePinState.make(
-            sectionIDs: sections.map(\.id),
-            headerY: sectionHeaderViewportY,
-            deepestIndex: deepestReachedSectionIndex,
-            jumpAnchorIndex: jumpAnchorIndex(),
-            stickyPinLine: stickyPinLine,
-            pitch: HistoryLayout.pinnedRowPitch
-        )
-    }
-
-    private func viewingSectionIndexAtTop() -> Int? {
-        sections.indices.compactMap { index in
-            guard let y = sectionHeaderViewportY[sections[index].id] else { return nil }
-            if y >= stickyPinLine - 12 && y < stickyPinLine + HistoryLayout.pinnedRowPitch * 2.5 {
-                return index
-            }
-            return nil
-        }.min()
-    }
-
-    private func reconcileScrollDepth(with viewportY: [String: CGFloat]) {
-        let previousDeepest = deepestReachedSectionIndex
-        var deepest = deepestReachedSectionIndex
-        let pitch = HistoryLayout.pinnedRowPitch
-        for (index, section) in sections.enumerated() {
-            guard let y = viewportY[section.id] else { continue }
-            let slotY = stickyPinLine + CGFloat(index) * pitch
-            if y < slotY {
-                deepest = max(deepest, index)
+    private var stickySection: HistorySection? {
+        var pinned: HistorySection?
+        for section in sections {
+            guard let y = sectionHeaderViewportY[section.id] else { continue }
+            if y <= HistoryLayout.stickyPinLine {
+                pinned = section
             }
         }
-        if deepest != deepestReachedSectionIndex {
-            deepestReachedSectionIndex = deepest
-            if deepest > previousDeepest {
-                jumpAnchorSectionID = nil
-            }
+
+        if pinned == nil,
+           let first = sections.first,
+           let y = sectionHeaderViewportY[first.id],
+           y > HistoryLayout.stickyPinLine {
+            return first
         }
-    }
 
-    private func commitViewportUpdates(_ updates: [String: CGFloat]) {
-        var merged = sectionHeaderViewportY
-        merged.merge(updates) { _, new in new }
-        sectionHeaderViewportY = merged
-        reconcileScrollDepth(with: merged)
-    }
-
-    private func flushPendingViewportUpdates() {
-        guard !pendingViewportUpdates.isEmpty else { return }
-        let batch = pendingViewportUpdates
-        pendingViewportUpdates = [:]
-        commitViewportUpdates(batch)
-    }
-
-    private func scheduleViewportCommit(_ updates: [String: CGFloat]) {
-        pendingViewportUpdates.merge(updates) { _, new in new }
-        guard !isHistoryScrolling else { return }
-        viewportCommitTask?.cancel()
-        viewportCommitTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(32))
-            guard !Task.isCancelled, !isHistoryScrolling else { return }
-            flushPendingViewportUpdates()
-        }
-    }
-
-    private func beginHistoryScrolling() {
-        guard !isHistoryScrolling else { return }
-        isHistoryScrolling = true
-        frozenPinState = pinState()
-    }
-
-    private func endHistoryScrolling() {
-        guard isHistoryScrolling else { return }
-        isHistoryScrolling = false
-        frozenPinState = nil
-        viewportCommitTask?.cancel()
-        flushPendingViewportUpdates()
-    }
-
-    private func activePinState() -> HistoryTimelinePinState {
-        if isHistoryScrolling, let frozenPinState {
-            return frozenPinState
-        }
-        return pinState()
+        return pinned
     }
 
     private func triggerLoadMoreIfNeeded(sentinelY: CGFloat?, viewportHeight: CGFloat) {
@@ -964,222 +827,122 @@ struct HistoryView: View {
         onLoadMore()
     }
 
-    private func timelineDotSpec(
-        at index: Int,
-        pinState: HistoryTimelinePinState
-    ) -> (size: CGFloat, style: HistoryTimelineDotStyle) {
-        let showsSticky = pinState.showsStickyOverlay(for: index)
-        if showsSticky {
-            if pinState.isActivePinned(index) {
-                return (HistoryLayout.dotSize, .hollow)
-            }
-            return (HistoryLayout.dotShrunkSize, .solid)
-        }
-        return (HistoryLayout.dotSize, .hollow)
-    }
-
     var body: some View {
         GeometryReader { geometry in
-            let pins = activePinState()
-            ScrollViewReader { proxy in
-                ZStack(alignment: .topLeading) {
-                    Rectangle()
-                        .fill(HistoryLayout.lineColor)
-                        .frame(width: HistoryLayout.lineWidth)
-                        .frame(maxHeight: .infinity)
-                        .position(
-                            x: AppLayout.feedHorizontalInset + HistoryLayout.timelineTrackCenterX,
-                            y: geometry.size.height / 2
+            ZStack(alignment: .topLeading) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        StateBanner(
+                            loading: loading,
+                            error: error,
+                            isEmpty: items.isEmpty,
+                            emptyTitle: loggedIn ? "暂无观看历史" : "登录后查看观看历史"
                         )
-                        .allowsHitTesting(false)
-                        .zIndex(0)
 
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: HistoryLayout.sectionSpacing) {
-                            StateBanner(
-                                loading: loading,
-                                error: error,
-                                isEmpty: items.isEmpty,
-                                emptyTitle: loggedIn ? "暂无观看历史" : "登录后查看观看历史"
+                        ForEach(sections) { section in
+                            HistorySectionView(
+                                section: section,
+                                hidesInlineDate: stickySection?.id == section.id,
+                                onDelete: onDelete
                             )
+                            .id(section.id)
+                            .padding(.bottom, HistoryLayout.sectionSpacing)
+                            .transition(HistoryCardTransition.sectionRemoval)
+                        }
+                        .animation(AppLayout.listRemovalAnimation, value: sections.map(\.id))
 
-                            ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
-                                let dotSpec = timelineDotSpec(at: index, pinState: pins)
-
-                                HistoryDateSection(
-                                    section: section,
-                                    hidesInlineHeader: pins.shouldHideInlineHeader(for: index),
-                                    dotSize: dotSpec.size,
-                                    dotStyle: dotSpec.style,
-                                    onLabelTap: {
-                                        jumpAnchorSectionID = section.id
-                                        scrollToSection(section.id, proxy: proxy)
-                                    },
-                                    onDelete: onDelete
-                                )
-                                .id(section.id)
-                            }
-
-                            if hasMore, !items.isEmpty {
-                                FeedLoadMoreFooter(
-                                    anchorID: items.count,
-                                    hasMore: hasMore,
-                                    loadingMore: loadingMore,
-                                    onLoadMore: {
-                                        triggerLoadMoreIfNeeded(
-                                            sentinelY: loadMoreSentinelY,
-                                            viewportHeight: geometry.size.height
-                                        )
-                                    }
-                                )
-                            }
-
-                            Color.clear
-                                .frame(height: 1)
-                                .background {
-                                    GeometryReader { sentinelGeometry in
-                                        Color.clear.preference(
-                                            key: HistoryLoadMoreSentinelKey.self,
-                                            value: sentinelGeometry.frame(in: .scrollView(axis: .vertical)).minY
-                                        )
-                                    }
+                        if hasMore, !items.isEmpty {
+                            FeedLoadMoreFooter(
+                                anchorID: items.count,
+                                hasMore: hasMore,
+                                loadingMore: loadingMore,
+                                onLoadMore: {
+                                    triggerLoadMoreIfNeeded(
+                                        sentinelY: loadMoreSentinelY,
+                                        viewportHeight: geometry.size.height
+                                    )
                                 }
-                        }
-                        .padding(.leading, AppLayout.feedHorizontalInset)
-                        .padding(.trailing, AppLayout.feedTrailingInset)
-                        .padding(.bottom, AppLayout.feedVerticalInset)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .environment(\.feedViewportWidth, geometry.size.width)
-                    }
-                    .contentMargins(.top, HistoryLayout.sectionScrollTopInset, for: .scrollContent)
-                    .contentMargins(.bottom, AppLayout.feedVerticalInset, for: .scrollContent)
-                    .background {
-                        ScrollIdleObserver(
-                            onScrollActivity: { beginHistoryScrolling() },
-                            onScrollIdle: { endHistoryScrolling() }
-                        )
-                    }
-                    .zIndex(1)
-                    .onPreferenceChange(HistorySectionViewportKey.self) { updates in
-                        scheduleViewportCommit(updates)
-                    }
-                    .onPreferenceChange(HistoryLoadMoreSentinelKey.self) { y in
-                        loadMoreSentinelY = y
-                        triggerLoadMoreIfNeeded(sentinelY: y, viewportHeight: geometry.size.height)
-                    }
-                    .onChange(of: loadingMore) { _, isLoadingMore in
-                        if !isLoadingMore {
-                            requestedLoadMoreItemCount = nil
-                            triggerLoadMoreIfNeeded(
-                                sentinelY: loadMoreSentinelY,
-                                viewportHeight: geometry.size.height
                             )
                         }
+
+                        Color.clear
+                            .frame(height: 1)
+                            .background {
+                                GeometryReader { sentinelGeometry in
+                                    Color.clear.preference(
+                                        key: HistoryLoadMoreSentinelKey.self,
+                                        value: sentinelGeometry.frame(in: .scrollView(axis: .vertical)).minY
+                                    )
+                                }
+                            }
                     }
-                    .onChange(of: items.count) { _, _ in
+                    .padding(.leading, HistoryLayout.pageLeadingInset)
+                    .padding(.trailing, AppLayout.feedTrailingInset)
+                    .padding(.bottom, AppLayout.feedVerticalInset)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .environment(\.feedViewportWidth, geometry.size.width)
+                }
+                .contentMargins(.top, HistoryLayout.sectionScrollTopInset, for: .scrollContent)
+                .contentMargins(.bottom, AppLayout.feedVerticalInset, for: .scrollContent)
+                .background(MacOverlayScrollConfigurator())
+                .onPreferenceChange(HistorySectionViewportKey.self) { updates in
+                    sectionHeaderViewportY = updates
+                }
+                .onPreferenceChange(HistoryLoadMoreSentinelKey.self) { y in
+                    loadMoreSentinelY = y
+                    triggerLoadMoreIfNeeded(sentinelY: y, viewportHeight: geometry.size.height)
+                }
+                .onChange(of: loadingMore) { _, isLoadingMore in
+                    if !isLoadingMore {
                         requestedLoadMoreItemCount = nil
                         triggerLoadMoreIfNeeded(
                             sentinelY: loadMoreSentinelY,
                             viewportHeight: geometry.size.height
                         )
                     }
+                }
+                .onChange(of: items.count) { _, _ in
+                    requestedLoadMoreItemCount = nil
+                    triggerLoadMoreIfNeeded(
+                        sentinelY: loadMoreSentinelY,
+                        viewportHeight: geometry.size.height
+                    )
+                }
 
-                    ForEach(Array(sections.enumerated()), id: \.element.id) { index, section in
-                        if let stickyY = pins.stickyY(
-                            for: index,
-                            viewportHeight: geometry.size.height,
-                            stickyPinLine: stickyPinLine,
-                            pitch: HistoryLayout.pinnedRowPitch
-                        ) {
-                            let dotSpec = timelineDotSpec(at: index, pinState: pins)
-                            HistoryTimelineStickyHeader(
-                                title: section.label,
-                                dotSize: dotSpec.size,
-                                dotStyle: dotSpec.style,
-                                onTap: {
-                                    jumpAnchorSectionID = section.id
-                                    scrollToSection(section.id, proxy: proxy)
-                                }
-                            )
-                            .offset(
-                                x: AppLayout.feedHorizontalInset,
-                                y: stickyY
-                            )
-                            .zIndex(stickyHeaderZIndex(for: index, pinState: pins))
-                        }
-                    }
+                HistoryVerticalLine(height: geometry.size.height + HistoryLayout.lineTopOverscan)
+                    .offset(
+                        x: HistoryLayout.pageLeadingInset,
+                        y: -HistoryLayout.lineTopOverscan
+                    )
+                    .allowsHitTesting(false)
+                    .zIndex(1)
+
+                if let stickySection {
+                    HistorySectionDateLabel(title: stickySection.label)
+                        .frame(width: HistoryLayout.stickyHeaderWidth, alignment: .leading)
+                        .offset(x: HistoryLayout.pageLeadingInset, y: HistoryLayout.stickyPinLine)
+                        .animation(.easeOut(duration: 0.2), value: stickySection.id)
+                        .zIndex(2)
                 }
             }
         }
-        .onDisappear {
-            viewportCommitTask?.cancel()
-            isHistoryScrolling = false
-            frozenPinState = nil
-        }
-    }
-
-    private func scrollToSection(_ sectionID: String, proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: 0.28)) {
-            proxy.scrollTo(sectionID, anchor: .top)
-        }
-    }
-
-    private func stickyHeaderZIndex(for index: Int, pinState: HistoryTimelinePinState) -> Double {
-        if pinState.isSplitMode, let bottomSlot = pinState.bottomPinnedIndices.firstIndex(of: index) {
-            return 10 + Double(bottomSlot)
-        }
-        if pinState.isSplitMode, let topSlot = pinState.topPinnedIndices.firstIndex(of: index) {
-            return 2 + Double(topSlot)
-        }
-        return 2 + Double(index)
     }
 }
 
-private struct HistoryTimelineStickyHeader: View {
-    let title: String
-    var dotSize: CGFloat = HistoryLayout.dotSize
-    var dotStyle: HistoryTimelineDotStyle = .hollow
-    let onTap: () -> Void
-
-    var body: some View {
-        HistoryTimelineSectionHeader(
-            title: title,
-            dotSize: dotSize,
-            dotStyle: dotStyle,
-            showsLabel: true,
-            onTap: onTap
-        )
-        .frame(width: HistoryLayout.timelineGutterWidth, height: HistoryLayout.pinnedRowPitch, alignment: .leading)
-        .background(Color.white)
-    }
-}
-
-private struct HistoryDateSection: View {
+private struct HistorySectionView: View {
     let section: HistorySection
-    var hidesInlineHeader = false
-    var dotSize: CGFloat
-    var dotStyle: HistoryTimelineDotStyle = .hollow
-    let onLabelTap: () -> Void
+    var hidesInlineDate = false
     let onDelete: (BiliHistoryItem) -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: HistoryLayout.trackToContentSpacing) {
-            HistoryTimelineSectionHeader(
-                title: section.label,
-                dotSize: dotSize,
-                dotStyle: dotStyle,
-                showsLabel: true,
-                onTap: onLabelTap
-            )
-            .frame(width: HistoryLayout.timelineGutterWidth, height: HistoryLayout.pinnedRowPitch, alignment: .leading)
-            .opacity(hidesInlineHeader ? 0 : 1)
-            .allowsHitTesting(!hidesInlineHeader)
-            .zIndex(1)
+        VStack(alignment: .leading, spacing: 12) {
+            HistorySectionDateLabel(title: section.label)
+                .opacity(hidesInlineDate ? 0 : 1)
 
             HistoryItemsGrid(items: section.items, onDelete: onDelete)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, HistoryLayout.contentLeadingInset)
         }
-        .background(alignment: .topTrailing) {
+        .background(alignment: .topLeading) {
             GeometryReader { geometry in
                 Color.clear.preference(
                     key: HistorySectionViewportKey.self,
@@ -1188,106 +951,7 @@ private struct HistoryDateSection: View {
                     ]
                 )
             }
-            .frame(width: HistoryLayout.timelineGutterWidth, height: 1)
         }
-    }
-}
-
-private enum HistoryTimelineDotStyle {
-    case hollow
-    case solid
-}
-
-private struct HistoryTimelineSectionHeader: View {
-    let title: String
-    var dotSize: CGFloat = HistoryLayout.dotSize
-    var dotStyle: HistoryTimelineDotStyle = .hollow
-    var showsLabel: Bool = true
-    var onTap: () -> Void = {}
-
-    @State private var isHovered = false
-
-    private var labelColor: Color {
-        isHovered ? HistoryLayout.labelHoverColor : HistoryLayout.labelColor
-    }
-
-    private var dotBorderWidth: CGFloat {
-        dotSize <= HistoryLayout.dotShrunkSize + 0.5
-            ? HistoryLayout.dotShrunkBorderWidth
-            : HistoryLayout.dotBorderWidth
-    }
-
-    var body: some View {
-        ZStack(alignment: .leading) {
-            if showsLabel {
-                Text(title)
-                    .font(.system(size: HistoryLayout.labelFontSize, weight: .medium))
-                    .foregroundStyle(labelColor)
-                    .fixedSize(horizontal: true, vertical: false)
-                    .frame(
-                        width: HistoryLayout.labelTrailingX + HistoryLayout.labelLeadingOverflow,
-                        alignment: .trailing
-                    )
-                    .offset(x: -HistoryLayout.labelLeadingOverflow)
-                    .padding(.vertical, 4)
-                    .background(Color.white)
-            }
-
-            HistoryTimelineDot(
-                size: dotSize,
-                style: dotStyle,
-                borderWidth: dotBorderWidth,
-                color: labelColor
-            )
-            .position(
-                x: HistoryLayout.timelineTrackCenterX,
-                y: HistoryLayout.pinnedRowPitch / 2
-            )
-        }
-        .frame(width: HistoryLayout.timelineGutterWidth, height: HistoryLayout.pinnedRowPitch, alignment: .leading)
-        .contentShape(Rectangle())
-        .onTapGesture(perform: onTap)
-        .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.18)) {
-                isHovered = hovering
-            }
-        }
-        .animation(.easeOut(duration: 0.24), value: dotSize)
-        .animation(.easeOut(duration: 0.24), value: dotStyle)
-        .animation(.easeOut(duration: 0.18), value: showsLabel)
-    }
-}
-
-private struct HistoryTimelineDot: View {
-    let size: CGFloat
-    var style: HistoryTimelineDotStyle = .hollow
-    let borderWidth: CGFloat
-    let color: Color
-
-    var body: some View {
-        Group {
-            switch style {
-            case .solid:
-                Circle()
-                    .fill(color)
-            case .hollow:
-                ZStack {
-                    Circle()
-                        .fill(Color.white)
-                        .frame(width: size + 4, height: size + 4)
-                    Circle()
-                        .fill(Color.white)
-                        .overlay {
-                            Circle()
-                                .strokeBorder(color, lineWidth: borderWidth)
-                        }
-                        .frame(width: size, height: size)
-                }
-            }
-        }
-        .frame(width: max(size, size + 4), height: max(size, size + 4))
-        .animation(.easeOut(duration: 0.24), value: size)
-        .animation(.easeOut(duration: 0.24), value: style)
     }
 }
 
@@ -1304,7 +968,7 @@ private struct HistoryItemsGrid: View {
         let titleAreaHeight = HistoryCardLayout.titleAreaHeight(columnWidth: columnWidth)
         let cardHeight = HistoryCardLayout.cardHeight(columnWidth: columnWidth, titleAreaHeight: titleAreaHeight)
 
-        LazyVStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
+        VStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
             ForEach(rowStarts, id: \.self) { rowStart in
                 let rowEnd = min(rowStart + columnCount, items.count)
 
@@ -1318,19 +982,18 @@ private struct HistoryItemsGrid: View {
                         )
                         .equatable()
                         .frame(width: columnWidth, height: cardHeight, alignment: .top)
+                        .transition(HistoryCardTransition.removal)
                     }
                 }
             }
         }
+        .animation(AppLayout.listRemovalAnimation, value: items.map(\.listIdentity))
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var resolvedLayoutWidth: CGFloat {
-        let contentWidth = AppLayout.feedContentWidth(viewportWidth: feedViewportWidth)
-        let historyWidth = max(
-            0,
-            contentWidth - HistoryLayout.timelineGutterWidth - HistoryLayout.trackToContentSpacing
-        )
+        let contentWidth = HistoryLayout.contentWidth(viewportWidth: feedViewportWidth)
+        let historyWidth = max(0, contentWidth - HistoryLayout.contentLeadingInset)
         if historyWidth > 0 {
             return historyWidth
         }

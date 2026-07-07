@@ -264,7 +264,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				OTHER_SWIFT_FLAGS = "$(inherited) -Xfrontend -disable-autolink-framework -Xfrontend AppIntents";
 				PRODUCT_BUNDLE_IDENTIFIER = gaoxipeng.bilibili;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -296,7 +296,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				OTHER_SWIFT_FLAGS = "$(inherited) -Xfrontend -disable-autolink-framework -Xfrontend AppIntents";
 				PRODUCT_BUNDLE_IDENTIFIER = gaoxipeng.bilibili;
 				PRODUCT_NAME = "$(TARGET_NAME)";

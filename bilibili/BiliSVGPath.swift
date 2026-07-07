@@ -40,7 +40,7 @@ nonisolated enum BiliSVGPathParser {
         return Path(scaled)
     }
 
-    private nonisolated static let parsedPathCache: NSCache<NSString, CGPath> = {
+    private nonisolated(unsafe) static let parsedPathCache: NSCache<NSString, CGPath> = {
         let cache = NSCache<NSString, CGPath>()
         cache.countLimit = 96
         return cache

@@ -640,6 +640,9 @@ final class FeedCardStatsRowView: NSView {
         addSubview(danmakuItem)
         addSubview(likeItem)
         likeItem.isHidden = true
+        for item in [playItem, danmakuItem, likeItem] {
+            item.autoresizingMask = []
+        }
     }
 
     required init?(coder: NSCoder) {
@@ -743,7 +746,9 @@ private final class FeedStatLayerItemView: NSView {
         field.drawsBackground = false
         field.isEditable = false
         field.isSelectable = false
-        field.lineBreakMode = .byTruncatingTail
+        field.lineBreakMode = .byClipping
+        field.cell?.wraps = false
+        field.cell?.truncatesLastVisibleLine = false
         return field
     }()
 
@@ -758,7 +763,9 @@ private final class FeedStatLayerItemView: NSView {
 
         iconHost.wantsLayer = true
         iconHost.layerContentsRedrawPolicy = .duringViewResize
+        iconHost.autoresizingMask = []
         addSubview(iconHost)
+        textField.autoresizingMask = []
         addSubview(textField)
     }
 
@@ -793,8 +800,10 @@ private final class FeedStatLayerItemView: NSView {
         textField.font = font
         textField.textColor = textColor
 
-        let textSize = (value as NSString).size(withAttributes: [.font: font])
-        textWidth = ceil(textSize.width)
+        let fittingWidth = textField.sizeThatFits(
+            NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        ).width
+        textWidth = ceil(max(fittingWidth, (value as NSString).size(withAttributes: [.font: font]).width)) + 1
         let textLineHeight = ceil(font.ascender - font.descender)
         contentHeight = max(iconSize, textLineHeight)
         itemSpacing = 4
@@ -811,12 +820,14 @@ private final class FeedStatLayerItemView: NSView {
             width: iconWidth,
             height: iconWidth
         )
-        let textSize = textField.intrinsicContentSize
+        let textSize = textField.sizeThatFits(
+            NSSize(width: textWidth, height: CGFloat.greatestFiniteMagnitude)
+        )
         textField.frame = NSRect(
             x: iconWidth + itemSpacing,
             y: (rowHeight - textSize.height) / 2,
             width: textWidth,
-            height: textSize.height
+            height: max(textSize.height, ceil((textField.font?.ascender ?? 0) - (textField.font?.descender ?? 0)))
         )
     }
 

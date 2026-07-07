@@ -1564,6 +1564,7 @@ struct VideoCard: View, Equatable {
             fontSize: statsFontSize,
             itemSpacing: 12
         )
+        .fixedSize(horizontal: true, vertical: false)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }

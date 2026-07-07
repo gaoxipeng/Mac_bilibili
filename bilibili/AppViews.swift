@@ -56,15 +56,6 @@ enum VideoCardLayout {
             )
         }
 
-        static let history = RowLayoutMetrics(
-            metadataPadding: EdgeInsets(top: 8, leading: 12, bottom: 6, trailing: 12),
-            usesLargeTitleFont: false,
-            statsHeight: 0,
-            authorRowHeight: 26,
-            includesStats: false,
-            statsAuthorSpacing: 0
-        )
-
         func metadataHeight(titleAreaHeight: CGFloat) -> CGFloat {
             var height = metadataPadding.top + titleAreaHeight + metadataPadding.bottom + authorRowHeight
             if includesStats {
@@ -676,7 +667,9 @@ struct HomeView: View {
 }
 
 private enum HistoryCardLayout {
-    static let metrics = VideoCardLayout.RowLayoutMetrics.history
+    static let metrics = VideoCardLayout.RowLayoutMetrics.feed(largeTypography: true, showsAuthor: true)
+    static let deleteButtonSize: CGFloat = 18
+    static let deleteButtonSpacing: CGFloat = 8
 
     static func titleAreaHeight(columnWidth: CGFloat) -> CGFloat {
         VideoCardLayout.titleAreaHeight(
@@ -1371,8 +1364,27 @@ private struct HistoryVideoCard: View, Equatable {
         return Int((displayMax * max(1, displayScale) * 1.05).rounded(.up))
     }
 
+    private var metrics: VideoCardLayout.RowLayoutMetrics {
+        HistoryCardLayout.metrics
+    }
+
     private var metadataHeight: CGFloat {
-        HistoryCardLayout.metrics.metadataHeight(titleAreaHeight: titleAreaHeight)
+        metrics.metadataHeight(titleAreaHeight: titleAreaHeight)
+    }
+
+    private var avatarSize: CGFloat {
+        30
+    }
+
+    private var statsFontSize: CGFloat {
+        NSFont.preferredFont(forTextStyle: .body).pointSize
+    }
+
+    private var authorRowContentWidth: CGFloat {
+        let trashReserve = item.kid.isEmpty
+            ? 0
+            : HistoryCardLayout.deleteButtonSize + HistoryCardLayout.deleteButtonSpacing
+        return max(0, columnWidth - trashReserve)
     }
 
     private var durationBadgeText: String {
@@ -1448,16 +1460,11 @@ private struct HistoryVideoCard: View, Equatable {
         .buttonStyle(.plain)
     }
 
-    private var metadataTextWidth: CGFloat {
-        columnWidth
-            - HistoryCardLayout.metrics.metadataPadding.leading
-            - HistoryCardLayout.metrics.metadataPadding.trailing
-    }
-
     private var metadataSection: some View {
         VStack(alignment: .leading, spacing: 0) {
             FeedCardTitle(
                 title: video.title,
+                usesLargeFont: true,
                 areaHeight: titleAreaHeight,
                 video: video,
                 progressSeconds: item.progressSeconds,
@@ -1465,39 +1472,41 @@ private struct HistoryVideoCard: View, Equatable {
                 refererURL: item.webURI,
                 onOpen: { appModel.openHistoryVideo(item) }
             )
+            .padding(.top, metrics.metadataPadding.top)
 
             authorRow
-                .frame(height: HistoryCardLayout.metrics.authorRowHeight, alignment: .center)
+                .frame(height: metrics.authorRowHeight, alignment: .center)
+                .padding(.bottom, metrics.metadataPadding.bottom)
         }
-        .padding(HistoryCardLayout.metrics.metadataPadding)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var authorRow: some View {
-        HStack(alignment: .center, spacing: 8) {
-            authorIdentity
-                .frame(
-                    height: HistoryCardLayout.metrics.authorRowHeight,
-                    alignment: .leading
-                )
-                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-
-            if let viewedAt = item.viewedAt {
-                Text(historyViewTimeText(from: viewedAt))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
+        HStack(alignment: .center, spacing: HistoryCardLayout.deleteButtonSpacing) {
+            FeedCardAuthorLabel(
+                name: authorDisplayName,
+                authorMid: video.authorMid,
+                usesLargeFont: true,
+                avatarURL: video.authorFaceURL,
+                avatarSize: avatarSize,
+                textWidth: authorRowContentWidth,
+                trailingText: item.viewedAt.map { historyViewTimeText(from: $0) },
+                trailingFontSize: statsFontSize
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if !item.kid.isEmpty {
                 Button(action: onDelete) {
                     Image(systemName: "trash")
-                        .font(.caption)
+                        .font(.system(size: 16, weight: .medium))
                         .foregroundStyle(
                             isDeleteHovered ? AnyShapeStyle(Color.red) : AnyShapeStyle(.tertiary)
                         )
                         .animation(FeedCardHoverStyle.colorAnimation, value: isDeleteHovered)
+                        .frame(
+                            width: HistoryCardLayout.deleteButtonSize,
+                            height: HistoryCardLayout.deleteButtonSize
+                        )
                 }
                 .buttonStyle(.plain)
                 .fixedSize()
@@ -1509,22 +1518,6 @@ private struct HistoryVideoCard: View, Equatable {
                 }
             }
         }
-    }
-
-    @ViewBuilder
-    private var authorIdentity: some View {
-        authorIdentityContent
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var authorIdentityContent: some View {
-        FeedCardAuthorLabel(
-            name: authorDisplayName,
-            authorMid: video.authorMid,
-            avatarURL: video.authorFaceURL,
-            avatarSize: 26,
-            textWidth: metadataTextWidth
-        )
     }
 }
 

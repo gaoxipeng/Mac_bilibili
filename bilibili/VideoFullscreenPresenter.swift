@@ -40,14 +40,14 @@ final class VideoFullscreenPresenter: ObservableObject {
 
         let container = FullscreenWindowContainerView(contentView: hosting)
         container.frame = NSRect(origin: .zero, size: sourceFrame.size)
-        container.cornerRadius = 14
+        container.cornerRadius = 0
         container.transitionProgress = 0
 
         let targetFrame = targetFullscreenFrame(on: screen, excluding: nil)
 
-        let window = NSWindow(
+        let window = FullscreenOverlayWindow(
             contentRect: sourceFrame,
-            styleMask: [.titled, .fullSizeContentView],
+            styleMask: [.borderless],
             backing: .buffered,
             defer: false,
             screen: screen
@@ -259,7 +259,7 @@ final class VideoFullscreenPresenter: ObservableObject {
         let startMainAlpha = NSApp.mainWindow === window ? 1 : (NSApp.mainWindow?.alphaValue ?? 1)
         let mainWindow = NSApp.mainWindow === window ? nil : NSApp.mainWindow
         let startCorner = container.cornerRadius
-        let endCorner: CGFloat = opening ? 0 : 14
+        let endCorner: CGFloat = 0
         let startProgress = container.transitionProgress
         let endProgress: CGFloat = opening ? 1 : 0
 
@@ -432,6 +432,11 @@ private struct FullscreenWindowRoot<Content: View>: View {
             .background(Color.black)
             .ignoresSafeArea()
     }
+}
+
+private final class FullscreenOverlayWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
 }
 
 private final class FullscreenWindowContainerView: NSView {

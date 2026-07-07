@@ -22,6 +22,7 @@ final class VideoPlaybackEngine: ObservableObject {
     @Published private(set) var videoAspectRatio: CGFloat = 16.0 / 9.0
     @Published private(set) var volume: Float = 1
     @Published private(set) var isMuted = false
+    @Published private(set) var playbackRate: Float = 1
 
     private var presentationSizeObservation: NSKeyValueObservation?
     private var volumeBeforeMute: Float = 1
@@ -56,8 +57,32 @@ final class VideoPlaybackEngine: ObservableObject {
         observeStatus(item)
         observePresentationSize(item)
         applyVolume()
-        player.play()
-        isPlaying = true
+        startPlayback()
+    }
+
+    func cyclePlaybackRate() {
+        switch playbackRate {
+        case ..<1.25:
+            playbackRate = 1.5
+        case ..<1.75:
+            playbackRate = 2
+        default:
+            playbackRate = 1
+        }
+        if isPlaying {
+            player?.rate = playbackRate
+        }
+    }
+
+    var playbackRateLabel: String {
+        switch playbackRate {
+        case ..<1.25:
+            return "1x"
+        case ..<1.75:
+            return "1.5x"
+        default:
+            return "2x"
+        }
     }
 
     func pausePlayback() {
@@ -67,17 +92,15 @@ final class VideoPlaybackEngine: ObservableObject {
 
     func resumePlayback() {
         guard let player, isReady else { return }
-        player.play()
-        isPlaying = true
+        startPlayback()
     }
 
     func togglePlayback() {
-        guard let player else { return }
+        guard player != nil else { return }
         if isPlaying {
             pausePlayback()
         } else {
-            player.play()
-            isPlaying = true
+            startPlayback()
         }
     }
 
@@ -87,8 +110,7 @@ final class VideoPlaybackEngine: ObservableObject {
         player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
         currentTime = max(0, seconds)
         if resumeAfter, !isPlaying {
-            player.play()
-            isPlaying = true
+            startPlayback()
         }
     }
 
@@ -203,6 +225,14 @@ final class VideoPlaybackEngine: ObservableObject {
         isScrubbing = false
         scrubPreviewTime = nil
         videoAspectRatio = 16.0 / 9.0
+        playbackRate = 1
+    }
+
+    private func startPlayback() {
+        guard let player else { return }
+        player.play()
+        player.rate = playbackRate
+        isPlaying = true
     }
 
     private func observeTime(_ player: AVPlayer) {

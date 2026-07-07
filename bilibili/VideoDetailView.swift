@@ -1997,7 +1997,11 @@ private struct VideoPlayerFullscreenContent: View {
                 onActivity: { chromeState.revealControls() }
             )
 
-            VStack {
+            VStack(spacing: 0) {
+                VideoFullscreenTitleBar(title: model.displayVideo.title)
+                    .opacity(chromeState.showsControls ? 1 : 0)
+                    .allowsHitTesting(false)
+
                 Spacer()
 
                 if !model.showDanmakuSettings {
@@ -2178,18 +2182,37 @@ private final class VideoPlayerClickView: NSView {
 }
 
 private enum VideoControlLayout {
-    static let capsuleHeight: CGFloat = 44
-    static let horizontalPadding: CGFloat = 12
-    static let verticalPadding: CGFloat = 10
-    static let itemSpacing: CGFloat = 8
-    static let timeFontSize: CGFloat = 13
-    static let timeMinWidth: CGFloat = 42
-    static let playIconSize: CGFloat = 16
-    static let playButtonSize: CGFloat = 30
-    static let danmakuFontSize: CGFloat = 15
-    static let danmakuButtonSize: CGFloat = 32
-    static let progressLineWidth: CGFloat = 3
-    static let chromeHitTestClearance: CGFloat = 60
+    static let capsuleHeight: CGFloat = 54
+    static let horizontalPadding: CGFloat = 14
+    static let verticalPadding: CGFloat = 12
+    static let itemSpacing: CGFloat = 10
+    static let timeMinWidth: CGFloat = 48
+    static let speedMinWidth: CGFloat = 36
+    static let speedToRemainingSpacing: CGFloat = 20
+    static let playIconSize: CGFloat = 19
+    static let playButtonSize: CGFloat = 36
+    static let danmakuFontSize: CGFloat = 17
+    static let danmakuButtonSize: CGFloat = 38
+    static let progressLineWidth: CGFloat = 5
+    static let chromeHitTestClearance: CGFloat = 72
+}
+
+private struct VideoFullscreenTitleBar: View {
+    let title: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            Text(title.ifEmpty("视频"))
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .shadow(color: .black.opacity(0.45), radius: 8, y: 2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 24)
+        .padding(.top, 28)
+    }
 }
 
 private struct VideoControlCapsule: View {
@@ -2226,7 +2249,7 @@ private struct VideoControlCapsule: View {
 
             HStack(spacing: VideoControlLayout.itemSpacing) {
                 Text(formatTime(positionTime))
-                    .font(.system(size: VideoControlLayout.timeFontSize, weight: .medium))
+                    .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
                     .foregroundStyle(.white)
                     .frame(minWidth: VideoControlLayout.timeMinWidth, alignment: .leading)
                     .allowsHitTesting(false)
@@ -2260,11 +2283,24 @@ private struct VideoControlCapsule: View {
                 Spacer(minLength: 0)
                     .allowsHitTesting(false)
 
-                Text(formatTime(max(0, player.duration - positionTime)))
-                    .font(.system(size: VideoControlLayout.timeFontSize, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.82))
-                    .frame(minWidth: VideoControlLayout.timeMinWidth, alignment: .trailing)
-                    .allowsHitTesting(false)
+                HStack(spacing: VideoControlLayout.speedToRemainingSpacing) {
+                    Button(action: {
+                        onInteraction()
+                        player.cyclePlaybackRate()
+                    }) {
+                        Text(player.playbackRateLabel)
+                            .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
+                            .foregroundStyle(.white)
+                            .frame(minWidth: VideoControlLayout.speedMinWidth, alignment: .center)
+                    }
+                    .buttonStyle(.plain)
+
+                    Text(formatTime(max(0, player.duration - positionTime)))
+                        .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(minWidth: VideoControlLayout.timeMinWidth, alignment: .trailing)
+                        .allowsHitTesting(false)
+                }
             }
             .padding(.horizontal, VideoControlLayout.horizontalPadding)
             .padding(.vertical, VideoControlLayout.verticalPadding)

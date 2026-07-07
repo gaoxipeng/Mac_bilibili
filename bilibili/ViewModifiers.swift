@@ -1313,11 +1313,6 @@ private enum VideoCoverHoverScrollCenter {
         lastMouseSyncTime[id] = now
 
         var hoverSyncCandidateCount = 0
-        let signpostID = BiliScrollSignpost.beginHoverSync()
-        defer {
-            let trackedCount = trackedViewsByScrollView[id]?.count ?? 0
-            BiliScrollSignpost.endHoverSync(signpostID, tracked: trackedCount, candidates: hoverSyncCandidateCount)
-        }
 
         guard let mouseInWindow = scrollView.window?.mouseLocationOutsideOfEventStream else {
             for view in activeViews.allObjects {

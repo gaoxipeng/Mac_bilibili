@@ -200,7 +200,7 @@ struct FeedVideoCoverHover: View {
 
 private struct FeedCardTitle: View {
     let title: String
-    let font: Font
+    var usesLargeFont = false
     let textWidth: CGFloat
     let areaHeight: CGFloat
     let video: BiliVideo
@@ -209,41 +209,35 @@ private struct FeedCardTitle: View {
     var epid: Int64 = 0
     var refererURL: URL? = nil
     var onOpen: (() -> Void)? = nil
-    @Environment(\.feedIsScrolling) private var feedIsScrolling
-    @State private var isHovered = false
 
     var body: some View {
-        Text(title)
-            .font(font)
-            .foregroundStyle(isHovered ? BiliTheme.blue : .primary)
-            .animation(FeedCardHoverStyle.colorAnimation, value: isHovered)
-            .lineLimit(VideoCardLayout.titleMaxLineCount)
-            .truncationMode(.tail)
-            .multilineTextAlignment(.leading)
-            .frame(width: textWidth, height: areaHeight, alignment: .topLeading)
-            .layoutPriority(feedIsScrolling ? -1 : 0)
-            .allowsHitTesting(false)
-            .overlay {
-                if let onOpen {
-                    Button(action: onOpen) {
-                        Color.clear
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    VideoPlaybackLink(
-                        video: video,
-                        resolveWatchProgress: resolveWatchProgress,
-                        progressSeconds: progressSeconds,
-                        epid: epid,
-                        refererURL: refererURL
-                    ) {
-                        Color.clear
-                            .contentShape(Rectangle())
-                    }
+        FeedCardTitleRepresentable(
+            title: title,
+            usesLargeFont: usesLargeFont,
+            textWidth: textWidth,
+            areaHeight: areaHeight
+        )
+        .frame(width: textWidth, height: areaHeight, alignment: .topLeading)
+        .overlay {
+            if let onOpen {
+                Button(action: onOpen) {
+                    Color.clear
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            } else {
+                VideoPlaybackLink(
+                    video: video,
+                    resolveWatchProgress: resolveWatchProgress,
+                    progressSeconds: progressSeconds,
+                    epid: epid,
+                    refererURL: refererURL
+                ) {
+                    Color.clear
+                        .contentShape(Rectangle())
                 }
             }
-            .modifier(FeedScrollAwareHover(isHovered: $isHovered, animation: FeedCardHoverStyle.colorAnimation))
+        }
     }
 }
 
@@ -286,32 +280,40 @@ struct VideoPlaybackLink<Label: View>: View {
 
 private struct FeedCardAuthorLabel: View {
     let name: String
-    let font: Font
+    var usesLargeFont = false
     let avatarURL: URL?
     let avatarSize: CGFloat
     let textWidth: CGFloat
-    @State private var isHovered = false
+    var trailingText: String? = nil
+    var trailingFontSize: CGFloat? = nil
+    @Environment(\.displayScale) private var displayScale
+
+    private var nameFontSize: CGFloat {
+        usesLargeFont
+            ? NSFont.preferredFont(forTextStyle: .title3).pointSize
+            : NSFont.preferredFont(forTextStyle: .body).pointSize
+    }
+
+    private var resolvedTrailingFontSize: CGFloat {
+        trailingFontSize ?? NSFont.preferredFont(forTextStyle: .subheadline).pointSize
+    }
+
+    private var avatarPixelLength: Int {
+        max(48, Int((avatarSize * max(1, displayScale) * 1.25).rounded(.up)))
+    }
 
     var body: some View {
-        HStack(spacing: 8) {
-            RemoteAvatar(
-                url: avatarURL,
-                size: avatarSize,
-                foreground: .secondary,
-                background: Color.secondary.opacity(0.11),
-                border: Color.black.opacity(0.05)
-            )
-
-            Text(name.ifEmpty("未知 UP 主"))
-                .font(font)
-                .foregroundStyle(isHovered ? BiliTheme.blue : .secondary)
-                .animation(FeedCardHoverStyle.colorAnimation, value: isHovered)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(width: max(0, textWidth - avatarSize - 8), alignment: .leading)
-        }
+        FeedCardAuthorRowRepresentable(
+            name: name,
+            avatarURL: avatarURL,
+            avatarSize: avatarSize,
+            avatarPixelLength: avatarPixelLength,
+            nameFontSize: nameFontSize,
+            trailingText: trailingText,
+            trailingFontSize: resolvedTrailingFontSize,
+            rowWidth: textWidth
+        )
         .frame(maxWidth: .infinity, alignment: .leading)
-        .modifier(FeedScrollAwareHover(isHovered: $isHovered, animation: FeedCardHoverStyle.colorAnimation))
     }
 }
 
@@ -535,177 +537,6 @@ struct FavoritesView: View {
                 }
             }
         }
-    }
-}
-
-struct ScrollPerformanceTestView: View {
-    private static let sampleImages = ScrollTestSampleImage.makeAll(count: 24)
-    private static let imageGridStride = 10
-
-    private static let baseParagraphs: [String] = [
-        "这是一段用于滚动性能测试的中文文字。页面里包含较多本地示例图片与纯文本，用于对比滚动表现。",
-        "如果你在这个页面滚动依然感到卡顿，问题可能出在 ScrollView 本身、窗口渲染，或者全局滚动配置。",
-        "如果这里滚动很流畅，而首页或收藏页滚动卡顿，则更可能是视频卡片、图片加载或列表布局导致的。",
-        "春天来了，柳树抽出了嫩绿的新芽。微风拂过，河面上的涟漪一圈圈散开，远处的山峦在薄雾中若隐若现。",
-        "程序员常说，过早优化是万恶之源。但在排查性能问题时，先用最简单的对照实验，往往比盲目改代码更有效。",
-        "夏天的傍晚，蝉鸣声此起彼伏。街边的路灯一盏盏亮起，行人放慢了脚步，享受着一天中最惬意的时光。",
-        "调试性能问题时，可以分别测试：纯文本滚动、纯图片滚动、以及完整视频卡片滚动，逐步缩小范围。",
-        "秋天的落叶铺满了小路，踩上去发出沙沙的声响。天空高远而清澈，阳光透过枝叶洒下斑驳的光影。",
-        "性能优化没有银弹。先测量，再定位，最后才是修改。对照实验能帮你快速判断瓶颈在哪一层。",
-        "冬天的清晨，窗玻璃上结了一层薄霜。热茶捧在手里，白气袅袅升起，屋里屋外是两个截然不同的世界。",
-        "请继续向下滚动，确认多页内容时滚动是否依然顺滑。测试完成后，可对比首页与收藏页的表现。",
-        "测试页面的文字会重复出现，目的是凑够多屏可滚动高度，便于你感受连续滚动时的帧率变化。",
-        "当你滚动到页面底部时，说明已经浏览完所有测试内容。感谢配合排查，希望这能帮助你定位卡顿原因。",
-        "滚动测试页现在包含更多示例图片网格，以及单行不换行的长文本，用于模拟更接近真实 feed 的滚动负载。",
-        "鼠标滚轮快速滑动时，请留意帧率是否稳定；若此处流畅而首页卡顿，瓶颈通常在卡片布局或图片解码。",
-        "触控板惯性滚动结束后，页面应能立即响应 hover 与其他交互，不应出现明显的延迟或抖动。",
-        "本地示例图均为 320×180 的静态位图，不涉及网络请求，可排除远程封面加载对滚动测试的干扰。",
-        "若需要进一步对比，可在首页、收藏页与本页之间来回切换，感受不同内容密度下的滚动差异。",
-        "单行文本不会自动折行，过长部分会以省略号截断，避免 Text 布局在滚动时反复计算多行高度。",
-        "示例图片网格采用 LazyVGrid 布局，与首页视频卡片网格在结构上有一定相似性，便于横向对比。",
-    ]
-
-    private static let paragraphs = Array(repeating: baseParagraphs, count: 6).flatMap { $0 }
-
-    var body: some View {
-        AppScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("滚动性能测试")
-                    .font(.title2.weight(.semibold))
-
-                Text("本页包含 24 张本地示例图、单行不换行文字，约八至十屏可滚动内容，用于排查滚动卡顿原因。")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-
-                ScrollTestImageGrid(
-                    images: Self.sampleImages,
-                    title: "示例图片（320×180，共 \(Self.sampleImages.count) 张）"
-                )
-
-                ForEach(Array(Self.paragraphs.enumerated()), id: \.offset) { index, paragraph in
-                    Text("\(index + 1). \(paragraph)")
-                        .font(.body)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    if index > 0, index % Self.imageGridStride == 0 {
-                        let gridIndex = index / Self.imageGridStride
-                        ScrollTestImageGrid(
-                            images: Self.sampleImages(forGrid: gridIndex),
-                            title: "示例图片组 \(gridIndex)"
-                        )
-                    }
-                }
-
-                ScrollTestImageGrid(
-                    images: Self.sampleImages,
-                    title: "示例图片（底部完整网格）"
-                )
-            }
-        }
-    }
-
-    private static func sampleImages(forGrid gridIndex: Int) -> [NSImage] {
-        let count = sampleImages.count
-        guard count > 0 else { return [] }
-        let sliceSize = 8
-        let start = (gridIndex * sliceSize) % count
-        return (0..<sliceSize).map { offset in
-            sampleImages[(start + offset) % count]
-        }
-    }
-}
-
-private struct ScrollTestImageGrid: View {
-    let images: [NSImage]
-    let title: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title)
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.secondary)
-
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 180, maximum: 280), spacing: 12)],
-                spacing: 12
-            ) {
-                ForEach(Array(images.enumerated()), id: \.offset) { _, image in
-                    Image(nsImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(maxWidth: .infinity)
-                        .aspectRatio(16.0 / 9.0, contentMode: .fit)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                }
-            }
-        }
-    }
-}
-
-private enum ScrollTestSampleImage {
-    private struct Spec {
-        let label: String
-        let red: CGFloat
-        let green: CGFloat
-        let blue: CGFloat
-    }
-
-    private static let baseSpecs: [Spec] = [
-        Spec(label: "示例 1", red: 0.96, green: 0.45, blue: 0.55),
-        Spec(label: "示例 2", red: 0.42, green: 0.62, blue: 0.96),
-        Spec(label: "示例 3", red: 0.45, green: 0.78, blue: 0.58),
-        Spec(label: "示例 4", red: 0.98, green: 0.72, blue: 0.38),
-        Spec(label: "示例 5", red: 0.62, green: 0.52, blue: 0.92),
-        Spec(label: "示例 6", red: 0.38, green: 0.74, blue: 0.82),
-    ]
-
-    static func makeAll(count: Int = 6) -> [NSImage] {
-        guard count > 0 else { return [] }
-        return (0..<count).map { index in
-            let base = baseSpecs[index % baseSpecs.count]
-            let cycle = index / baseSpecs.count
-            let tint = 0.92 - CGFloat(min(cycle, 3)) * 0.08
-            let spec = Spec(
-                label: "示例 \(index + 1)",
-                red: min(1, base.red * tint + CGFloat(index % 3) * 0.02),
-                green: min(1, base.green * tint + CGFloat((index + 1) % 3) * 0.02),
-                blue: min(1, base.blue * tint + CGFloat((index + 2) % 3) * 0.02)
-            )
-            return makeImage(spec: spec)
-        }
-    }
-
-    private static func makeImage(spec: Spec, width: Int = 320, height: Int = 180) -> NSImage {
-        let size = NSSize(width: width, height: height)
-        let image = NSImage(size: size)
-        image.lockFocus()
-        defer { image.unlockFocus() }
-
-        NSColor(red: spec.red, green: spec.green, blue: spec.blue, alpha: 1).setFill()
-        NSBezierPath(rect: NSRect(origin: .zero, size: size)).fill()
-
-        let accent = NSColor(white: 1, alpha: 0.22)
-        accent.setFill()
-        NSBezierPath(ovalIn: NSRect(x: 24, y: 36, width: 72, height: 72)).fill()
-        NSBezierPath(ovalIn: NSRect(x: 120, y: 88, width: 140, height: 56)).fill()
-
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = .center
-        let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 22, weight: .semibold),
-            .foregroundColor: NSColor.white,
-            .paragraphStyle: paragraph,
-        ]
-        let text = spec.label as NSString
-        let textRect = NSRect(x: 12, y: (CGFloat(height) - 28) / 2, width: CGFloat(width) - 24, height: 28)
-        text.draw(in: textRect, withAttributes: attributes)
-
-        return image
     }
 }
 
@@ -1387,7 +1218,6 @@ private struct HistoryVideoCard: View, Equatable {
         VStack(alignment: .leading, spacing: 0) {
             FeedCardTitle(
                 title: video.title,
-                font: .title3.weight(.medium),
                 textWidth: metadataTextWidth,
                 areaHeight: titleAreaHeight,
                 video: video,
@@ -1458,7 +1288,6 @@ private struct HistoryVideoCard: View, Equatable {
     private var authorIdentityContent: some View {
         FeedCardAuthorLabel(
             name: authorDisplayName,
-            font: .body,
             avatarURL: video.authorFaceURL,
             avatarSize: 26,
             textWidth: metadataTextWidth
@@ -1601,18 +1430,6 @@ struct VideoCard: View, Equatable {
         metrics.metadataHeight(titleAreaHeight: titleAreaHeight)
     }
 
-    private var titleFont: Font {
-        largeTypography ? .title2.weight(.semibold) : .title3.weight(.medium)
-    }
-
-    private var authorFont: Font {
-        largeTypography ? .title3.weight(.regular) : .body
-    }
-
-    private var statsFont: Font {
-        largeTypography ? .body : .subheadline
-    }
-
     private var avatarSize: CGFloat {
         largeTypography ? 30 : 26
     }
@@ -1670,7 +1487,7 @@ struct VideoCard: View, Equatable {
         VStack(alignment: .leading, spacing: 0) {
             FeedCardTitle(
                 title: video.title,
-                font: titleFont,
+                usesLargeFont: largeTypography,
                 textWidth: metadataTextWidth,
                 areaHeight: titleAreaHeight,
                 video: video,
@@ -1696,17 +1513,9 @@ struct VideoCard: View, Equatable {
 
     @ViewBuilder
     private var authorRow: some View {
-        HStack(alignment: .center, spacing: 8) {
+        HStack(alignment: .center, spacing: 0) {
             authorIdentity
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-
-            if let publishTime = video.publishTime {
-                Text(BiliCommentFormats.formatTime(publishTime))
-                    .font(statsFont)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
         }
     }
 
@@ -1730,37 +1539,32 @@ struct VideoCard: View, Equatable {
     private var authorIdentityContent: some View {
         FeedCardAuthorLabel(
             name: video.authorName,
-            font: authorFont,
+            usesLargeFont: largeTypography,
             avatarURL: video.authorFaceURL,
             avatarSize: avatarSize,
-            textWidth: metadataTextWidth
+            textWidth: metadataTextWidth,
+            trailingText: video.publishTime.map { BiliCommentFormats.formatTime($0) },
+            trailingFontSize: statsFontSize
         )
     }
 
+    private var statsFontSize: CGFloat {
+        largeTypography
+            ? NSFont.preferredFont(forTextStyle: .body).pointSize
+            : NSFont.preferredFont(forTextStyle: .subheadline).pointSize
+    }
+
     private var statsRow: some View {
-        HStack(spacing: 12) {
-            BiliStatLabel(
-                icon: .play,
-                value: video.viewCount.compactCount,
-                iconSize: statIconSize,
-                font: statsFont
-            )
-            BiliStatLabel(
-                icon: .danmaku,
-                value: video.danmakuCount.compactCount,
-                iconSize: statIconSize,
-                font: statsFont
-            )
-            if showsLikeCount {
-                BiliStatLabel(
-                    icon: .like,
-                    value: video.likeCount.compactCount,
-                    iconSize: likeStatIconSize,
-                    font: statsFont
-                )
-            }
-        }
-        .foregroundStyle(.secondary)
+        FeedCardStatsRowRepresentable(
+            playCount: video.viewCount.compactCount,
+            danmakuCount: video.danmakuCount.compactCount,
+            likeCount: showsLikeCount ? video.likeCount.compactCount : nil,
+            iconSize: statIconSize,
+            likeIconSize: likeStatIconSize,
+            fontSize: statsFontSize,
+            itemSpacing: 12
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 

@@ -247,8 +247,6 @@ struct ContentView: View {
                     Task { await model.loadMoreFavorites() }
                 }
             )
-        case .scrollTest:
-            ScrollPerformanceTestView()
         case .mine:
             MineView()
         }

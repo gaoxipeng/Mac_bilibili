@@ -7,6 +7,10 @@ enum BiliTheme {
     static let pink = Color(red: 251 / 255, green: 114 / 255, blue: 153 / 255)
     static let actionInactive = Color(red: 153 / 255, green: 153 / 255, blue: 153 / 255)
     static let videoControlBorder = Color(red: 153 / 255, green: 153 / 255, blue: 153 / 255).opacity(0.5)
+
+    static var actionInactiveNSColor: NSColor {
+        NSColor(red: 153 / 255, green: 153 / 255, blue: 153 / 255, alpha: 1)
+    }
 }
 
 enum BiliMenuPopUpAnchor {
@@ -559,21 +563,19 @@ struct BiliIconView: View {
     var symbolScale: CGFloat = 1
 
     var body: some View {
-        Image(nsImage: BiliRasterIconCache.image(
-            icon: icon,
-            size: size,
-            color: color.nsColor,
-            symbolScale: symbolScale
-        ))
-        .resizable()
-        .interpolation(.high)
-        .antialiased(true)
-        .scaledToFit()
-        .frame(width: size, height: size)
+        Image(icon.rawValue)
+            .renderingMode(.template)
+            .resizable()
+            .interpolation(.high)
+            .antialiased(true)
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .scaleEffect(symbolScale)
+            .foregroundStyle(color)
     }
 }
 
-private enum BiliRasterIconCache {
+enum BiliRasterIconCache {
     private static let cache: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
         cache.countLimit = 96
@@ -582,23 +584,28 @@ private enum BiliRasterIconCache {
 
     static func image(icon: BiliIcon, size: CGFloat, color: NSColor, symbolScale: CGFloat) -> NSImage {
         let pointSize = max(1, size)
-        let key = "\(icon.rawValue)#\(Int(pointSize * 100))#\(Int(symbolScale * 100))#\(color.hash)" as NSString
+        let key = "v2#\(icon.rawValue)#\(Int(pointSize * 100))#\(Int(symbolScale * 100))#\(color.hash)" as NSString
         if let cached = cache.object(forKey: key) {
             return cached
         }
 
-        let image = NSImage(size: NSSize(width: pointSize, height: pointSize))
-        image.lockFocus()
-        defer { image.unlockFocus() }
-
-        color.set()
         guard let template = NSImage(named: icon.rawValue) else {
-            return image
+            return NSImage(size: NSSize(width: pointSize, height: pointSize))
         }
         template.isTemplate = true
+
         let drawSize = pointSize * max(0.1, symbolScale)
         let inset = (pointSize - drawSize) / 2
-        template.draw(in: NSRect(x: inset, y: inset, width: drawSize, height: drawSize))
+        let destRect = NSRect(x: inset, y: inset, width: drawSize, height: drawSize)
+        let sourceRect = NSRect(origin: .zero, size: template.size)
+
+        let image = NSImage(size: NSSize(width: pointSize, height: pointSize))
+        image.lockFocus()
+        color.set()
+        destRect.fill()
+        template.draw(in: destRect, from: sourceRect, operation: .destinationIn, fraction: 1.0)
+        image.unlockFocus()
+
         cache.setObject(image, forKey: key)
         return image
     }
@@ -611,7 +618,7 @@ struct BiliStatLabel: View {
     var font: Font = .callout
 
     private var iconColor: Color {
-        BiliTheme.actionInactive
+        .secondary
     }
 
     private var iconSymbolScale: CGFloat {
@@ -692,7 +699,7 @@ struct VideoDetailActionBar: View {
         onHoldProgress: ((CGFloat) -> Void)? = nil
     ) -> some View {
         VideoDetailActionItem(horizontalPadding: metrics.itemPaddingH) { isHovered in
-            let tint = isActive || isHovered ? BiliTheme.blue : BiliTheme.actionInactive
+            let tint = isActive || isHovered ? BiliTheme.blue : Color.secondary
             VStack(spacing: 4) {
                 actionIconVisual(icon: icon, tint: tint, ringProgress: ringProgress)
                 Text(label)
@@ -717,7 +724,7 @@ struct VideoDetailActionBar: View {
 
     private var shareColumn: some View {
         VideoDetailActionItem(horizontalPadding: metrics.itemPaddingH) { isHovered in
-            let tint = isHovered ? BiliTheme.blue : BiliTheme.actionInactive
+            let tint = isHovered ? BiliTheme.blue : Color.secondary
             VStack(spacing: 4) {
                 actionIconVisual(
                     icon: .share,
@@ -744,7 +751,7 @@ struct VideoDetailActionBar: View {
     private var coinColumn: some View {
         VStack(spacing: 2) {
             VideoDetailActionItem(horizontalPadding: metrics.itemPaddingH) { isHovered in
-                let tint = coined || isHovered ? BiliTheme.blue : BiliTheme.actionInactive
+                let tint = coined || isHovered ? BiliTheme.blue : Color.secondary
                 VStack(spacing: 4) {
                     actionIconVisual(
                         icon: .coin,

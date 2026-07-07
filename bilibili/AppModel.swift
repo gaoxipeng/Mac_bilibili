@@ -3,7 +3,7 @@ import Foundation
 
 @MainActor
 final class AppModel: ObservableObject {
-    @Published var selectedSection: AppSection = PerfLaunchConfiguration.requestedSection ?? .home
+    @Published var selectedSection: AppSection = .home
     @Published var homeVideos: [BiliVideo] = []
     @Published var homeHasMore = false
     @Published var homeLoadingMore = false
@@ -485,8 +485,6 @@ final class AppModel: ObservableObject {
                 if let account {
                     await loadProfile(account: account)
                 }
-            case .scrollTest:
-                break
             }
         } catch {
             guard generation == reloadGeneration else { return }
@@ -716,7 +714,6 @@ final class AppModel: ObservableObject {
     }
 
     private func prefetchHomePlayURLs() {
-        guard !PerfLaunchConfiguration.suppressPlayURLPrefetch else { return }
         homePrefetchTask?.cancel()
         homePrefetchTask = Task {
             try? await Task.sleep(for: .milliseconds(450))
@@ -958,11 +955,10 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
     case hot
     case history
     case favorites
-    case scrollTest
     case mine
 
     static var primaryCases: [AppSection] {
-        [.search, .home, .following, .hot, .history, .favorites, .scrollTest]
+        [.search, .home, .following, .hot, .history, .favorites]
     }
 
     var id: String { rawValue }
@@ -975,7 +971,6 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
         case .hot: "排行"
         case .history: "历史"
         case .favorites: "收藏"
-        case .scrollTest: "测试"
         case .mine: "我的"
         }
     }
@@ -988,7 +983,6 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
         case .hot: "chart.bar"
         case .history: "clock.arrow.circlepath"
         case .favorites: "star"
-        case .scrollTest: "doc.text"
         case .mine: "person.crop.circle"
         }
     }

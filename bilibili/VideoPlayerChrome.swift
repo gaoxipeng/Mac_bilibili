@@ -94,8 +94,8 @@ final class VideoPlayerKeyboardMonitorView: NSView {
                 guard handlers.shouldHandle() else { return event }
                 return self.handleKeyEvent(event) ? nil : event
             }
+            guard let window, event.window === window else { return event }
             guard handlers.shouldHandle() else { return event }
-            guard self.shouldReceiveKeyboardEvent(event) else { return event }
             return self.handleKeyEvent(event) ? nil : event
         }
     }
@@ -105,12 +105,6 @@ final class VideoPlayerKeyboardMonitorView: NSView {
             NSEvent.removeMonitor(keyMonitor)
             self.keyMonitor = nil
         }
-    }
-
-    private func shouldReceiveKeyboardEvent(_ event: NSEvent) -> Bool {
-        guard let window else { return false }
-        guard let eventWindow = event.window ?? NSApp.keyWindow else { return false }
-        return eventWindow === window
     }
 
     func handleKeyEvent(_ event: NSEvent) -> Bool {

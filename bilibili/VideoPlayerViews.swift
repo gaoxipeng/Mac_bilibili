@@ -67,6 +67,22 @@ final class PlayerClipContainerView: NSView {
         playerView.frame = bounds
         playerView.autoresizingMask = [.width, .height]
         applyRoundedMask()
+        PictureInPictureHost.shared.updatePlaybackSurface(self)
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil {
+            PictureInPictureHost.shared.unregisterPlaybackSurface(self)
+        } else {
+            PictureInPictureHost.shared.updatePlaybackSurface(self)
+        }
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            PictureInPictureHost.shared.unregisterPlaybackSurface(self)
+        }
     }
 
     private func applyRoundedMask() {
@@ -86,8 +102,11 @@ final class PictureInPictureHost: NSObject {
     private var pictureInPictureController: AVPictureInPictureController?
     private weak var playbackEngine: VideoPlaybackEngine?
     private weak var hostingWindow: NSWindow?
+    private weak var playbackSurface: PlayerClipContainerView?
     private var lastHandledRequestID = 0
     private var pictureInPictureResizeBlocker: PictureInPictureWindowResizeBlocker?
+
+    private static let parkedHostFrame = NSRect(x: -20_000, y: -20_000, width: 2, height: 2)
 
     private override init() {
         super.init()
@@ -103,6 +122,25 @@ final class PictureInPictureHost: NSObject {
     func detach() {
         hostWindow?.orderOut(nil)
         hostingWindow = nil
+        playbackSurface = nil
+    }
+
+    func updatePlaybackSurface(_ surface: PlayerClipContainerView) {
+        guard isEligiblePlaybackSurface(surface) else { return }
+
+        if let current = playbackSurface, let currentWindow = current.window {
+            let currentIsKey = currentWindow === NSApp.keyWindow
+            let newIsKey = surface.window === NSApp.keyWindow
+            if currentIsKey, !newIsKey { return }
+        }
+
+        playbackSurface = surface
+    }
+
+    func unregisterPlaybackSurface(_ surface: PlayerClipContainerView) {
+        if playbackSurface === surface {
+            playbackSurface = nil
+        }
     }
 
     func handleRequest(player: VideoPlaybackEngine, requestID: Int) {
@@ -118,17 +156,55 @@ final class PictureInPictureHost: NSObject {
 
         guard let controller = pictureInPictureController(for: avPlayer) else { return }
         if controller.isPictureInPictureActive {
+            alignAnchorWithPlaybackSurface()
             controller.stopPictureInPicture()
         } else {
             blockWindowResizeDuringPictureInPictureStart()
+            alignAnchorWithPlaybackSurface()
             controller.startPictureInPicture()
         }
+    }
+
+    private func isEligiblePlaybackSurface(_ surface: PlayerClipContainerView) -> Bool {
+        guard let window = surface.window, window.isVisible, !surface.isHidden else { return false }
+        guard surface.bounds.width > 1, surface.bounds.height > 1 else { return false }
+
+        var candidate: NSView? = surface
+        while let view = candidate {
+            if view.isHidden || view.alphaValue < 0.01 {
+                return false
+            }
+            candidate = view.superview
+        }
+        return true
+    }
+
+    private func alignAnchorWithPlaybackSurface() {
+        guard let surface = playbackSurface,
+              let window = surface.window else { return }
+        ensureHostWindow()
+
+        let frameInWindow = surface.convert(surface.bounds, to: nil)
+        let screenFrame = window.convertToScreen(frameInWindow)
+        hostWindow?.level = window.level
+        hostWindow?.setFrame(screenFrame, display: true)
+        if let contentView = hostWindow?.contentView {
+            anchorView.frame = contentView.bounds
+            anchorView.needsLayout = true
+            anchorView.layoutSubtreeIfNeeded()
+        }
+        hostWindow?.orderFrontRegardless()
+    }
+
+    private func parkHostWindowOffScreen() {
+        hostWindow?.setFrame(Self.parkedHostFrame, display: false)
+        hostWindow?.level = .normal
     }
 
     private func ensureHostWindow() {
         guard hostWindow == nil else { return }
         let panel = NSPanel(
-            contentRect: NSRect(x: -20_000, y: -20_000, width: 2, height: 2),
+            contentRect: Self.parkedHostFrame,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -192,6 +268,7 @@ extension PictureInPictureHost: AVPictureInPictureControllerDelegate {
     }
 
     func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        parkHostWindowOffScreen()
         releasePictureInPictureResizeBlocker()
     }
 
@@ -200,15 +277,18 @@ extension PictureInPictureHost: AVPictureInPictureControllerDelegate {
         failedToStartPictureInPictureWithError error: Error
     ) {
         publishPictureInPictureActive(false)
+        parkHostWindowOffScreen()
         releasePictureInPictureResizeBlocker(after: 0)
     }
 
     func pictureInPictureControllerWillStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        alignAnchorWithPlaybackSurface()
         publishPictureInPictureActive(false)
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         publishPictureInPictureActive(false)
+        parkHostWindowOffScreen()
         releasePictureInPictureResizeBlocker(after: 0)
     }
 

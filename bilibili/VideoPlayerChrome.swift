@@ -1,6 +1,5 @@
 import AppKit
 import Combine
-import CoreGraphics
 import SwiftUI
 
 @MainActor
@@ -170,27 +169,13 @@ enum SystemAudioVolume {
         static let soundDown: Int32 = 1
     }
 
-    private static var didRequestPostEventAccess = false
-    private static var didShowHUDPermissionHint = false
-
     @MainActor
     static func adjust(by delta: Float) {
-        guard delta != 0 else { return }
-
-        let mediaKey = delta > 0 ? MediaKey.soundUp : MediaKey.soundDown
-        requestPostEventAccessIfNeeded()
-        postVolumeKey(mediaKey)
-
-        if !CGPreflightPostEventAccess() {
-            promptForHUDAccessIfNeeded()
+        if delta > 0 {
+            postVolumeKey(MediaKey.soundUp)
+        } else if delta < 0 {
+            postVolumeKey(MediaKey.soundDown)
         }
-    }
-
-    @MainActor
-    private static func requestPostEventAccessIfNeeded() {
-        guard !CGPreflightPostEventAccess(), !didRequestPostEventAccess else { return }
-        didRequestPostEventAccess = true
-        _ = CGRequestPostEventAccess()
     }
 
     @MainActor
@@ -209,47 +194,6 @@ enum SystemAudioVolume {
                 data2: -1
             )
             event?.cgEvent?.post(tap: .cghidEventTap)
-        }
-    }
-
-    @MainActor
-    private static func promptForHUDAccessIfNeeded() {
-        guard !didShowHUDPermissionHint else { return }
-        didShowHUDPermissionHint = true
-
-        let alert = NSAlert()
-        alert.messageText = "需要辅助功能权限以显示系统音量条"
-        alert.informativeText = """
-        上下方向键要弹出系统音量条，需要在「系统设置 → 隐私与安全性 → 辅助功能」中允许 bilibili。
-
-        授权后请完全退出并重新打开应用。
-        """
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "打开系统设置")
-        alert.addButton(withTitle: "稍后")
-
-        if let window = NSApp.keyWindow ?? NSApp.windows.first(where: \.isVisible) {
-            alert.beginSheetModal(for: window) { response in
-                if response == .alertFirstButtonReturn {
-                    openAccessibilitySettings()
-                }
-            }
-        } else if alert.runModal() == .alertFirstButtonReturn {
-            openAccessibilitySettings()
-        }
-    }
-
-    @MainActor
-    private static func openAccessibilitySettings() {
-        let candidates = [
-            "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_Accessibility",
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-        ]
-        for candidate in candidates {
-            guard let url = URL(string: candidate) else { continue }
-            if NSWorkspace.shared.open(url) {
-                return
-            }
         }
     }
 }

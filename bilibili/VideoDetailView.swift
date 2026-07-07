@@ -1199,6 +1199,9 @@ struct VideoDetailView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .background(AppLayout.videoDetailPageBackground)
+        .background {
+            PictureInPictureHostInstaller(player: model.player)
+        }
         .navigationBarBackButtonHidden(true)
         .task {
             model.applyPrefetchedStream(appModel.cachedPlayStream(for: model.seedVideo))
@@ -1412,7 +1415,6 @@ struct VideoDetailView: View {
             maxHeight: maxHeight,
             rendersDanmaku: !fullscreenPresenter.isPresented,
             acceptsKeyboardShortcuts: !fullscreenPresenter.isPresented,
-            allowsPictureInPicture: !fullscreenPresenter.isPresented,
             onToggleFullscreen: toggleFullscreen
         )
         .background {
@@ -1790,7 +1792,6 @@ private struct VideoPlayerSection: View {
     var fullscreenTitle: String? = nil
     var rendersDanmaku = true
     var acceptsKeyboardShortcuts = true
-    var allowsPictureInPicture = true
     var onToggleFullscreen: (() -> Void)?
 
     init(
@@ -1801,7 +1802,6 @@ private struct VideoPlayerSection: View {
         fullscreenTitle: String? = nil,
         rendersDanmaku: Bool = true,
         acceptsKeyboardShortcuts: Bool = true,
-        allowsPictureInPicture: Bool = true,
         onToggleFullscreen: (() -> Void)? = nil
     ) {
         self.model = model
@@ -1811,7 +1811,6 @@ private struct VideoPlayerSection: View {
         self.fullscreenTitle = fullscreenTitle
         self.rendersDanmaku = rendersDanmaku
         self.acceptsKeyboardShortcuts = acceptsKeyboardShortcuts
-        self.allowsPictureInPicture = allowsPictureInPicture
         self.onToggleFullscreen = onToggleFullscreen
         _player = ObservedObject(wrappedValue: model.player)
     }
@@ -1868,8 +1867,7 @@ private struct VideoPlayerSection: View {
             } else {
                 VideoPlayerSurface(
                     player: player,
-                    cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius,
-                    allowsPictureInPicture: allowsPictureInPicture
+                    cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius
                 )
                 if model.danmakuVisible, !model.danmakuItems.isEmpty, rendersDanmaku, !player.isPictureInPictureActive {
                     DanmakuOverlayView(
@@ -2191,6 +2189,10 @@ private struct VideoControlCapsule: View {
         player.isScrubbing ? (player.scrubPreviewTime ?? player.preciseCurrentTime) : player.preciseCurrentTime
     }
 
+    private var pictureInPictureEnabled: Bool {
+        AVPictureInPictureController.isPictureInPictureSupported() && player.isReady
+    }
+
     var body: some View {
         ZStack {
             GeometryReader { proxy in
@@ -2239,8 +2241,6 @@ private struct VideoControlCapsule: View {
                     .allowsHitTesting(false)
 
                 HStack(spacing: VideoControlLayout.trailingControlSpacing) {
-                    let pictureInPictureEnabled = AVPictureInPictureController.isPictureInPictureSupported() && player.isReady
-
                     Button(action: {
                         onInteraction()
                         player.requestPictureInPicture()

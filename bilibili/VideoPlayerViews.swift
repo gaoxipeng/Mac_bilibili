@@ -48,19 +48,11 @@ final class PlayerClipContainerView: NSView {
     var cornerRadius: CGFloat {
         didSet { applyRoundedMask() }
     }
-    var allowsPictureInPicture = true
-    var lastHandledPictureInPictureRequestID = 0
-
-    private let pictureInPictureLayer = AVPlayerLayer()
-    private var pictureInPictureController: AVPictureInPictureController?
-    private weak var playbackEngine: VideoPlaybackEngine?
 
     init(cornerRadius: CGFloat = VideoPlayerChrome.cornerRadius) {
         self.cornerRadius = cornerRadius
         super.init(frame: .zero)
         wantsLayer = true
-        pictureInPictureLayer.videoGravity = .resizeAspect
-        layer?.addSublayer(pictureInPictureLayer)
         applyRoundedMask()
         addSubview(playerView)
     }
@@ -72,7 +64,6 @@ final class PlayerClipContainerView: NSView {
 
     override func layout() {
         super.layout()
-        pictureInPictureLayer.frame = bounds
         playerView.frame = bounds
         playerView.autoresizingMask = [.width, .height]
         applyRoundedMask()
@@ -84,85 +75,225 @@ final class PlayerClipContainerView: NSView {
         layer?.cornerCurve = .continuous
         layer?.masksToBounds = cornerRadius > 0
     }
+}
 
-    func handlePictureInPictureRequest(_ requestID: Int) {
-        guard requestID > lastHandledPictureInPictureRequestID else { return }
-        lastHandledPictureInPictureRequestID = requestID
-        guard allowsPictureInPicture,
-              AVPictureInPictureController.isPictureInPictureSupported(),
-              let player = playerView.player else { return }
+@MainActor
+final class PictureInPictureHost: NSObject {
+    static let shared = PictureInPictureHost()
 
-        guard let controller = pictureInPictureController(for: player) else { return }
+    private let anchorView = PictureInPictureAnchorView()
+    private var hostWindow: NSPanel?
+    private var pictureInPictureController: AVPictureInPictureController?
+    private weak var playbackEngine: VideoPlaybackEngine?
+    private weak var hostingWindow: NSWindow?
+    private var lastHandledRequestID = 0
+    private var pictureInPictureResizeBlocker: PictureInPictureWindowResizeBlocker?
+
+    private override init() {
+        super.init()
+    }
+
+    func attach(to window: NSWindow?) {
+        guard let window else { return }
+        hostingWindow = window
+        ensureHostWindow()
+        hostWindow?.orderFrontRegardless()
+    }
+
+    func detach() {
+        hostWindow?.orderOut(nil)
+        hostingWindow = nil
+    }
+
+    func handleRequest(player: VideoPlaybackEngine, requestID: Int) {
+        playbackEngine = player
+        guard let avPlayer = player.avPlayer else { return }
+        ensureHostWindow()
+        anchorView.playerLayer.player = avPlayer
+
+        guard requestID > lastHandledRequestID else { return }
+        lastHandledRequestID = requestID
+        guard player.isReady,
+              AVPictureInPictureController.isPictureInPictureSupported() else { return }
+
+        guard let controller = pictureInPictureController(for: avPlayer) else { return }
         if controller.isPictureInPictureActive {
             controller.stopPictureInPicture()
         } else {
-            PictureInPictureWindowPreserver.capture(from: self)
+            blockWindowResizeDuringPictureInPictureStart()
             controller.startPictureInPicture()
         }
     }
 
-    func updatePictureInPicturePlayer(_ player: AVPlayer?) {
-        guard pictureInPictureLayer.player !== player else { return }
-        pictureInPictureLayer.player = player
-        pictureInPictureController = nil
+    private func ensureHostWindow() {
+        guard hostWindow == nil else { return }
+        let panel = NSPanel(
+            contentRect: NSRect(x: -20_000, y: -20_000, width: 2, height: 2),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isReleasedWhenClosed = false
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = false
+        panel.level = .normal
+        panel.ignoresMouseEvents = true
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .transient]
+        anchorView.frame = panel.contentView?.bounds ?? NSRect(x: 0, y: 0, width: 2, height: 2)
+        panel.contentView = anchorView
+        hostWindow = panel
+    }
+
+    private func publishPictureInPictureActive(_ isActive: Bool) {
+        Task { @MainActor in
+            playbackEngine?.setPictureInPictureActive(isActive)
+        }
     }
 
     private func pictureInPictureController(for player: AVPlayer) -> AVPictureInPictureController? {
-        if pictureInPictureLayer.player !== player {
-            pictureInPictureLayer.player = player
+        if anchorView.playerLayer.player !== player {
+            anchorView.playerLayer.player = player
             pictureInPictureController = nil
         }
         if let pictureInPictureController {
             return pictureInPictureController
         }
-        guard let controller = AVPictureInPictureController(playerLayer: pictureInPictureLayer) else {
+        guard let controller = AVPictureInPictureController(playerLayer: anchorView.playerLayer) else {
             return nil
         }
         pictureInPictureController = controller
         controller.delegate = self
         return controller
     }
-}
 
-extension PlayerClipContainerView: AVPictureInPictureControllerDelegate {
-    func bindPlaybackEngine(_ playbackEngine: VideoPlaybackEngine) {
-        self.playbackEngine = playbackEngine
+    private func blockWindowResizeDuringPictureInPictureStart() {
+        guard let window = hostingWindow ?? anchorView.window else { return }
+        pictureInPictureResizeBlocker = PictureInPictureWindowResizeBlocker(window: window)
+        releasePictureInPictureResizeBlocker(after: 3.0)
     }
 
-    func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        playbackEngine?.setPictureInPictureActive(true)
-        DispatchQueue.main.async {
-            PictureInPictureWindowPreserver.restoreIfNeeded()
+    private func releasePictureInPictureResizeBlocker(after delay: TimeInterval = 1.0) {
+        guard let blocker = pictureInPictureResizeBlocker else { return }
+        Task { @MainActor [weak self, weak blocker] in
+            let nanoseconds = UInt64(max(0, delay) * 1_000_000_000)
+            try? await Task.sleep(nanoseconds: nanoseconds)
+            guard let self, self.pictureInPictureResizeBlocker === blocker else { return }
+            self.pictureInPictureResizeBlocker?.invalidate()
+            self.pictureInPictureResizeBlocker = nil
         }
+    }
+}
+
+extension PictureInPictureHost: AVPictureInPictureControllerDelegate {
+    func pictureInPictureControllerWillStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        publishPictureInPictureActive(true)
     }
 
     func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        PictureInPictureWindowPreserver.restoreIfNeeded()
+        releasePictureInPictureResizeBlocker()
     }
 
     func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController,
         failedToStartPictureInPictureWithError error: Error
     ) {
-        playbackEngine?.setPictureInPictureActive(false)
-        PictureInPictureWindowPreserver.clear()
+        publishPictureInPictureActive(false)
+        releasePictureInPictureResizeBlocker(after: 0)
     }
 
     func pictureInPictureControllerWillStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        playbackEngine?.setPictureInPictureActive(false)
+        publishPictureInPictureActive(false)
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
-        playbackEngine?.setPictureInPictureActive(false)
-        PictureInPictureWindowPreserver.clear()
+        publishPictureInPictureActive(false)
+        releasePictureInPictureResizeBlocker(after: 0)
     }
 
     func pictureInPictureController(
         _ pictureInPictureController: AVPictureInPictureController,
         restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void
     ) {
-        playbackEngine?.setPictureInPictureActive(false)
         completionHandler(true)
+    }
+}
+
+private final class PictureInPictureAnchorView: NSView {
+    let playerLayer = AVPlayerLayer()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        playerLayer.videoGravity = .resizeAspect
+        layer?.addSublayer(playerLayer)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        playerLayer.frame = bounds
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+struct PictureInPictureHostInstaller: NSViewRepresentable {
+    @ObservedObject var player: VideoPlaybackEngine
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> PictureInPictureHostInstallerView {
+        let view = PictureInPictureHostInstallerView()
+        view.onWindowChange = { window in
+            if let window {
+                PictureInPictureHost.shared.attach(to: window)
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: PictureInPictureHostInstallerView, context: Context) {
+        if let window = nsView.window {
+            PictureInPictureHost.shared.attach(to: window)
+        }
+
+        let requestID = player.pictureInPictureRequestID
+        guard requestID > context.coordinator.lastHandledRequestID else { return }
+        context.coordinator.lastHandledRequestID = requestID
+
+        let engine = player
+        DispatchQueue.main.async {
+            PictureInPictureHost.shared.handleRequest(player: engine, requestID: requestID)
+        }
+    }
+
+    static func dismantleNSView(_ nsView: PictureInPictureHostInstallerView, coordinator: Coordinator) {
+        PictureInPictureHost.shared.detach()
+    }
+
+    final class Coordinator {
+        var lastHandledRequestID = 0
+    }
+}
+
+final class PictureInPictureHostInstallerView: NSView {
+    var onWindowChange: ((NSWindow?) -> Void)?
+
+    override var isOpaque: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindowChange?(window)
     }
 }
 
@@ -173,90 +304,61 @@ final class NonSeekingPlayerView: AVPlayerView {
 }
 
 @MainActor
-private enum PictureInPictureWindowPreserver {
-    private struct Snapshot {
-        weak var window: NSWindow?
-        let frame: NSRect
-        let isFullScreen: Bool
-    }
+private final class PictureInPictureWindowResizeBlocker: NSObject, NSWindowDelegate {
+    private weak var window: NSWindow?
+    private weak var previousDelegate: NSWindowDelegate?
+    private let lockedFrame: NSRect
+    private let lockedMinSize: NSSize
+    private let lockedMaxSize: NSSize
+    private var isValid = true
 
-    private static var snapshot: Snapshot?
-    private static var restoreAttempts = 0
-    private static let maxRestoreAttempts = 8
+    init(window: NSWindow) {
+        self.window = window
+        self.previousDelegate = window.delegate
+        self.lockedFrame = window.frame
+        self.lockedMinSize = window.minSize
+        self.lockedMaxSize = window.maxSize
+        super.init()
 
-    static func capture(from view: NSView) {
-        guard let window = view.window else { return }
-        snapshot = Snapshot(
-            window: window,
-            frame: window.frame,
-            isFullScreen: window.styleMask.contains(.fullScreen)
-        )
-        restoreAttempts = 0
-    }
-
-    static func restoreIfNeeded() {
-        guard let snapshot, let window = snapshot.window else {
-            clear()
-            return
-        }
-
-        let targetFrame = snapshot.frame
-        let wantsFullScreen = snapshot.isFullScreen
-        let isFullScreen = window.styleMask.contains(.fullScreen)
-
-        if wantsFullScreen {
-            if !isFullScreen {
-                window.toggleFullScreen(nil)
-                scheduleRetry()
-                return
-            }
-            clear()
-            return
-        }
-
-        if isFullScreen {
-            window.toggleFullScreen(nil)
-            scheduleRetry()
-            return
-        }
-
-        if !framesMatch(window.frame, targetFrame) {
-            window.setFrame(targetFrame, display: true)
-            scheduleRetry()
-            return
-        }
-
-        clear()
-    }
-
-    static func clear() {
-        snapshot = nil
-        restoreAttempts = 0
-    }
-
-    private static func scheduleRetry() {
-        guard restoreAttempts < maxRestoreAttempts else {
-            clear()
-            return
-        }
-        restoreAttempts += 1
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-            restoreIfNeeded()
+        window.delegate = self
+        if !window.styleMask.contains(.fullScreen) {
+            window.minSize = lockedFrame.size
+            window.maxSize = lockedFrame.size
         }
     }
 
-    private static func framesMatch(_ lhs: NSRect, _ rhs: NSRect) -> Bool {
-        abs(lhs.origin.x - rhs.origin.x) < 0.5
-            && abs(lhs.origin.y - rhs.origin.y) < 0.5
-            && abs(lhs.width - rhs.width) < 0.5
-            && abs(lhs.height - rhs.height) < 0.5
+    func invalidate() {
+        guard isValid, let window else { return }
+        isValid = false
+        window.minSize = lockedMinSize
+        window.maxSize = lockedMaxSize
+        if window.delegate === self {
+            window.delegate = previousDelegate
+        }
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            invalidate()
+        }
+    }
+
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        lockedFrame.size
+    }
+
+    func windowShouldZoom(_ window: NSWindow, toFrame newFrame: NSRect) -> Bool {
+        false
+    }
+
+    func windowWillUseStandardFrame(_ window: NSWindow, defaultFrame newFrame: NSRect) -> NSRect {
+        lockedFrame
     }
 }
 
 struct VideoPlayerSurface: NSViewRepresentable {
     @ObservedObject var player: VideoPlaybackEngine
     var cornerRadius: CGFloat = VideoPlayerChrome.cornerRadius
-    var allowsPictureInPicture = true
 
     func makeNSView(context: Context) -> PlayerClipContainerView {
         let container = PlayerClipContainerView(cornerRadius: cornerRadius)
@@ -264,21 +366,13 @@ struct VideoPlayerSurface: NSViewRepresentable {
         container.playerView.allowsPictureInPicturePlayback = false
         container.playerView.videoGravity = .resizeAspect
         container.playerView.player = player.avPlayer
-        container.bindPlaybackEngine(player)
-        container.updatePictureInPicturePlayer(player.avPlayer)
-        container.allowsPictureInPicture = allowsPictureInPicture
-        container.lastHandledPictureInPictureRequestID = player.pictureInPictureRequestID
         return container
     }
 
     func updateNSView(_ nsView: PlayerClipContainerView, context: Context) {
         _ = player.isReady
         nsView.cornerRadius = cornerRadius
-        nsView.allowsPictureInPicture = allowsPictureInPicture
         nsView.playerView.player = player.avPlayer
-        nsView.bindPlaybackEngine(player)
-        nsView.updatePictureInPicturePlayer(player.avPlayer)
-        nsView.handlePictureInPictureRequest(player.pictureInPictureRequestID)
     }
 }
 

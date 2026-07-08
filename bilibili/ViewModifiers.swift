@@ -107,7 +107,7 @@ enum AppLayout {
     static let videoDetailCardPadding: CGFloat = 16
     static let videoDetailLeadingInset: CGFloat = 8
     static let videoDetailTrailingInset: CGFloat = 12
-    static let videoDetailBottomInset: CGFloat = 8
+    static let videoDetailBottomInset: CGFloat = 0
     static let videoDetailSectionSpacing: CGFloat = 8
     static let videoDetailCompactIntroMinHeight: CGFloat = 112
     static let videoDetailCompactIntroMaxHeight: CGFloat = 240
@@ -657,7 +657,10 @@ struct GlassMorePopUpButtonRepresentable: NSViewRepresentable {
 
         @objc func openInBrowser(_ sender: NSMenuItem) {
             guard let webURL else { return }
-            NSWorkspace.shared.open(webURL)
+            Task { @MainActor in
+                MediaPlaybackCoordinator.shared.pauseVisibleDetailPlayback()
+                NSWorkspace.shared.open(webURL)
+            }
         }
     }
 }

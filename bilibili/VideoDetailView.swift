@@ -796,6 +796,14 @@ final class VideoDetailModel: ObservableObject {
         stopWatchHistoryReporting()
     }
 
+    func pauseForUserInitiatedExternalAction() {
+        guard !isTornDown else { return }
+        isPlaybackSuspended = false
+        wasPlayingBeforeSuspend = false
+        player.pausePlayback()
+        stopWatchHistoryReporting()
+    }
+
     func resumePlaybackIfNeeded() {
         guard !isTornDown, isPlaybackSuspended else { return }
         isPlaybackSuspended = false
@@ -1157,7 +1165,7 @@ struct VideoDetailView: View {
     @State private var showLogin = false
     @StateObject private var webSession = BilibiliWebSession()
     @State private var publishesFloatingChrome = false
-    @State private var commentFullscreenPictureURL: URL?
+    @State private var commentFullscreenPicture: CommentFullscreenPicture?
 
     private func updateFloatingChrome() {
         if publishesFloatingChrome {
@@ -1171,13 +1179,20 @@ struct VideoDetailView: View {
         appModel.presentVideoFloatingChrome(detailChromeInfo)
     }
 
+    private func updateImmersiveChromeSuppression() {
+        appModel.setFloatingChromeSuppressed(
+            commentFullscreenPicture != nil || fullscreenPresenter.isPresented
+        )
+    }
+
     var body: some View {
         GeometryReader { geometry in
             let columnWidths = AppLayout.videoDetailColumnWidths(in: geometry.size.width)
             let sidebarWidth = columnWidths.sidebar
             let playerWidth = columnWidths.player
-            let showCommentsInSidebar = sidebarWidth >= 320
-            let pageBottomInset: CGFloat = 0
+            let keepsSidebarLayoutForPortraitVideo = model.player.displayAspectRatio < 1
+            let showCommentsInSidebar = sidebarWidth >= 320 || keepsSidebarLayoutForPortraitVideo
+            let pageBottomInset = AppLayout.videoDetailBottomInset
             let playerTopInset = chromeHeight > 0 ? chromeHeight : AppLayout.videoDetailPlayerTopInset
             let contentHeight = max(0, geometry.size.height - playerTopInset - pageBottomInset)
 
@@ -1223,10 +1238,17 @@ struct VideoDetailView: View {
         }
         .onDisappear {
             publishesFloatingChrome = false
+            appModel.setFloatingChromeSuppressed(false)
             appModel.resignVideoFloatingChrome()
             fullscreenPresenter.dismissImmediately()
             MediaPlaybackCoordinator.shared.notifyDetailHidden(model)
             VideoFullscreenPresenter.restoreMainWindowAppearance()
+        }
+        .onChange(of: commentFullscreenPicture) { _, _ in
+            updateImmersiveChromeSuppression()
+        }
+        .onChange(of: fullscreenPresenter.isPresented) { _, _ in
+            updateImmersiveChromeSuppression()
         }
         .onChange(of: model.displayVideo.title) { _, _ in updateFloatingChrome() }
         .onChange(of: model.displayVideo.viewCount) { _, _ in updateFloatingChrome() }
@@ -1261,7 +1283,7 @@ struct VideoDetailView: View {
             }
             .environmentObject(appModel)
         }
-        .commentImageFullscreenOverlay(imageURL: $commentFullscreenPictureURL)
+        .commentImageFullscreenOverlay(selection: $commentFullscreenPicture)
     }
 
     private func playerMaxHeight(
@@ -1298,18 +1320,18 @@ struct VideoDetailView: View {
 
                     VideoIntroCard(
                         model: model,
-                        fillsAvailableHeight: true,
+                        maxHeight: introHeight,
                         onTagTap: { appModel.openSearch(for: $0, returningTo: model.makePlaybackRequest()) }
                     )
                     .frame(width: playerWidth)
-                    .frame(height: introHeight, alignment: .topLeading)
-                    .layoutPriority(1)
+                    .fixedSize(horizontal: false, vertical: true)
 
                     commentsCard
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         .layoutPriority(1)
                 }
-                .frame(maxWidth: .infinity, maxHeight: contentHeight, alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .frame(height: contentHeight, alignment: .topLeading)
             } else {
                 VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
                     playerSection(maxWidth: playerWidth, maxHeight: maxHeight)
@@ -1327,14 +1349,15 @@ struct VideoDetailView: View {
 
                     VideoIntroCard(
                         model: model,
-                        fillsAvailableHeight: true,
+                        maxHeight: regularIntroHeight(playerWidth: playerWidth, contentHeight: contentHeight),
+                        fillToHeight: true,
                         onTagTap: { appModel.openSearch(for: $0, returningTo: model.makePlaybackRequest()) }
                     )
                     .frame(width: playerWidth)
-                    .frame(maxHeight: .infinity, alignment: .topLeading)
                     .layoutPriority(1)
                 }
-                .frame(maxWidth: .infinity, maxHeight: contentHeight, alignment: .topLeading)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .frame(height: contentHeight, alignment: .topLeading)
             }
         }
     }
@@ -1354,9 +1377,31 @@ struct VideoDetailView: View {
             - AppLayout.videoDetailSectionSpacing * spacingCount
         let heightThatPreservesComments = remainingHeight - AppLayout.videoDetailCompactCommentsMinHeight
 
-        return min(
-            AppLayout.videoDetailCompactIntroMaxHeight,
-            max(AppLayout.videoDetailCompactIntroMinHeight, heightThatPreservesComments)
+        return max(
+            1,
+            min(
+                remainingHeight,
+                AppLayout.videoDetailCompactIntroMaxHeight,
+                max(AppLayout.videoDetailCompactIntroMinHeight, heightThatPreservesComments)
+            )
+        )
+    }
+
+    private func regularIntroHeight(playerWidth: CGFloat, contentHeight: CGFloat) -> CGFloat {
+        let playerHeight = VideoPlayerChrome.detailPlayerSize(
+            maxWidth: playerWidth,
+            maxHeight: contentHeight,
+            aspectRatio: model.player.displayAspectRatio
+        ).height
+        let hasEpisodes = (model.detail?.pages.count ?? 0) > 1
+        let episodeHeight: CGFloat = hasEpisodes ? 74 : 0
+        let spacingCount: CGFloat = hasEpisodes ? 2 : 1
+        return max(
+            1,
+            contentHeight
+                - playerHeight
+                - episodeHeight
+                - AppLayout.videoDetailSectionSpacing * spacingCount
         )
     }
 
@@ -1444,7 +1489,7 @@ struct VideoDetailView: View {
                         VideoCommentsPanel(
                             model: model,
                             contentMinHeight: geometry.size.height,
-                            onPictureSelect: { commentFullscreenPictureURL = $0 }
+                            onPictureSelect: { commentFullscreenPicture = $0 }
                         )
                         .padding(.horizontal, AppLayout.videoDetailCardPadding)
                         .padding(.bottom, AppLayout.videoDetailCardPadding)
@@ -1666,18 +1711,28 @@ struct VideoDetailView: View {
 
 private struct VideoIntroCard: View {
     @ObservedObject var model: VideoDetailModel
-    var fillsAvailableHeight = false
+    var maxHeight: CGFloat? = nil
+    var fillToHeight = false
     let onTagTap: (String) -> Void
 
     var body: some View {
         Group {
-            if fillsAvailableHeight {
-                GeometryReader { geometry in
+            if let maxHeight {
+                if fillToHeight {
+                    GeometryReader { geometry in
+                        MacOverlayScrollView(usesOverlayScrollers: false, clipsContent: true) {
+                            introContent
+                                .frame(minHeight: geometry.size.height, alignment: .topLeading)
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    }
+                    .frame(height: maxHeight, alignment: .topLeading)
+                } else {
                     MacOverlayScrollView(usesOverlayScrollers: false, clipsContent: true) {
                         introContent
-                            .frame(minHeight: geometry.size.height, alignment: .topLeading)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, maxHeight: maxHeight, alignment: .topLeading)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
             } else {
                 introContent
@@ -1973,6 +2028,12 @@ private struct VideoPlayerSection: View {
             }
         }
         .animation(.easeOut(duration: 0.2), value: player.displayAspectRatio)
+        .onChange(of: chromeState.showsControls) { _, visible in
+            guard isFullscreen else { return }
+            if !visible && !model.showDanmakuSettings {
+                NSCursor.setHiddenUntilMouseMoves(true)
+            }
+        }
     }
 
     @ViewBuilder
@@ -2063,11 +2124,7 @@ private struct VideoPlayerSection: View {
     }
 
     private func syncChromeVisibility() {
-        if player.isPlaying {
-            chromeState.revealControls()
-        } else {
-            chromeState.showControlsPersistently()
-        }
+        chromeState.revealControls()
     }
 
     private var keyboardHandlers: VideoPlayerKeyboardHandlers {
@@ -2595,7 +2652,7 @@ private enum CommentsScrollAnchor {
 private struct VideoCommentsPanel: View {
     @ObservedObject var model: VideoDetailModel
     var contentMinHeight: CGFloat = 0
-    var onPictureSelect: (URL) -> Void = { _ in }
+    var onPictureSelect: (CommentFullscreenPicture) -> Void = { _ in }
 
     var body: some View {
         Group {
@@ -2765,7 +2822,7 @@ private struct CommentRow: View {
     let comment: BiliCommentItem
     let nested: Bool
     let videoAuthorMid: Int64
-    let onPictureSelect: (URL) -> Void
+    let onPictureSelect: (CommentFullscreenPicture) -> Void
 
     private var isVideoAuthor: Bool {
         videoAuthorMid > 0 && comment.authorMid == videoAuthorMid

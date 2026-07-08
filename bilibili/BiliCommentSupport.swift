@@ -47,6 +47,64 @@ enum BiliCommentSegmentBuilder {
 
         return segments
     }
+
+    static func isEmoteOnly(_ segments: [BiliCommentSegment]) -> Bool {
+        var hasEmote = false
+        for segment in segments {
+            switch segment {
+            case .emote:
+                hasEmote = true
+            case .text(let value), .mention(let value):
+                if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return false
+                }
+            }
+        }
+        return hasEmote
+    }
+
+    static func emoteOnlyURLs(from segments: [BiliCommentSegment]) -> [URL]? {
+        guard isEmoteOnly(segments) else { return nil }
+        return segments.compactMap { segment in
+            if case .emote(let url, _) = segment { return url }
+            return nil
+        }
+    }
+}
+
+private struct CommentLineMetrics {
+    let fontSize: CGFloat
+    let lineSpacing: CGFloat = 3
+
+    var font: NSFont { NSFont.systemFont(ofSize: fontSize) }
+    var emoteSize: CGFloat { fontSize + 2 }
+
+    var attachmentYOffset: CGFloat {
+        (font.capHeight - emoteSize) / 2 - 1
+    }
+
+    var lineHeight: CGFloat {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineSpacing = lineSpacing
+        let sample = NSAttributedString(
+            string: "A",
+            attributes: [
+                .font: font,
+                .paragraphStyle: paragraphStyle,
+            ]
+        )
+        let rect = sample.boundingRect(
+            with: NSSize(width: 10_000, height: CGFloat.greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading]
+        )
+        return max(ceil(rect.height), ceil(font.ascender - font.descender + font.leading + lineSpacing))
+    }
+
+    /// Matches where emote tops land in `CommentRichTextView` when mixed with text.
+    var emoteTopInset: CGFloat {
+        let emoteTopAboveBaseline = emoteSize + attachmentYOffset
+        return max(0, font.ascender - emoteTopAboveBaseline)
+    }
 }
 
 struct BiliCommentText: View {
@@ -58,6 +116,10 @@ struct BiliCommentText: View {
 
     private var segments: [BiliCommentSegment] {
         BiliCommentSegmentBuilder.build(text: text, emoticons: emoticons)
+    }
+
+    private var emoteOnlyURLs: [URL]? {
+        BiliCommentSegmentBuilder.emoteOnlyURLs(from: segments)
     }
 
     private var needsRichText: Bool {
@@ -72,7 +134,10 @@ struct BiliCommentText: View {
     }
 
     var body: some View {
-        if needsRichText {
+        if let emoteOnlyURLs {
+            CommentEmoteOnlyRow(urls: emoteOnlyURLs, fontSize: fontSize)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else if needsRichText {
             CommentRichTextView(segments: segments, fontSize: fontSize)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
@@ -91,6 +156,7 @@ private struct CommentRichTextView: View {
     let segments: [BiliCommentSegment]
     let fontSize: CGFloat
     @State private var contentHeight: CGFloat = 1
+    @State private var availableWidth: CGFloat = 1
 
     var body: some View {
         CommentRichTextRepresentable(
@@ -98,8 +164,112 @@ private struct CommentRichTextView: View {
             fontSize: fontSize,
             contentHeight: $contentHeight
         )
+        .id(widthIdentity)
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: contentHeight)
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .preference(key: CommentRichTextWidthKey.self, value: proxy.size.width)
+            }
+        }
+        .onPreferenceChange(CommentRichTextWidthKey.self) { width in
+            let clamped = max(width, 1)
+            guard abs(availableWidth - clamped) > 0.5 else { return }
+            availableWidth = clamped
+        }
+    }
+
+    private var widthIdentity: Int {
+        Int(availableWidth.rounded())
+    }
+}
+
+private struct CommentRichTextWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 1
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct CommentEmoteOnlyRow: View {
+    let urls: [URL]
+    let fontSize: CGFloat
+
+    private var metrics: CommentLineMetrics { CommentLineMetrics(fontSize: fontSize) }
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 4) {
+            ForEach(urls, id: \.self) { url in
+                CommentEmoteOnlyImage(url: url, size: metrics.emoteSize)
+            }
+        }
+        .padding(.top, metrics.emoteTopInset)
+        .frame(height: metrics.lineHeight, alignment: .topLeading)
+    }
+}
+
+private struct CommentEmoteOnlyImage: View {
+    let url: URL
+    let size: CGFloat
+
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: size, height: size)
+            } else {
+                Color.clear
+                    .frame(width: size, height: size)
+            }
+        }
+        .task(id: url) {
+            image = await CommentEmoteOnlyImageLoader.shared.image(for: url, size: size)
+        }
+    }
+}
+
+@MainActor
+private final class CommentEmoteOnlyImageLoader {
+    static let shared = CommentEmoteOnlyImageLoader()
+
+    private var cache: [URL: NSImage] = [:]
+    private var inflight: Set<URL> = []
+
+    private init() {}
+
+    func image(for url: URL, size: CGFloat) async -> NSImage? {
+        if let cached = cache[url] {
+            return cached
+        }
+        guard !inflight.contains(url) else { return nil }
+        inflight.insert(url)
+
+        defer { inflight.remove(url) }
+
+        do {
+            let (data, _) = try await URLSession.shared.data(from: url)
+            guard let source = NSImage(data: data) else { return nil }
+            let side = max(size, 1)
+            let scaled = NSImage(size: NSSize(width: side, height: side))
+            scaled.lockFocus()
+            source.draw(
+                in: NSRect(x: 0, y: 0, width: side, height: side),
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1
+            )
+            scaled.unlockFocus()
+            cache[url] = scaled
+            return scaled
+        } catch {
+            return nil
+        }
     }
 }
 
@@ -213,6 +383,7 @@ private final class CommentRichTextContainerView: NSView {
     private var fontSize: CGFloat = 15
     private weak var imageLoader: CommentEmoteImageLoader?
     var layoutWidth: CGFloat = 1
+    private var renderedWidth: CGFloat = 1
     var onLayoutInvalidated: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
@@ -242,7 +413,12 @@ private final class CommentRichTextContainerView: NSView {
     override func layout() {
         super.layout()
         let width = max(bounds.width, layoutWidth, 1)
+        let widthChanged = abs(renderedWidth - width) > 0.5
         layoutWidth = width
+        if widthChanged {
+            applyAttributedText(width: width)
+            renderedWidth = width
+        }
         let measuredHeight = height(forWidth: width)
         textView.frame = CGRect(x: 0, y: 0, width: width, height: measuredHeight)
         invalidateIntrinsicContentSize()
@@ -254,10 +430,24 @@ private final class CommentRichTextContainerView: NSView {
     }
 
     func update(segments: [BiliCommentSegment], fontSize: CGFloat, imageLoader: CommentEmoteImageLoader) {
+        let contentChanged = self.segments != segments || abs(self.fontSize - fontSize) > 0.5
         self.segments = segments
         self.fontSize = fontSize
         self.imageLoader = imageLoader
-        applyAttributedText(width: max(bounds.width, layoutWidth, 1))
+        let width = max(bounds.width, layoutWidth, 1)
+        if contentChanged || abs(renderedWidth - width) > 0.5 {
+            applyAttributedText(width: width)
+            renderedWidth = width
+        } else {
+            textView.layoutManager?.invalidateLayout(
+                forCharacterRange: NSRange(location: 0, length: textView.string.utf16.count),
+                actualCharacterRange: nil
+            )
+            let measuredHeight = height(forWidth: width)
+            textView.frame = CGRect(x: 0, y: 0, width: width, height: measuredHeight)
+            invalidateIntrinsicContentSize()
+            onLayoutInvalidated?()
+        }
     }
 
     func height(forWidth width: CGFloat) -> CGFloat {
@@ -276,6 +466,7 @@ private final class CommentRichTextContainerView: NSView {
     private func applyAttributedText(width: CGFloat) {
         let safeWidth = max(width, 1)
         layoutWidth = safeWidth
+        renderedWidth = safeWidth
         textView.textContainer?.containerSize = NSSize(width: safeWidth, height: CGFloat.greatestFiniteMagnitude)
         textView.textStorage?.setAttributedString(
             makeAttributedString { [weak self] in
@@ -295,6 +486,19 @@ private final class CommentRichTextContainerView: NSView {
         let emoteSize = fontSize + 2
         let mentionColor = NSColor.secondaryLabelColor.withAlphaComponent(0.55)
         let result = NSMutableAttributedString()
+        let isEmoteOnly = BiliCommentSegmentBuilder.isEmoteOnly(segments)
+
+        if isEmoteOnly {
+            result.append(
+                NSAttributedString(
+                    string: " ",
+                    attributes: [
+                        .font: font,
+                        .foregroundColor: NSColor.clear,
+                    ]
+                )
+            )
+        }
 
         for segment in segments {
             switch segment {
@@ -438,17 +642,33 @@ private struct BiliCommentSortLinesIcon: View {
     }
 }
 
+struct CommentFullscreenPicture: Equatable {
+    let url: URL
+    let sourceFrame: CGRect
+    let aspectRatio: CGFloat
+}
+
+private enum CommentPictureCoordinateSpace {
+    static let name = "CommentPictureCoordinateSpace"
+}
+
+private struct CommentThumbnailFrameRegistryKey: PreferenceKey {
+    static var defaultValue: [URL: CGRect] = [:]
+
+    static func reduce(value: inout [URL: CGRect], nextValue: () -> [URL: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
 struct CommentPictureAttachments: View {
     let pictures: [BiliCommentPicture]
-    var onSelect: (URL) -> Void
+    var onSelect: (CommentFullscreenPicture) -> Void
 
     var body: some View {
         if !pictures.isEmpty {
             FlowLayout(spacing: 8) {
                 ForEach(pictures, id: \.self) { picture in
-                    CommentPictureThumbnail(picture: picture) {
-                        onSelect(picture.url)
-                    }
+                    CommentPictureThumbnail(picture: picture, onTap: onSelect)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -459,102 +679,250 @@ struct CommentPictureAttachments: View {
 
 private struct CommentPictureThumbnail: View {
     let picture: BiliCommentPicture
-    let onTap: () -> Void
+    let onTap: (CommentFullscreenPicture) -> Void
 
     @State private var isHovered = false
+    @State private var sourceFrame: CGRect = .zero
 
     private var size: CGSize {
         picture.thumbnailSize()
     }
 
     var body: some View {
-        Button(action: onTap) {
-            RemoteCover(
-                url: picture.url,
-                fallbackURLs: BiliImageURLResolver.commentThumbnailFallbackURLs(for: picture.url),
-                aspectRatio: picture.aspectRatio,
-                width: size.width,
-                height: size.height,
-                appliesCornerClip: true,
-                placeholderSystemImage: "photo"
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color.black.opacity(isHovered ? 0.14 : 0.08), lineWidth: 0.8)
-            }
-            .shadow(color: .black.opacity(isHovered ? 0.08 : 0.04), radius: isHovered ? 6 : 3, y: 2)
-            .scaleEffect(isHovered ? 1.02 : 1)
+        RemoteCover(
+            url: picture.url,
+            fallbackURLs: BiliImageURLResolver.commentThumbnailFallbackURLs(for: picture.url),
+            aspectRatio: picture.aspectRatio,
+            width: size.width,
+            height: size.height,
+            appliesCornerClip: true,
+            placeholderSystemImage: "photo"
+        )
+        .allowsHitTesting(false)
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.black.opacity(isHovered ? 0.14 : 0.08), lineWidth: 0.8)
         }
-        .buttonStyle(.plain)
+        .shadow(color: .black.opacity(isHovered ? 0.08 : 0.04), radius: isHovered ? 6 : 3, y: 2)
+        .scaleEffect(isHovered ? 1.02 : 1)
+        .frame(width: size.width, height: size.height)
+        .contentShape(Rectangle())
+        .background {
+            GeometryReader { geometry in
+                let frame = geometry.frame(in: .global)
+                Color.clear
+                    .preference(
+                        key: CommentThumbnailFrameRegistryKey.self,
+                        value: [picture.url: frame]
+                    )
+                    .task(id: frame) {
+                        sourceFrame = frame
+                    }
+            }
+        }
+        .highPriorityGesture(TapGesture().onEnded { selectPicture() })
         .onHover { isHovered = $0 }
         .animation(.easeOut(duration: 0.16), value: isHovered)
+    }
+
+    private func selectPicture() {
+        onTap(
+            CommentFullscreenPicture(
+                url: picture.url,
+                sourceFrame: sourceFrame == .zero
+                    ? CGRect(origin: .zero, size: size)
+                    : sourceFrame,
+                aspectRatio: picture.aspectRatio
+            )
+        )
+    }
+}
+
+private extension CommentFullscreenPicture {
+    func resolvedSourceFrame(using registry: [URL: CGRect]) -> CommentFullscreenPicture {
+        let latest = registry[url] ?? sourceFrame
+        guard latest != .zero else { return self }
+        return CommentFullscreenPicture(url: url, sourceFrame: latest, aspectRatio: aspectRatio)
     }
 }
 
 struct CommentImageFullscreenOverlay: ViewModifier {
-    @Binding var imageURL: URL?
+    @Binding var selection: CommentFullscreenPicture?
+    @State private var thumbnailFrames: [URL: CGRect] = [:]
 
     func body(content: Content) -> some View {
         ZStack {
             content
+                .onPreferenceChange(CommentThumbnailFrameRegistryKey.self) { thumbnailFrames = $0 }
 
-            if let imageURL {
-                CommentImageFullscreenView(url: imageURL) {
-                    self.imageURL = nil
-                }
-                .transition(.opacity)
-                .zIndex(1000)
-            }
+            CommentImageZoomPresenter(
+                selection: $selection,
+                thumbnailFrames: thumbnailFrames
+            )
         }
-        .animation(.easeOut(duration: 0.18), value: imageURL?.absoluteString)
+        .coordinateSpace(name: CommentPictureCoordinateSpace.name)
     }
 }
 
 extension View {
-    func commentImageFullscreenOverlay(imageURL: Binding<URL?>) -> some View {
-        modifier(CommentImageFullscreenOverlay(imageURL: imageURL))
+    func commentImageFullscreenOverlay(selection: Binding<CommentFullscreenPicture?>) -> some View {
+        modifier(CommentImageFullscreenOverlay(selection: selection))
     }
 }
 
-private struct CommentImageFullscreenView: View {
-    let url: URL
-    let onDismiss: () -> Void
+private struct CommentImageZoomPresenter: View {
+    @Binding var selection: CommentFullscreenPicture?
+    let thumbnailFrames: [URL: CGRect]
+    @State private var displayed: CommentFullscreenPicture?
+    @State private var progress: CGFloat = 0
+    @State private var dismissTask: Task<Void, Never>?
+
+    private let padding: CGFloat = 32
+    private let presentAnimation = Animation.spring(response: 0.38, dampingFraction: 0.86)
+    private let dismissAnimation = Animation.spring(response: 0.34, dampingFraction: 0.9)
 
     var body: some View {
         ZStack {
-            Color.black.opacity(0.96)
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture(perform: onDismiss)
+            if let displayed {
+                GeometryReader { geometry in
+                    let containerFrame = geometry.frame(in: .global)
+                    let sourceFrame = localFrame(displayed.sourceFrame, in: containerFrame)
+                    let destination = destinationFrame(
+                        in: geometry.size,
+                        aspectRatio: displayed.aspectRatio,
+                        padding: padding
+                    )
+                    let frame = interpolatedFrame(
+                        from: sourceFrame,
+                        to: destination,
+                        progress: progress
+                    )
+                    let cornerRadius = 8 * (1 - progress)
 
-            CommentFullscreenImage(url: url)
-                .padding(32)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    ZStack {
+                        Color.black
+                            .opacity(0.96 * Double(progress))
+                            .ignoresSafeArea()
+                            .contentShape(Rectangle())
+                            .onTapGesture(perform: dismiss)
 
-            VStack {
-                HStack {
-                    Spacer()
-                    Button(action: onDismiss) {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.92))
-                            .frame(width: 32, height: 32)
-                            .background(Color.white.opacity(0.12), in: Circle())
+                        CommentFullscreenImage(url: displayed.url, contentMode: .fill)
+                            .clipShape(
+                                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                            )
+                            .frame(width: max(frame.width, 1), height: max(frame.height, 1))
+                            .position(x: frame.midX, y: frame.midY)
+                            .contentShape(Rectangle())
+                            .onTapGesture(perform: dismiss)
                     }
-                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                Spacer()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+                .zIndex(1000)
+                .background(CommentImageFullscreenEscapeHandler(onDismiss: dismiss))
+                .onExitCommand(perform: dismiss)
             }
-            .padding(20)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(CommentImageFullscreenEscapeHandler(onDismiss: onDismiss))
-        .onExitCommand(perform: onDismiss)
+        .allowsHitTesting(displayed != nil && progress > 0.01)
+        .onChange(of: selection) { _, new in
+            handleSelectionChange(new)
+        }
+        .task(id: selection?.url) {
+            guard let selection else { return }
+            handleSelectionChange(selection)
+        }
+    }
+
+    private func handleSelectionChange(_ new: CommentFullscreenPicture?) {
+        dismissTask?.cancel()
+        guard let new else {
+            if displayed != nil {
+                dismiss()
+            }
+            return
+        }
+        present(new.resolvedSourceFrame(using: thumbnailFrames))
+    }
+
+    private func present(_ picture: CommentFullscreenPicture) {
+        displayed = picture
+        progress = 0
+        withAnimation(presentAnimation) {
+            progress = 1
+        }
+    }
+
+    private func dismiss() {
+        guard var current = displayed else {
+            selection = nil
+            return
+        }
+        guard progress > 0.01 else { return }
+
+        current = current.resolvedSourceFrame(using: thumbnailFrames)
+        displayed = current
+
+        dismissTask?.cancel()
+        withAnimation(dismissAnimation) {
+            progress = 0
+        }
+        dismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(340))
+            guard !Task.isCancelled, progress == 0 else { return }
+            selection = nil
+            displayed = nil
+        }
+    }
+
+    private func localFrame(_ globalFrame: CGRect, in containerFrame: CGRect) -> CGRect {
+        CGRect(
+            x: globalFrame.minX - containerFrame.minX,
+            y: globalFrame.minY - containerFrame.minY,
+            width: globalFrame.width,
+            height: globalFrame.height
+        )
+    }
+
+    private func destinationFrame(in containerSize: CGSize, aspectRatio: CGFloat, padding: CGFloat) -> CGRect {
+        let availableWidth = max(containerSize.width - padding * 2, 1)
+        let availableHeight = max(containerSize.height - padding * 2, 1)
+        let safeAspect = max(aspectRatio, 0.01)
+
+        var width = availableWidth
+        var height = width / safeAspect
+        if height > availableHeight {
+            height = availableHeight
+            width = height * safeAspect
+        }
+
+        return CGRect(
+            x: (containerSize.width - width) / 2,
+            y: (containerSize.height - height) / 2,
+            width: width,
+            height: height
+        )
+    }
+
+    private func interpolatedFrame(from source: CGRect, to destination: CGRect, progress: CGFloat) -> CGRect {
+        let clamped = min(max(progress, 0), 1)
+        return CGRect(
+            x: lerp(source.minX, destination.minX, clamped),
+            y: lerp(source.minY, destination.minY, clamped),
+            width: lerp(source.width, destination.width, clamped),
+            height: lerp(source.height, destination.height, clamped)
+        )
+    }
+
+    private func lerp(_ start: CGFloat, _ end: CGFloat, _ progress: CGFloat) -> CGFloat {
+        start + (end - start) * progress
     }
 }
 
 private struct CommentFullscreenImage: View {
     let url: URL
+    var contentMode: ContentMode = .fit
     @StateObject private var imageLoader = RemoteCoverImageLoader()
 
     var body: some View {
@@ -562,7 +930,7 @@ private struct CommentFullscreenImage: View {
             if let image = imageLoader.image {
                 Image(nsImage: image)
                     .resizable()
-                    .scaledToFit()
+                    .aspectRatio(contentMode: contentMode)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if imageLoader.failed {
                 ContentUnavailableView("无法加载图片", systemImage: "photo")

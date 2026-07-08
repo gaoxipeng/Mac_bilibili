@@ -7,7 +7,7 @@ final class VideoPlayerChromeState: ObservableObject {
     @Published private(set) var showsControls = true
 
     private var hideTask: Task<Void, Never>?
-    private static let autoHideDelay: Duration = .seconds(5)
+    private static let autoHideDelay: Duration = .seconds(2)
 
     func revealControls(scheduleAutoHide: Bool = true) {
         showsControls = true

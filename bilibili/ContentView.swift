@@ -9,6 +9,9 @@ struct ContentView: View {
     @State private var relationChromeHeaderHeight: CGFloat = 0
 
     private var effectiveChromeHeight: CGFloat {
+        if model.suppressesFloatingChrome {
+            return 0
+        }
         switch model.activeFloatingChromeKind {
         case .profile:
             return AppLayout.userProfileFloatingChromeHeight(headerHeight: profileChromeHeaderHeight)
@@ -290,10 +293,40 @@ private struct DetailFloatingChrome: View {
     }
 
     private var reportsFloatingChromeHeight: Bool {
-        showsActiveChrome || (canGoBack && !canExitSearchResults)
+        !model.suppressesFloatingChrome
+            && (showsActiveChrome || (canGoBack && !canExitSearchResults))
     }
 
     var body: some View {
+        if !model.suppressesFloatingChrome {
+            chromeBody
+        }
+    }
+
+    private var chromeBody: some View {
+        HStack(alignment: .top, spacing: 0) {
+            chromeContent
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, AppLayout.floatingChromeInset)
+        .padding(.top, AppLayout.floatingChromeInset)
+        .reportMeasuredHeight(
+            to: VideoDetailChromeMeasuredHeightKey.self,
+            when: reportsFloatingChromeHeight
+        )
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .allowsHitTesting(showsActiveChrome || showsFloatingBackButton || canExitSearchResults || showsDefaultRefreshChrome)
+        .animation(.easeOut(duration: 0.26), value: showsFloatingBackButton)
+        .animation(.easeOut(duration: 0.26), value: canGoBack)
+        .animation(.easeOut(duration: 0.26), value: detailChrome?.title)
+        .animation(.easeOut(duration: 0.26), value: profileChrome?.name)
+        .animation(.easeOut(duration: 0.26), value: relationChrome?.hostName)
+        .animation(.easeOut(duration: 0.26), value: model.activeFloatingChromeKind)
+    }
+
+    @ViewBuilder
+    private var unusedBodyPlaceholder: some View {
         HStack(alignment: .top, spacing: 0) {
             chromeContent
                 .frame(maxWidth: .infinity, alignment: .leading)

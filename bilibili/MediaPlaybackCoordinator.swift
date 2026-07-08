@@ -49,6 +49,10 @@ final class MediaPlaybackCoordinator {
         visibleDetail?.suspendPlayback()
     }
 
+    func pauseVisibleDetailPlayback() {
+        visibleDetail?.pauseForUserInitiatedExternalAction()
+    }
+
     func handleSceneBecameActive() {
         guard let detail = visibleDetail else { return }
         applyPlaybackPolicy(for: detail)

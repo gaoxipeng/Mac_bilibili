@@ -171,7 +171,7 @@ struct DynamicDetailView: View {
     @EnvironmentObject private var appModel: AppModel
     @StateObject private var model: DynamicDetailModel
     @State private var publishesFloatingChrome = false
-    @State private var commentFullscreenPictureURL: URL?
+    @State private var commentFullscreenPicture: CommentFullscreenPicture?
 
     init(item: BiliDynamicItem, credential: BilibiliCredential?) {
         _model = StateObject(wrappedValue: DynamicDetailModel(item: item, credential: credential))
@@ -189,6 +189,10 @@ struct DynamicDetailView: View {
             authorName: model.item.authorName.ifEmpty("用户"),
             authorLevel: model.item.authorLevel
         )
+    }
+
+    private func updateImmersiveChromeSuppression() {
+        appModel.setFloatingChromeSuppressed(commentFullscreenPicture != nil)
     }
 
     var body: some View {
@@ -223,10 +227,14 @@ struct DynamicDetailView: View {
         }
         .onDisappear {
             publishesFloatingChrome = false
+            appModel.setFloatingChromeSuppressed(false)
             appModel.resignVideoFloatingChrome()
             MediaPlaybackCoordinator.shared.notifyObscuringPageHidden()
         }
-        .commentImageFullscreenOverlay(imageURL: $commentFullscreenPictureURL)
+        .onChange(of: commentFullscreenPicture) { _, _ in
+            updateImmersiveChromeSuppression()
+        }
+        .commentImageFullscreenOverlay(selection: $commentFullscreenPicture)
     }
 
     private var dynamicBodyCard: some View {
@@ -300,7 +308,7 @@ struct DynamicDetailView: View {
                         DynamicCommentsPanel(
                             model: model,
                             contentMinHeight: geometry.size.height,
-                            onPictureSelect: { commentFullscreenPictureURL = $0 }
+                            onPictureSelect: { commentFullscreenPicture = $0 }
                         )
                         .padding(.horizontal, AppLayout.videoDetailCardPadding)
                         .padding(.bottom, AppLayout.videoDetailCardPadding)
@@ -324,7 +332,7 @@ private enum DynamicCommentsScrollAnchor {
 private struct DynamicCommentsPanel: View {
     @ObservedObject var model: DynamicDetailModel
     var contentMinHeight: CGFloat = 0
-    var onPictureSelect: (URL) -> Void = { _ in }
+    var onPictureSelect: (CommentFullscreenPicture) -> Void = { _ in }
 
     var body: some View {
         Group {
@@ -460,7 +468,7 @@ private struct DynamicCommentsPanel: View {
 private struct DynamicCommentRow: View {
     let comment: BiliCommentItem
     let nested: Bool
-    let onPictureSelect: (URL) -> Void
+    let onPictureSelect: (CommentFullscreenPicture) -> Void
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {

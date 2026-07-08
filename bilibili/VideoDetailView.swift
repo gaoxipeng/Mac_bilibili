@@ -1176,26 +1176,31 @@ struct VideoDetailView: View {
             let columnWidths = AppLayout.videoDetailColumnWidths(in: geometry.size.width)
             let sidebarWidth = columnWidths.sidebar
             let playerWidth = columnWidths.player
+            let showCommentsInSidebar = sidebarWidth >= 320
+            let isCompactLayout = !showCommentsInSidebar
+            let cardBottomInset: CGFloat = isCompactLayout ? 0 : 8
             let playerTopInset = chromeHeight > 0 ? chromeHeight : AppLayout.videoDetailPlayerTopInset
 
             HStack(alignment: .top, spacing: AppLayout.videoDetailSectionSpacing) {
                 leftColumn(
                     playerWidth: playerWidth,
                     playerTopInset: playerTopInset,
-                    geometry: geometry
+                    geometry: geometry,
+                    showCommentsBelowIntro: !showCommentsInSidebar
                 )
                 .frame(width: playerWidth, alignment: .leading)
                 .clipped()
 
                 rightSidebar(
                     playerTopInset: playerTopInset,
-                    sidebarWidth: sidebarWidth
+                    sidebarWidth: sidebarWidth,
+                    showCommentsInSidebar: showCommentsInSidebar
                 )
             }
             .frame(width: geometry.size.width, alignment: .topLeading)
             .padding(.leading, AppLayout.videoDetailLeadingInset)
-            .padding(.trailing, AppLayout.videoDetailTrailingInset)
-            .padding(.bottom, 24)
+            .padding(.trailing, isCompactLayout ? 0 : AppLayout.videoDetailTrailingInset)
+            .padding(.bottom, cardBottomInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .background(AppLayout.videoDetailPageBackground)
@@ -1272,53 +1277,95 @@ struct VideoDetailView: View {
     private func leftColumn(
         playerWidth: CGFloat,
         playerTopInset: CGFloat,
-        geometry: GeometryProxy
+        geometry: GeometryProxy,
+        showCommentsBelowIntro: Bool
     ) -> some View {
         let maxHeight = playerMaxHeight(in: geometry, playerTopInset: playerTopInset)
 
-        MacOverlayScrollView(usesOverlayScrollers: false, clipsContent: true) {
-            VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
-                playerSection(maxWidth: playerWidth, maxHeight: maxHeight)
-                    .frame(
-                        width: playerWidth,
-                        alignment: model.player.displayAspectRatio < 1 ? .center : .leading
+        Group {
+            if showCommentsBelowIntro {
+                VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
+                    playerSection(maxWidth: playerWidth, maxHeight: maxHeight)
+                        .frame(
+                            width: playerWidth,
+                            alignment: model.player.displayAspectRatio < 1 ? .center : .leading
+                        )
+                        .opacity(fullscreenPresenter.isPresented ? 0 : 1)
+                        .allowsHitTesting(!fullscreenPresenter.isPresented)
+
+                    if (model.detail?.pages.count ?? 0) > 1 {
+                        VideoEpisodeSection(model: model)
+                            .frame(width: playerWidth)
+                    }
+
+                    VideoIntroCard(
+                        model: model,
+                        onTagTap: { appModel.openSearch(for: $0, returningTo: model.makePlaybackRequest()) }
                     )
-                    .opacity(fullscreenPresenter.isPresented ? 0 : 1)
-                    .allowsHitTesting(!fullscreenPresenter.isPresented)
+                    .frame(width: playerWidth)
 
-                if (model.detail?.pages.count ?? 0) > 1 {
-                    VideoEpisodeSection(model: model)
-                        .frame(width: playerWidth)
+                    commentsCard
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.top, playerTopInset)
+                .padding(.bottom, 0)
+            } else {
+                VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
+                    playerSection(maxWidth: playerWidth, maxHeight: maxHeight)
+                        .frame(
+                            width: playerWidth,
+                            alignment: model.player.displayAspectRatio < 1 ? .center : .leading
+                        )
+                        .opacity(fullscreenPresenter.isPresented ? 0 : 1)
+                        .allowsHitTesting(!fullscreenPresenter.isPresented)
 
-                VideoIntroCard(
-                    model: model,
-                    onTagTap: { appModel.openSearch(for: $0, returningTo: model.makePlaybackRequest()) }
-                )
-                .frame(width: playerWidth)
+                    if (model.detail?.pages.count ?? 0) > 1 {
+                        VideoEpisodeSection(model: model)
+                            .frame(width: playerWidth)
+                    }
+
+                    VideoIntroCard(
+                        model: model,
+                        onTagTap: { appModel.openSearch(for: $0, returningTo: model.makePlaybackRequest()) }
+                    )
+                    .frame(width: playerWidth)
+                    .padding(.bottom, 8)
+
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.top, playerTopInset)
+                .padding(.bottom, 0)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, playerTopInset)
-            .padding(.bottom, 8)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func rightSidebar(playerTopInset: CGFloat, sidebarWidth: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
-            authorCard
+    private func rightSidebar(
+        playerTopInset: CGFloat,
+        sidebarWidth: CGFloat,
+        showCommentsInSidebar: Bool
+    ) -> some View {
+        let isCompact = sidebarWidth < 360
+
+        return VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
+            authorCard(isCompact: isCompact)
             actionCard(sidebarWidth: sidebarWidth)
-            commentsCard
+            if showCommentsInSidebar {
+                commentsCard
+                    .padding(.bottom, 8)
+            }
         }
         .frame(width: sidebarWidth, alignment: .leading)
         .clipped()
         .padding(.top, playerTopInset)
+        .padding(.bottom, 0)
         .frame(maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private var authorCard: some View {
+    private func authorCard(isCompact: Bool) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            authorRow
+            authorRow(isCompact: isCompact)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .videoDetailCard()
@@ -1444,54 +1491,91 @@ struct VideoDetailView: View {
         }
     }
 
-    private var authorRow: some View {
-        authorRowContent
+    private func authorRow(isCompact: Bool) -> some View {
+        Group {
+            if isCompact {
+                authorRowCompact
+            } else {
+                authorRowRegular
+            }
+        }
     }
 
-    private var authorRowContent: some View {
+    private var authorRowRegular: some View {
         HStack(alignment: .center, spacing: 12) {
             authorAvatarLink
                 .fixedSize(horizontal: true, vertical: true)
 
             VStack(alignment: .leading, spacing: 6) {
                 authorNameLink
-
-                Text(authorSignSubtitle)
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                    .lineSpacing(3)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-
-                if let ipLocation = model.authorIpLocation, !ipLocation.isEmpty {
-                    Text("IP属地：\(ipLocation)")
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                authorBioAndIP
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            if model.showAuthorFollowControl {
-                AuthorFollowButton(
-                    isFollowing: model.authorRelation.following,
-                    followerMe: model.authorRelation.followerMe,
-                    followerCount: model.authorFollowerCount,
-                    isLoading: model.authorFollowLoading,
-                    usesProfileChromeSizing: true,
-                    fixedCapsuleHeight: ProfileChromeCapsuleMetrics.height,
-                    onFollow: {
-                        Task { await model.followAuthor() }
-                    },
-                    onUnfollow: {
-                        Task { await model.unfollowAuthor() }
-                    }
-                )
+            followButtonIfNeeded(isCompact: false)
                 .fixedSize(horizontal: true, vertical: true)
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var authorRowCompact: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 10) {
+                authorAvatarLink
+                    .frame(width: 40, height: 40)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    authorNameLink
+                    followButtonIfNeeded(isCompact: true)
+                        .fixedSize(horizontal: true, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            authorBioAndIP
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var authorBioAndIP: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(authorSignSubtitle)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+
+            if let ipLocation = model.authorIpLocation, !ipLocation.isEmpty {
+                Text("IP属地：\(ipLocation)")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func followButtonIfNeeded(isCompact: Bool) -> some View {
+        if model.showAuthorFollowControl {
+            let capsuleHeight: CGFloat = isCompact ? 38 : ProfileChromeCapsuleMetrics.height
+            AuthorFollowButton(
+                isFollowing: model.authorRelation.following,
+                followerMe: model.authorRelation.followerMe,
+                followerCount: model.authorFollowerCount,
+                isLoading: model.authorFollowLoading,
+                usesProfileChromeSizing: true,
+                fixedCapsuleHeight: capsuleHeight,
+                onFollow: {
+                    Task { await model.followAuthor() }
+                },
+                onUnfollow: {
+                    Task { await model.unfollowAuthor() }
+                }
+            )
+        }
     }
 
     @ViewBuilder

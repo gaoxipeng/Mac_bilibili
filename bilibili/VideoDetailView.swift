@@ -574,6 +574,31 @@ final class VideoDetailModel: ObservableObject {
             return
         }
 
+        if !part.bvid.isEmpty, part.bvid != displayVideo.bvid {
+            activeCID = part.cid
+            isLoadingDetail = true
+            defer { isLoadingDetail = false }
+            do {
+                let loaded = try await api.videoDetail(bvid: part.bvid, credential: credential)
+                guard isLifecycleActive(generation), !Task.isCancelled else { return }
+                activeCID = loaded.video.cid
+                detail = loaded
+                loadedCommentsKey = nil
+                comments = []
+                commentsEnd = false
+                await loadVideoRelation()
+                await loadVideoTags()
+                await loadPlayback()
+                guard isLifecycleActive(generation) else { return }
+                await loadOnlineCount()
+                await scheduleInitialCommentsLoad()
+            } catch {
+                guard isLifecycleActive(generation) else { return }
+                playError = error.localizedDescription
+            }
+            return
+        }
+
         guard part.cid != activeCID else { return }
         activeCID = part.cid
         await loadPlayback()
@@ -1790,7 +1815,11 @@ private struct VideoEpisodeSection: View {
     }
 
     private var activePart: BiliVideoPage? {
-        pages.first(where: { $0.cid == model.activeCID }) ?? pages.first
+        let activeBvid = model.displayVideo.bvid
+        return pages.first(where: { part in
+            part.cid == model.activeCID
+                && (part.bvid.isEmpty || part.bvid == activeBvid)
+        }) ?? pages.first
     }
 
     var body: some View {
@@ -1804,6 +1833,7 @@ private struct VideoEpisodeSection: View {
                 VideoPartMenuPressOverlay(
                     pages: pages,
                     activeCID: model.activeCID,
+                    activeBvid: model.displayVideo.bvid,
                     onSelect: { part in
                         Task { await model.selectPart(part) }
                     }

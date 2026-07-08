@@ -591,16 +591,29 @@ nonisolated struct BiliVideoPage: Identifiable, Hashable, Sendable {
     let title: String
     let duration: Int
     let epid: Int64
+    let bvid: String
 
-    nonisolated init(page: Int, cid: Int64, title: String, duration: Int, epid: Int64 = 0) {
+    nonisolated init(
+        page: Int,
+        cid: Int64,
+        title: String,
+        duration: Int,
+        epid: Int64 = 0,
+        bvid: String = ""
+    ) {
         self.page = page
         self.cid = cid
         self.title = title
         self.duration = duration
         self.epid = epid
+        self.bvid = bvid
     }
 
-    var id: Int64 { epid > 0 ? epid : cid }
+    var id: String {
+        if epid > 0 { return "ep:\(epid)" }
+        if !bvid.isEmpty { return "bv:\(bvid)" }
+        return "cid:\(cid)"
+    }
 }
 
 nonisolated struct BiliPGCEpisodeContext: Sendable {

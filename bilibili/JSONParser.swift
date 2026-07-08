@@ -808,7 +808,10 @@ enum JSONParser {
     nonisolated static func parseVideoDetail(from object: Any) -> BiliVideoDetail? {
         let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
         let rawPages = data["pages"] as? [[String: Any]] ?? []
-        let pages = parseVideoPages(from: data["pages"])
+        let multiPartPages = parseVideoPages(from: data["pages"])
+        let pages = multiPartPages.isEmpty
+            ? parseUGCSeasonPages(from: data["ugc_season"])
+            : multiPartPages
         let firstCid = pages.first?.cid
             ?? rawPages.first.map { int64($0, "cid") }
             ?? int64(data, "cid")
@@ -1124,6 +1127,40 @@ enum JSONParser {
                 cid: cid,
                 title: string(page, "part"),
                 duration: duration(from: page)
+            )
+        }
+    }
+
+    private nonisolated static func parseUGCSeasonPages(from value: Any?) -> [BiliVideoPage] {
+        guard let season = value as? [String: Any] else { return [] }
+        let sections = season["sections"] as? [[String: Any]] ?? []
+        var episodes: [[String: Any]] = []
+        for section in sections {
+            episodes.append(contentsOf: section["episodes"] as? [[String: Any]] ?? [])
+        }
+        guard episodes.count > 1 else { return [] }
+
+        return episodes.enumerated().compactMap { index, episode in
+            let bvid = string(episode, "bvid")
+            let cid = int64(episode, "cid")
+                .ifZero(int64((episode["page"] as? [String: Any]) ?? [:], "cid"))
+            guard !bvid.isEmpty, cid > 0 else { return nil }
+
+            let pageInfo = episode["page"] as? [String: Any]
+            let arc = episode["arc"] as? [String: Any]
+            let title = string(episode, "title")
+                .ifEmpty(string(pageInfo ?? [:], "part"))
+                .ifEmpty(string(arc ?? [:], "title"))
+                .htmlStripped
+            let duration = duration(from: pageInfo ?? [:])
+                .ifZero(duration(from: arc ?? [:]))
+
+            return BiliVideoPage(
+                page: index + 1,
+                cid: cid,
+                title: title,
+                duration: duration,
+                bvid: bvid
             )
         }
     }

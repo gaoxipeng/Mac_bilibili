@@ -191,6 +191,7 @@ final class CoinMenuPressView: NSView {
 struct VideoPartMenuPressOverlay: NSViewRepresentable {
     let pages: [BiliVideoPage]
     let activeCID: Int64
+    let activeBvid: String
     let onSelect: (BiliVideoPage) -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -202,7 +203,8 @@ struct VideoPartMenuPressOverlay: NSViewRepresentable {
         view.configure(
             coordinator: context.coordinator,
             pages: pages,
-            activeCID: activeCID
+            activeCID: activeCID,
+            activeBvid: activeBvid
         )
         return view
     }
@@ -212,7 +214,8 @@ struct VideoPartMenuPressOverlay: NSViewRepresentable {
         nsView.configure(
             coordinator: context.coordinator,
             pages: pages,
-            activeCID: activeCID
+            activeCID: activeCID,
+            activeBvid: activeBvid
         )
     }
 
@@ -255,7 +258,8 @@ final class VideoPartMenuPressView: NSView {
     func configure(
         coordinator: VideoPartMenuPressOverlay.Coordinator,
         pages: [BiliVideoPage],
-        activeCID: Int64
+        activeCID: Int64,
+        activeBvid: String
     ) {
         self.coordinator = coordinator
         coordinator.pages = pages
@@ -276,7 +280,8 @@ final class VideoPartMenuPressView: NSView {
             item.target = coordinator
             item.tag = index
             item.isEnabled = true
-            if part.cid == activeCID {
+            if part.cid == activeCID
+                && (part.bvid.isEmpty || part.bvid == activeBvid) {
                 item.state = .on
             }
             actionMenu.addItem(item)

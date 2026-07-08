@@ -790,7 +790,7 @@ struct VideoDetailActionBar: View {
                     actionIconVisual(
                         icon: .coin,
                         tint: tint,
-                        ringProgress: 0
+                        ringProgress: holdProgress
                     )
                     Text(coinCount.compactCount)
                         .font(.system(size: metrics.labelFontSize, weight: .medium))

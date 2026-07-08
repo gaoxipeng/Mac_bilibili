@@ -236,6 +236,117 @@ struct VideoPartMenuPressOverlay: NSViewRepresentable {
 }
 
 @MainActor
+private final class EpisodeMenuItemRowView: NSView {
+    static let horizontalPadding: CGFloat = 12
+    static let verticalPadding: CGFloat = 5
+    static let columnSpacing: CGFloat = 10
+
+    private let titleLabel: NSTextField
+    private let durationLabel: NSTextField
+    private let menuWidth: CGFloat
+    private let durationColumnWidth: CGFloat
+
+    init(title: String, duration: String?, width: CGFloat, durationColumnWidth: CGFloat) {
+        self.menuWidth = width
+        self.durationColumnWidth = durationColumnWidth
+        titleLabel = NSTextField(wrappingLabelWithString: title)
+        durationLabel = NSTextField(labelWithString: duration ?? "")
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: 24))
+        configureLabels()
+        installConstraints()
+        updateAppearance()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var fittingSize: NSSize {
+        let titleWidth = max(
+            1,
+            menuWidth - Self.horizontalPadding * 2 - Self.columnSpacing - durationColumnWidth
+        )
+        let titleHeight = titleLabel.sizeThatFits(
+            NSSize(width: titleWidth, height: .greatestFiniteMagnitude)
+        ).height
+        let rowHeight = max(22, ceil(titleHeight)) + Self.verticalPadding * 2
+        return NSSize(width: menuWidth, height: rowHeight)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        if enclosingMenuItem?.isHighlighted == true {
+            let background = bounds.insetBy(dx: 4, dy: 1)
+            let path = NSBezierPath(roundedRect: background, xRadius: 4, yRadius: 4)
+            NSColor.selectedContentBackgroundColor.setFill()
+            path.fill()
+        }
+        super.draw(dirtyRect)
+    }
+
+    override func viewWillDraw() {
+        super.viewWillDraw()
+        updateAppearance()
+    }
+
+    private func configureLabels() {
+        for label in [titleLabel, durationLabel] {
+            label.isBordered = false
+            label.isEditable = false
+            label.isSelectable = false
+            label.drawsBackground = false
+            label.font = NSFont.menuFont(ofSize: NSFont.systemFontSize)
+            label.translatesAutoresizingMaskIntoConstraints = false
+        }
+
+        titleLabel.lineBreakMode = .byWordWrapping
+        titleLabel.maximumNumberOfLines = 0
+        titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        titleLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+
+        durationLabel.alignment = .right
+        durationLabel.setContentCompressionResistancePriority(.required, for: .horizontal)
+        durationLabel.setContentHuggingPriority(.required, for: .horizontal)
+    }
+
+    private func installConstraints() {
+        addSubview(titleLabel)
+        addSubview(durationLabel)
+
+        var constraints = [
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: Self.horizontalPadding),
+            titleLabel.topAnchor.constraint(equalTo: topAnchor, constant: Self.verticalPadding),
+            titleLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -Self.verticalPadding),
+            titleLabel.trailingAnchor.constraint(
+                lessThanOrEqualTo: durationLabel.leadingAnchor,
+                constant: -Self.columnSpacing
+            ),
+            durationLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -Self.horizontalPadding),
+            durationLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+        ]
+
+        if durationColumnWidth > 0 {
+            constraints.append(
+                durationLabel.widthAnchor.constraint(equalToConstant: durationColumnWidth)
+            )
+        }
+
+        NSLayoutConstraint.activate(constraints)
+    }
+
+    private func updateAppearance() {
+        let highlighted = enclosingMenuItem?.isHighlighted == true
+        if highlighted {
+            titleLabel.textColor = .selectedMenuItemTextColor
+            durationLabel.textColor = .selectedMenuItemTextColor
+        } else {
+            titleLabel.textColor = .labelColor
+            durationLabel.textColor = .secondaryLabelColor
+        }
+    }
+}
+
+@MainActor
 final class VideoPartMenuPressView: NSView {
     private let actionMenu = NSMenu()
     private weak var coordinator: VideoPartMenuPressOverlay.Coordinator?
@@ -267,7 +378,17 @@ final class VideoPartMenuPressView: NSView {
         actionMenu.removeAllItems()
         actionMenu.autoenablesItems = false
 
-        let menuWidth = fittedEpisodeMenuWidth(for: pages)
+        let menuFont = NSFont.menuFont(ofSize: NSFont.systemFontSize)
+        let durationColumnWidth = pages.reduce(CGFloat(0)) { width, part in
+            guard part.duration > 0 else { return width }
+            let text = part.duration.episodeMenuDurationText as NSString
+            let textWidth = text.size(withAttributes: [.font: menuFont]).width
+            return max(width, ceil(textWidth))
+        }
+        let menuWidth = fittedEpisodeMenuWidth(
+            for: pages,
+            durationColumnWidth: durationColumnWidth
+        )
         actionMenu.minimumWidth = menuWidth
 
         for (index, part) in pages.enumerated() {
@@ -276,7 +397,15 @@ final class VideoPartMenuPressView: NSView {
                 action: #selector(VideoPartMenuPressOverlay.Coordinator.handleSelect(_:)),
                 keyEquivalent: ""
             )
-            item.attributedTitle = episodeMenuAttributedTitle(for: part, menuWidth: menuWidth)
+            let rowView = EpisodeMenuItemRowView(
+                title: episodeMainTitle(for: part),
+                duration: part.duration > 0 ? part.duration.episodeMenuDurationText : nil,
+                width: menuWidth,
+                durationColumnWidth: durationColumnWidth
+            )
+            let rowSize = rowView.fittingSize
+            rowView.frame = NSRect(x: 0, y: 0, width: rowSize.width, height: rowSize.height)
+            item.view = rowView
             item.target = coordinator
             item.tag = index
             item.isEnabled = true
@@ -288,17 +417,20 @@ final class VideoPartMenuPressView: NSView {
         }
     }
 
-    private func fittedEpisodeMenuWidth(for pages: [BiliVideoPage]) -> CGFloat {
+    private func fittedEpisodeMenuWidth(
+        for pages: [BiliVideoPage],
+        durationColumnWidth: CGFloat
+    ) -> CGFloat {
         let menuFont = NSFont.menuFont(ofSize: NSFont.systemFontSize)
+        let horizontalChrome = EpisodeMenuItemRowView.horizontalPadding * 2
+            + EpisodeMenuItemRowView.columnSpacing
+            + durationColumnWidth
         var width: CGFloat = 260
 
         for part in pages {
             let title = episodeMainTitle(for: part)
             let titleWidth = (title as NSString).size(withAttributes: [.font: menuFont]).width
-            let durationWidth = part.duration > 0
-                ? (part.duration.episodeMenuDurationText as NSString).size(withAttributes: [.font: menuFont]).width
-                : 0
-            width = max(width, titleWidth + durationWidth + 44)
+            width = max(width, titleWidth + horizontalChrome)
         }
 
         return min(ceil(width), 460)
@@ -308,27 +440,6 @@ final class VideoPartMenuPressView: NSView {
         let title = part.title.trimmingCharacters(in: .whitespacesAndNewlines)
         let label = title.isEmpty ? "第\(part.page)话" : title
         return "\(part.page)  \(label)"
-    }
-
-    private func episodeMenuAttributedTitle(for part: BiliVideoPage, menuWidth: CGFloat) -> NSAttributedString {
-        let font = NSFont.menuFont(ofSize: NSFont.systemFontSize)
-        let mainTitle = episodeMainTitle(for: part)
-        guard part.duration > 0 else {
-            return NSAttributedString(string: mainTitle, attributes: [.font: font])
-        }
-
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.tabStops = [
-            NSTextTab(textAlignment: .right, location: max(menuWidth - 16, 180), options: [:])
-        ]
-        let text = "\(mainTitle)\t\(part.duration.episodeMenuDurationText)"
-        return NSAttributedString(
-            string: text,
-            attributes: [
-                .font: font,
-                .paragraphStyle: paragraph,
-            ]
-        )
     }
 }
 

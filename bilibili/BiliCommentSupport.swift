@@ -200,7 +200,7 @@ private struct CommentEmoteOnlyRow: View {
     private var metrics: CommentLineMetrics { CommentLineMetrics(fontSize: fontSize) }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 4) {
+        HStack(alignment: .bottom, spacing: 1) {
             ForEach(urls, id: \.self) { url in
                 CommentEmoteOnlyImage(url: url, size: metrics.emoteSize)
             }

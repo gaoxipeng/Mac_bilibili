@@ -1338,11 +1338,6 @@ struct VideoDetailView: View {
                         .opacity(fullscreenPresenter.isPresented ? 0 : 1)
                         .allowsHitTesting(!fullscreenPresenter.isPresented)
 
-                    if (model.detail?.pages.count ?? 0) > 1 {
-                        VideoEpisodeSection(model: model)
-                            .frame(width: playerWidth)
-                    }
-
                     VideoIntroCard(
                         model: model,
                         maxHeight: introHeight,
@@ -1367,11 +1362,6 @@ struct VideoDetailView: View {
                         .opacity(fullscreenPresenter.isPresented ? 0 : 1)
                         .allowsHitTesting(!fullscreenPresenter.isPresented)
 
-                    if (model.detail?.pages.count ?? 0) > 1 {
-                        VideoEpisodeSection(model: model)
-                            .frame(width: playerWidth)
-                    }
-
                     VideoIntroCard(
                         model: model,
                         maxHeight: regularIntroHeight(playerWidth: playerWidth, contentHeight: contentHeight),
@@ -1393,13 +1383,9 @@ struct VideoDetailView: View {
             maxHeight: contentHeight,
             aspectRatio: model.player.displayAspectRatio
         ).height
-        let hasEpisodes = (model.detail?.pages.count ?? 0) > 1
-        let episodeHeight: CGFloat = hasEpisodes ? 74 : 0
-        let spacingCount: CGFloat = hasEpisodes ? 3 : 2
         let remainingHeight = contentHeight
             - playerHeight
-            - episodeHeight
-            - AppLayout.videoDetailSectionSpacing * spacingCount
+            - AppLayout.videoDetailSectionSpacing * 2
         let heightThatPreservesComments = remainingHeight - AppLayout.videoDetailCompactCommentsMinHeight
 
         return max(
@@ -1418,15 +1404,11 @@ struct VideoDetailView: View {
             maxHeight: contentHeight,
             aspectRatio: model.player.displayAspectRatio
         ).height
-        let hasEpisodes = (model.detail?.pages.count ?? 0) > 1
-        let episodeHeight: CGFloat = hasEpisodes ? 74 : 0
-        let spacingCount: CGFloat = hasEpisodes ? 2 : 1
         return max(
             1,
             contentHeight
                 - playerHeight
-                - episodeHeight
-                - AppLayout.videoDetailSectionSpacing * spacingCount
+                - AppLayout.videoDetailSectionSpacing
         )
     }
 
@@ -1439,6 +1421,9 @@ struct VideoDetailView: View {
 
         return VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
             authorCard(isCompact: isCompact)
+            if (model.detail?.pages.count ?? 0) > 1 {
+                VideoEpisodeSection(model: model)
+            }
             actionCard(sidebarWidth: sidebarWidth)
             if showCommentsInSidebar {
                 commentsCard

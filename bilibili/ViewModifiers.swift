@@ -107,7 +107,11 @@ enum AppLayout {
     static let videoDetailCardPadding: CGFloat = 16
     static let videoDetailLeadingInset: CGFloat = 8
     static let videoDetailTrailingInset: CGFloat = 12
+    static let videoDetailBottomInset: CGFloat = 8
     static let videoDetailSectionSpacing: CGFloat = 8
+    static let videoDetailCompactIntroMinHeight: CGFloat = 112
+    static let videoDetailCompactIntroMaxHeight: CGFloat = 240
+    static let videoDetailCompactCommentsMinHeight: CGFloat = 180
     static let videoDetailSidebarMinWidth: CGFloat = 224
     static let videoDetailSidebarMinContentWidth: CGFloat = 200
     static let videoDetailSidebarWidthRatio: CGFloat = 0.22

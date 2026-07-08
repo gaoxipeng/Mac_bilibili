@@ -1177,30 +1177,29 @@ struct VideoDetailView: View {
             let sidebarWidth = columnWidths.sidebar
             let playerWidth = columnWidths.player
             let showCommentsInSidebar = sidebarWidth >= 320
-            let isCompactLayout = !showCommentsInSidebar
-            let cardBottomInset: CGFloat = isCompactLayout ? 0 : 8
+            let pageBottomInset: CGFloat = 0
             let playerTopInset = chromeHeight > 0 ? chromeHeight : AppLayout.videoDetailPlayerTopInset
+            let contentHeight = max(0, geometry.size.height - playerTopInset - pageBottomInset)
 
             HStack(alignment: .top, spacing: AppLayout.videoDetailSectionSpacing) {
                 leftColumn(
                     playerWidth: playerWidth,
-                    playerTopInset: playerTopInset,
-                    geometry: geometry,
+                    contentHeight: contentHeight,
                     showCommentsBelowIntro: !showCommentsInSidebar
                 )
                 .frame(width: playerWidth, alignment: .leading)
-                .clipped()
 
                 rightSidebar(
-                    playerTopInset: playerTopInset,
                     sidebarWidth: sidebarWidth,
+                    contentHeight: contentHeight,
                     showCommentsInSidebar: showCommentsInSidebar
                 )
             }
             .frame(width: geometry.size.width, alignment: .topLeading)
             .padding(.leading, AppLayout.videoDetailLeadingInset)
-            .padding(.trailing, isCompactLayout ? 0 : AppLayout.videoDetailTrailingInset)
-            .padding(.bottom, cardBottomInset)
+            .padding(.trailing, showCommentsInSidebar ? AppLayout.videoDetailTrailingInset : 0)
+            .padding(.top, playerTopInset)
+            .padding(.bottom, pageBottomInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .background(AppLayout.videoDetailPageBackground)
@@ -1266,24 +1265,23 @@ struct VideoDetailView: View {
     }
 
     private func playerMaxHeight(
-        in geometry: GeometryProxy,
-        playerTopInset: CGFloat
+        contentHeight: CGFloat
     ) -> CGFloat {
-        let bottomPadding: CGFloat = 24
-        return max(280, geometry.size.height - playerTopInset - bottomPadding)
+        max(1, contentHeight)
     }
 
     @ViewBuilder
     private func leftColumn(
         playerWidth: CGFloat,
-        playerTopInset: CGFloat,
-        geometry: GeometryProxy,
+        contentHeight: CGFloat,
         showCommentsBelowIntro: Bool
     ) -> some View {
-        let maxHeight = playerMaxHeight(in: geometry, playerTopInset: playerTopInset)
+        let maxHeight = playerMaxHeight(contentHeight: contentHeight)
 
         Group {
             if showCommentsBelowIntro {
+                let introHeight = compactIntroHeight(playerWidth: playerWidth, contentHeight: contentHeight)
+
                 VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
                     playerSection(maxWidth: playerWidth, maxHeight: maxHeight)
                         .frame(
@@ -1300,16 +1298,18 @@ struct VideoDetailView: View {
 
                     VideoIntroCard(
                         model: model,
+                        fillsAvailableHeight: true,
                         onTagTap: { appModel.openSearch(for: $0, returningTo: model.makePlaybackRequest()) }
                     )
                     .frame(width: playerWidth)
+                    .frame(height: introHeight, alignment: .topLeading)
+                    .layoutPriority(1)
 
                     commentsCard
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .layoutPriority(1)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(.top, playerTopInset)
-                .padding(.bottom, 0)
+                .frame(maxWidth: .infinity, maxHeight: contentHeight, alignment: .topLeading)
             } else {
                 VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
                     playerSection(maxWidth: playerWidth, maxHeight: maxHeight)
@@ -1327,23 +1327,42 @@ struct VideoDetailView: View {
 
                     VideoIntroCard(
                         model: model,
+                        fillsAvailableHeight: true,
                         onTagTap: { appModel.openSearch(for: $0, returningTo: model.makePlaybackRequest()) }
                     )
                     .frame(width: playerWidth)
-                    .padding(.bottom, 8)
-
-                    Spacer(minLength: 0)
+                    .frame(maxHeight: .infinity, alignment: .topLeading)
+                    .layoutPriority(1)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(.top, playerTopInset)
-                .padding(.bottom, 0)
+                .frame(maxWidth: .infinity, maxHeight: contentHeight, alignment: .topLeading)
             }
         }
     }
 
+    private func compactIntroHeight(playerWidth: CGFloat, contentHeight: CGFloat) -> CGFloat {
+        let playerHeight = VideoPlayerChrome.detailPlayerSize(
+            maxWidth: playerWidth,
+            maxHeight: contentHeight,
+            aspectRatio: model.player.displayAspectRatio
+        ).height
+        let hasEpisodes = (model.detail?.pages.count ?? 0) > 1
+        let episodeHeight: CGFloat = hasEpisodes ? 74 : 0
+        let spacingCount: CGFloat = hasEpisodes ? 3 : 2
+        let remainingHeight = contentHeight
+            - playerHeight
+            - episodeHeight
+            - AppLayout.videoDetailSectionSpacing * spacingCount
+        let heightThatPreservesComments = remainingHeight - AppLayout.videoDetailCompactCommentsMinHeight
+
+        return min(
+            AppLayout.videoDetailCompactIntroMaxHeight,
+            max(AppLayout.videoDetailCompactIntroMinHeight, heightThatPreservesComments)
+        )
+    }
+
     private func rightSidebar(
-        playerTopInset: CGFloat,
         sidebarWidth: CGFloat,
+        contentHeight: CGFloat,
         showCommentsInSidebar: Bool
     ) -> some View {
         let isCompact = sidebarWidth < 360
@@ -1353,14 +1372,11 @@ struct VideoDetailView: View {
             actionCard(sidebarWidth: sidebarWidth)
             if showCommentsInSidebar {
                 commentsCard
-                    .padding(.bottom, 8)
+                    .layoutPriority(1)
             }
         }
         .frame(width: sidebarWidth, alignment: .leading)
-        .clipped()
-        .padding(.top, playerTopInset)
-        .padding(.bottom, 0)
-        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .frame(height: contentHeight, alignment: .topLeading)
     }
 
     private func authorCard(isCompact: Bool) -> some View {
@@ -1650,9 +1666,28 @@ struct VideoDetailView: View {
 
 private struct VideoIntroCard: View {
     @ObservedObject var model: VideoDetailModel
+    var fillsAvailableHeight = false
     let onTagTap: (String) -> Void
 
     var body: some View {
+        Group {
+            if fillsAvailableHeight {
+                GeometryReader { geometry in
+                    MacOverlayScrollView(usesOverlayScrollers: false, clipsContent: true) {
+                        introContent
+                            .frame(minHeight: geometry.size.height, alignment: .topLeading)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                }
+            } else {
+                introContent
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+        }
+        .videoDetailCard(padding: 0)
+    }
+
+    private var introContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let error = model.detailError {
                 Label(error, systemImage: "exclamationmark.triangle")
@@ -1661,9 +1696,9 @@ private struct VideoIntroCard: View {
             }
 
             overviewContent
+                .padding(.trailing, 4)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .videoDetailCard()
+        .padding(AppLayout.videoDetailCardPadding)
     }
 
     private var overviewContent: some View {

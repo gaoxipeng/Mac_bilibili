@@ -262,6 +262,18 @@ private final class EpisodeMenuItemRowView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        bounds.contains(point) ? self : nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let item = enclosingMenuItem else { return }
+        if let target = item.target, let action = item.action {
+            NSApp.sendAction(action, to: target, from: item)
+        }
+        item.menu?.cancelTracking()
+    }
+
     override var fittingSize: NSSize {
         let titleWidth = max(
             1,

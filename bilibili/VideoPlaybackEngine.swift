@@ -79,11 +79,11 @@ final class VideoPlaybackEngine: ObservableObject {
     var playbackRateLabel: String {
         switch playbackRate {
         case ..<1.25:
-            return "1x"
+            return "1×"
         case ..<1.75:
-            return "1.5x"
+            return "1.5×"
         default:
-            return "2x"
+            return "2×"
         }
     }
 

@@ -1353,36 +1353,62 @@ struct VideoDetailView: View {
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .frame(height: contentHeight, alignment: .topLeading)
             } else {
-                VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
-                    playerSection(maxWidth: playerWidth, maxHeight: maxHeight)
-                        .frame(
-                            width: playerWidth,
-                            alignment: model.player.displayAspectRatio < 1 ? .center : .leading
-                        )
-                        .opacity(fullscreenPresenter.isPresented ? 0 : 1)
-                        .allowsHitTesting(!fullscreenPresenter.isPresented)
+                let fittedPlayer = fittedPlayerSize(playerWidth: playerWidth, contentHeight: contentHeight)
+                let showIntroBesidePlayer = fittedPlayer.width < playerWidth - 1
 
-                    VideoIntroCard(
-                        model: model,
-                        maxHeight: regularIntroHeight(playerWidth: playerWidth, contentHeight: contentHeight),
-                        fillToHeight: true,
-                        onTagTap: { appModel.openSearch(for: $0, returningTo: model.makePlaybackRequest()) }
-                    )
-                    .frame(width: playerWidth)
-                    .layoutPriority(1)
+                if showIntroBesidePlayer {
+                    HStack(alignment: .top, spacing: AppLayout.videoDetailSectionSpacing) {
+                        playerSection(maxWidth: playerWidth, maxHeight: maxHeight)
+                            .opacity(fullscreenPresenter.isPresented ? 0 : 1)
+                            .allowsHitTesting(!fullscreenPresenter.isPresented)
+
+                        VideoIntroCard(
+                            model: model,
+                            maxHeight: fittedPlayer.height,
+                            fillToHeight: true,
+                            onTagTap: { appModel.openSearch(for: $0, returningTo: model.makePlaybackRequest()) }
+                        )
+                        .frame(maxWidth: .infinity)
+                        .frame(height: fittedPlayer.height, alignment: .topLeading)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .frame(height: contentHeight, alignment: .topLeading)
+                } else {
+                    VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
+                        playerSection(maxWidth: playerWidth, maxHeight: maxHeight)
+                            .frame(
+                                width: playerWidth,
+                                alignment: model.player.displayAspectRatio < 1 ? .center : .leading
+                            )
+                            .opacity(fullscreenPresenter.isPresented ? 0 : 1)
+                            .allowsHitTesting(!fullscreenPresenter.isPresented)
+
+                        VideoIntroCard(
+                            model: model,
+                            maxHeight: regularIntroHeight(playerWidth: playerWidth, contentHeight: contentHeight),
+                            fillToHeight: true,
+                            onTagTap: { appModel.openSearch(for: $0, returningTo: model.makePlaybackRequest()) }
+                        )
+                        .frame(width: playerWidth)
+                        .layoutPriority(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .frame(height: contentHeight, alignment: .topLeading)
                 }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .frame(height: contentHeight, alignment: .topLeading)
             }
         }
     }
 
-    private func compactIntroHeight(playerWidth: CGFloat, contentHeight: CGFloat) -> CGFloat {
-        let playerHeight = VideoPlayerChrome.detailPlayerSize(
+    private func fittedPlayerSize(playerWidth: CGFloat, contentHeight: CGFloat) -> CGSize {
+        VideoPlayerChrome.detailPlayerSize(
             maxWidth: playerWidth,
-            maxHeight: contentHeight,
+            maxHeight: playerMaxHeight(contentHeight: contentHeight),
             aspectRatio: model.player.displayAspectRatio
-        ).height
+        )
+    }
+
+    private func compactIntroHeight(playerWidth: CGFloat, contentHeight: CGFloat) -> CGFloat {
+        let playerHeight = fittedPlayerSize(playerWidth: playerWidth, contentHeight: contentHeight).height
         let remainingHeight = contentHeight
             - playerHeight
             - AppLayout.videoDetailSectionSpacing * 2
@@ -1399,11 +1425,7 @@ struct VideoDetailView: View {
     }
 
     private func regularIntroHeight(playerWidth: CGFloat, contentHeight: CGFloat) -> CGFloat {
-        let playerHeight = VideoPlayerChrome.detailPlayerSize(
-            maxWidth: playerWidth,
-            maxHeight: contentHeight,
-            aspectRatio: model.player.displayAspectRatio
-        ).height
+        let playerHeight = fittedPlayerSize(playerWidth: playerWidth, contentHeight: contentHeight).height
         return max(
             1,
             contentHeight

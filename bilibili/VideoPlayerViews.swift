@@ -26,20 +26,9 @@ enum VideoPlayerChrome {
         return CGSize(width: width, height: height)
     }
 
-    /// 播放页内嵌播放器：按列宽和视频比例计算尺寸，不预留黑边。
-    static func inlinePlayerSize(maxWidth: CGFloat, aspectRatio: CGFloat) -> CGSize {
-        let ratio = max(aspectRatio, 0.01)
-        let width = max(1, maxWidth)
-        return CGSize(width: width, height: width / ratio)
-    }
-
-    /// 播放页：竖屏优先占满可用高度，横屏优先占满列宽。
+    /// 播放页：在列宽与可用高度内按视频比例适配，避免 4:3 等比例溢出。
     static func detailPlayerSize(maxWidth: CGFloat, maxHeight: CGFloat, aspectRatio: CGFloat) -> CGSize {
-        let ratio = max(aspectRatio, 0.01)
-        if ratio < 1 {
-            return fittedSize(maxWidth: maxWidth, maxHeight: maxHeight, aspectRatio: aspectRatio)
-        }
-        return inlinePlayerSize(maxWidth: maxWidth, aspectRatio: aspectRatio)
+        fittedSize(maxWidth: maxWidth, maxHeight: maxHeight, aspectRatio: aspectRatio)
     }
 }
 

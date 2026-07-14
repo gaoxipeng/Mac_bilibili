@@ -33,6 +33,16 @@ enum VideoPlayerChrome {
 }
 
 final class PlayerClipContainerView: NSView {
+    private static var permitsFullscreenToInlineHandoff = false
+
+    static func beginFullscreenToInlineHandoff() {
+        permitsFullscreenToInlineHandoff = true
+    }
+
+    static func endFullscreenToInlineHandoff() {
+        permitsFullscreenToInlineHandoff = false
+    }
+
     let playerView = NonSeekingPlayerView()
     private weak var mpvView: MPVRenderView?
     var cornerRadius: CGFloat {
@@ -71,7 +81,8 @@ final class PlayerClipContainerView: NSView {
            current !== self,
            current.cornerRadius == 0,
            current.window?.isVisible == true,
-           cornerRadius > 0 {
+           cornerRadius > 0,
+           !Self.permitsFullscreenToInlineHandoff {
             return
         }
 
@@ -117,6 +128,7 @@ final class PictureInPictureHost: NSObject {
     private weak var playbackSurface: PlayerClipContainerView?
     private var lastHandledRequestID = 0
     private var pictureInPictureResizeBlocker: PictureInPictureWindowResizeBlocker?
+    private var pictureInPictureStartTimeoutTask: Task<Void, Never>?
 
     private static let parkedHostFrame = NSRect(x: -20_000, y: -20_000, width: 2, height: 2)
 
@@ -156,6 +168,17 @@ final class PictureInPictureHost: NSObject {
     }
 
     func handleRequest(player: VideoPlaybackEngine, requestID: Int) {
+        if playbackEngine !== player {
+            // requestID 是每个 VideoPlaybackEngine 独立计数的。切换视频后必须
+            // 重置全局宿主的去重状态，否则新播放器的第一个请求（通常也是 1）
+            // 会被误判成上一个视频的旧请求。
+            pictureInPictureStartTimeoutTask?.cancel()
+            pictureInPictureStartTimeoutTask = nil
+            pictureInPictureController?.delegate = nil
+            pictureInPictureController = nil
+            anchorView.playerLayer.player = nil
+            lastHandledRequestID = 0
+        }
         playbackEngine = player
         guard let avPlayer = player.avPlayer else { return }
         ensureHostWindow()
@@ -174,6 +197,7 @@ final class PictureInPictureHost: NSObject {
             blockWindowResizeDuringPictureInPictureStart()
             alignAnchorWithPlaybackSurface()
             controller.startPictureInPicture()
+            schedulePictureInPictureStartTimeout(controller)
         }
     }
 
@@ -272,6 +296,29 @@ final class PictureInPictureHost: NSObject {
             self.pictureInPictureResizeBlocker = nil
         }
     }
+
+    private func schedulePictureInPictureStartTimeout(_ controller: AVPictureInPictureController) {
+        pictureInPictureStartTimeoutTask?.cancel()
+        pictureInPictureStartTimeoutTask = Task { @MainActor [weak self, weak controller] in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled,
+                  let self,
+                  let controller,
+                  !controller.isPictureInPictureActive else { return }
+            recoverFromPictureInPictureStartFailure()
+        }
+    }
+
+    private func recoverFromPictureInPictureStartFailure() {
+        pictureInPictureStartTimeoutTask?.cancel()
+        pictureInPictureStartTimeoutTask = nil
+        publishPictureInPictureActive(false)
+        pictureInPictureController?.delegate = nil
+        pictureInPictureController = nil
+        anchorView.playerLayer.player = nil
+        parkHostWindowOffScreen()
+        releasePictureInPictureResizeBlocker(after: 0)
+    }
 }
 
 extension PictureInPictureHost: AVPictureInPictureControllerDelegate {
@@ -280,6 +327,8 @@ extension PictureInPictureHost: AVPictureInPictureControllerDelegate {
     }
 
     func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        pictureInPictureStartTimeoutTask?.cancel()
+        pictureInPictureStartTimeoutTask = nil
         parkHostWindowOffScreen()
         releasePictureInPictureResizeBlocker()
     }
@@ -288,9 +337,7 @@ extension PictureInPictureHost: AVPictureInPictureControllerDelegate {
         _ pictureInPictureController: AVPictureInPictureController,
         failedToStartPictureInPictureWithError error: Error
     ) {
-        publishPictureInPictureActive(false)
-        parkHostWindowOffScreen()
-        releasePictureInPictureResizeBlocker(after: 0)
+        recoverFromPictureInPictureStartFailure()
     }
 
     func pictureInPictureControllerWillStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
@@ -298,8 +345,13 @@ extension PictureInPictureHost: AVPictureInPictureControllerDelegate {
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
+        pictureInPictureStartTimeoutTask?.cancel()
+        pictureInPictureStartTimeoutTask = nil
         publishPictureInPictureActive(false)
         parkHostWindowOffScreen()
+        anchorView.playerLayer.player = nil
+        self.pictureInPictureController?.delegate = nil
+        self.pictureInPictureController = nil
         releasePictureInPictureResizeBlocker(after: 0)
     }
 

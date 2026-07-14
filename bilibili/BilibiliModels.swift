@@ -519,32 +519,8 @@ struct BiliHistoryItem: Identifiable, Hashable, Sendable {
     let webURI: URL?
     let badge: String
 
-    /// Stable list identity across viewedAt / progress updates.
+    /// Stable identity supplied by the cloud history record.
     var listIdentity: String { kid.isEmpty ? id : kid }
-
-    func withUpdatedViewing(at viewedAt: Date, progressSeconds: Int? = nil) -> BiliHistoryItem {
-        let viewedAtSeconds = Int64(viewedAt.timeIntervalSince1970)
-        let resolvedProgress = progressSeconds ?? self.progressSeconds
-        let itemID: String = {
-            if business == .pgc {
-                let anchor = epid > 0 ? epid : (video.cid > 0 ? video.cid : video.aid)
-                return "pgc-\(anchor)-\(viewedAtSeconds)"
-            }
-            return "\(video.bvid)-\(viewedAtSeconds)"
-        }()
-        return BiliHistoryItem(
-            id: itemID,
-            kid: kid,
-            business: business,
-            video: video,
-            viewedAt: viewedAt,
-            progressSeconds: resolvedProgress,
-            durationSeconds: durationSeconds,
-            epid: epid,
-            webURI: webURI,
-            badge: badge
-        )
-    }
 }
 
 enum BiliHistoryBusiness: String, Sendable, Hashable {

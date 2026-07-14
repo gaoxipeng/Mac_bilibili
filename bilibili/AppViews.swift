@@ -401,7 +401,7 @@ struct VideoFeedGrid<Trailing: View>: View {
     var showsLikeCount = true
     var showsAuthor = true
     var usesCardSurface = true
-    var resolveWatchProgress = false
+    var resolveWatchProgress = true
     var maxColumnCount: Int? = nil
     @ViewBuilder var trailing: () -> Trailing
     @Environment(\.feedViewportWidth) private var feedViewportWidth
@@ -414,7 +414,7 @@ struct VideoFeedGrid<Trailing: View>: View {
         showsLikeCount: Bool = true,
         showsAuthor: Bool = true,
         usesCardSurface: Bool = true,
-        resolveWatchProgress: Bool = false,
+        resolveWatchProgress: Bool = true,
         maxColumnCount: Int? = nil,
         @ViewBuilder trailing: @escaping () -> Trailing = { EmptyView() }
     ) {

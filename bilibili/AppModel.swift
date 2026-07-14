@@ -197,8 +197,6 @@ final class AppModel: ObservableObject {
     private var homeFetchCount = 0
     private var favoritePage = 1
     private var historyCursor: BiliHistoryCursor?
-    private var lastOpenedHistoryKid: String?
-    private var watchProgressByKey: [String: BiliWatchProgress] = [:]
 
     private let api = BilibiliAPI()
     private let accountStore = AccountStore()
@@ -227,7 +225,7 @@ final class AppModel: ObservableObject {
                 await refreshHome()
             }
             await refreshFollowingOnLaunch()
-            await prefetchWatchProgressIndex()
+            await prefetchHistory()
         } else {
             resetHomeForLoggedOut()
         }
@@ -331,7 +329,6 @@ final class AppModel: ObservableObject {
     }
 
     func openHistoryVideo(_ item: BiliHistoryItem) {
-        lastOpenedHistoryKid = item.kid.isEmpty ? nil : item.kid
         Task {
             pendingPlaybackRequest = await api.resolveHistoryPlaybackRequest(
                 item: item,
@@ -341,10 +338,6 @@ final class AppModel: ObservableObject {
     }
 
     func resolvePlaybackRequest(for video: BiliVideo) async -> VideoPlaybackRequest {
-        if let progress = cachedWatchProgress(for: video) {
-            return playbackRequest(for: video, progress: progress)
-        }
-
         guard let credential = account?.credential else {
             if video.pgcEpid > 0 {
                 return VideoPlaybackRequest(
@@ -361,7 +354,6 @@ final class AppModel: ObservableObject {
             aid: video.aid,
             credential: credential
         ) {
-            storeWatchProgress(progress, for: video)
             return playbackRequest(for: video, progress: progress)
         }
 
@@ -385,49 +377,10 @@ final class AppModel: ObservableObject {
         )
     }
 
-    private func cachedWatchProgress(for video: BiliVideo) -> BiliWatchProgress? {
-        watchProgressByKey[watchProgressKey(for: video)]
-    }
-
-    private func storeWatchProgress(_ progress: BiliWatchProgress, for video: BiliVideo) {
-        watchProgressByKey[watchProgressKey(for: video)] = progress
-    }
-
-    private func watchProgressKey(for video: BiliVideo) -> String {
-        if !video.bvid.isEmpty { return "bvid:\(video.bvid)" }
-        if video.aid > 0 { return "aid:\(video.aid)" }
-        return "id:\(video.id)"
-    }
-
-    private func mergeWatchProgress(from items: [BiliHistoryItem]) {
-        for item in items {
-            guard let progress = Self.resumableWatchProgress(from: item) else { continue }
-            let key = watchProgressKey(for: item.video)
-            if let existing = watchProgressByKey[key] {
-                if existing.progressSeconds >= progress.progressSeconds {
-                    continue
-                }
-            }
-            watchProgressByKey[key] = progress
-        }
-    }
-
-    private static func resumableWatchProgress(from item: BiliHistoryItem) -> BiliWatchProgress? {
-        let durationSeconds = max(item.durationSeconds, item.video.duration)
-        let progress = BiliWatchProgress(
-            progressSeconds: item.progressSeconds,
-            epid: item.epid,
-            refererURL: item.webURI,
-            durationSeconds: durationSeconds
-        )
-        return progress.isResumable ? progress : nil
-    }
-
-    private func prefetchWatchProgressIndex() async {
+    private func prefetchHistory() async {
         guard let credential = account?.credential else { return }
         do {
             let page = try await api.history(credential: credential, pageSize: 30)
-            mergeWatchProgress(from: page.items)
             if historyItems.isEmpty {
                 historyItems = page.items
                 historyCursor = page.cursor
@@ -491,7 +444,6 @@ final class AppModel: ObservableObject {
                 historyItems = page.items
                 historyCursor = page.cursor
                 historyHasMore = page.hasMore
-                mergeWatchProgress(from: page.items)
             case .favorites:
                 guard let credential = account?.credential else {
                     guard generation == reloadGeneration else { return }
@@ -521,26 +473,23 @@ final class AppModel: ObservableObject {
         case .favorites:
             await refreshFavoritesQuietly()
         case .history:
-            promoteOpenedHistoryItemAfterPlayback()
+            await refreshHistoryQuietly()
         default:
             break
         }
     }
 
-    private func promoteOpenedHistoryItemAfterPlayback() {
-        guard let kid = lastOpenedHistoryKid, !kid.isEmpty else { return }
-        lastOpenedHistoryKid = nil
-        guard let index = historyItems.firstIndex(where: { $0.kid == kid }) else { return }
-
-        let item = historyItems[index]
-        let progressSeconds = cachedWatchProgress(for: item.video)?.progressSeconds
-        let updated = item.withUpdatedViewing(at: Date(), progressSeconds: progressSeconds)
-
-        var items = historyItems
-        items.remove(at: index)
-        items.append(updated)
-        historyItems = JSONParser.sortHistoryItems(items)
-        mergeWatchProgress(from: historyItems)
+    private func refreshHistoryQuietly() async {
+        guard let credential = account?.credential else { return }
+        do {
+            let page = try await api.history(credential: credential)
+            historyItems = page.items
+            historyCursor = page.cursor
+            historyHasMore = page.hasMore
+            errorMessage = nil
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     private func refreshFavoritesQuietly() async {
@@ -613,7 +562,6 @@ final class AppModel: ObservableObject {
                     || next.business != cursor.business
             } ?? false
             historyItems = merged
-            mergeWatchProgress(from: page.items)
             historyCursor = page.cursor
             if !page.hasMore || page.items.isEmpty {
                 historyHasMore = false
@@ -909,7 +857,7 @@ final class AppModel: ObservableObject {
             await loadProfile(account: savedAccount)
             await refreshHome()
             await refreshFollowingOnLaunch()
-            await prefetchWatchProgressIndex()
+            await prefetchHistory()
             await reloadSelectedIfNeeded()
             return true
         } catch {
@@ -962,7 +910,6 @@ final class AppModel: ObservableObject {
         historyCursor = nil
         historyHasMore = false
         historyLoadingMore = false
-        watchProgressByKey = [:]
         favoriteVideos = []
         favoritePage = 1
         favoriteHasMore = false

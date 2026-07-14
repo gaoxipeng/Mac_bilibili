@@ -1,6 +1,8 @@
 import AVFoundation
+import AppKit
 import Combine
 import Foundation
+import MediaPlayer
 
 @MainActor
 final class VideoPlaybackEngine: ObservableObject {
@@ -33,6 +35,15 @@ final class VideoPlaybackEngine: ObservableObject {
 
     private var presentationSizeObservation: NSKeyValueObservation?
     private var volumeBeforeMute: Float = 1
+    private var remoteCommandTargets: [(MPRemoteCommand, Any)] = []
+    private var nowPlayingTitle = ""
+    private var nowPlayingArtist = ""
+    private var nowPlayingArtwork: MPMediaItemArtwork?
+    private var artworkTask: Task<Void, Never>?
+    private var pictureInPicturePreparationTask: Task<Void, Never>?
+    private var pictureInPicturePrewarmTask: Task<Void, Never>?
+    private var preparedPictureInPictureItem: AVPlayerItem?
+    @Published private(set) var isPictureInPicturePreparing = false
 
     var avPlayer: AVPlayer? { player }
 
@@ -54,14 +65,17 @@ final class VideoPlaybackEngine: ObservableObject {
         renderView.onTimeChanged = { [weak self] value in
             guard let self, !isScrubbing, !isPictureInPictureActive else { return }
             currentTime = value
+            updateNowPlayingInfo()
         }
         renderView.onDurationChanged = { [weak self] value in
             guard let self, value.isFinite, value > 0 else { return }
             duration = value
+            updateNowPlayingInfo()
         }
         renderView.onPauseChanged = { [weak self] paused in
             guard let self, !isPictureInPictureActive else { return }
             isPlaying = !paused
+            updateNowPlayingInfo()
         }
         renderView.onVideoSizeChanged = { [weak self] size in
             guard let self, size.width > 0, size.height > 0 else { return }
@@ -72,14 +86,53 @@ final class VideoPlaybackEngine: ObservableObject {
         renderView.onError = { [weak self] _ in
             self?.isPlaying = false
             self?.isReady = false
+            self?.updateNowPlayingInfo()
         }
+        installRemoteCommands()
+    }
+
+    func configureNowPlaying(title: String, artist: String, artworkURL: URL?) {
+        if remoteCommandTargets.isEmpty { installRemoteCommands() }
+        nowPlayingTitle = title
+        nowPlayingArtist = artist
+        nowPlayingArtwork = nil
+        updateNowPlayingInfo()
+
+        artworkTask?.cancel()
+        guard let artworkURL else { return }
+        artworkTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let (data, _) = try await URLSession.shared.data(from: artworkURL)
+                guard !Task.isCancelled, let image = NSImage(data: data) else { return }
+                nowPlayingArtwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
+                updateNowPlayingInfo()
+            } catch {
+                // 封面失败不影响系统播放控制。
+            }
+        }
+    }
+
+    func clearNowPlaying() {
+        artworkTask?.cancel()
+        artworkTask = nil
+        nowPlayingTitle = ""
+        nowPlayingArtist = ""
+        nowPlayingArtwork = nil
+        for (command, target) in remoteCommandTargets {
+            command.removeTarget(target)
+        }
+        remoteCommandTargets.removeAll()
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        MPNowPlayingInfoCenter.default().playbackState = .stopped
     }
 
     func load(
         stream: BiliPlayStream,
         pictureInPictureStream: BiliPlayStream? = nil,
         pictureInPictureStreamLoader: (() async throws -> BiliPlayStream)? = nil,
-        cookieHeader: String
+        cookieHeader: String,
+        startAt startSeconds: Double = 0
     ) async throws {
         stop()
         videoAspectRatio = 16.0 / 9.0
@@ -90,10 +143,12 @@ final class VideoPlaybackEngine: ObservableObject {
         try renderView.load(
             videoURL: stream.videoURL,
             audioURL: stream.audioURL,
-            headers: headers
+            headers: headers,
+            start: max(0, startSeconds)
         )
         applyVolume()
         startPlayback()
+        startPictureInPicturePrewarming()
     }
 
     func cyclePlaybackRate() {
@@ -128,27 +183,46 @@ final class VideoPlaybackEngine: ObservableObject {
             pictureInPictureRequestID += 1
             return
         }
-        Task { @MainActor in
+        guard pictureInPicturePreparationTask == nil else { return }
+        isPictureInPicturePreparing = true
+        pictureInPicturePreparationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                pictureInPicturePreparationTask = nil
+                isPictureInPicturePreparing = false
+            }
             do {
-                let stream: BiliPlayStream
-                if let pictureInPictureStream {
-                    stream = pictureInPictureStream
-                } else if let pictureInPictureStreamLoader {
-                    stream = try await pictureInPictureStreamLoader()
-                    self.pictureInPictureStream = stream
-                } else {
-                    return
+                if let pictureInPicturePrewarmTask {
+                    await pictureInPicturePrewarmTask.value
                 }
-                let item = try await Self.makePlayerItem(stream: stream, headers: playbackHeaders)
+                let item: AVPlayerItem
+                if let preparedPictureInPictureItem {
+                    item = preparedPictureInPictureItem
+                    self.preparedPictureInPictureItem = nil
+                } else {
+                    item = try await preparePictureInPictureItem()
+                }
                 item.preferredForwardBufferDuration = 30
                 let pipPlayer = AVPlayer(playerItem: item)
-                pipPlayer.volume = isMuted ? 0 : volume
+                // AVPictureInPictureController 要求 playerLayer 已经有活动播放时间线。
+                // 先静音预播放，避免与 mpv 双重出声；系统确认启动后再切换音频。
+                pipPlayer.isMuted = true
+                pipPlayer.volume = volume
                 let time = CMTime(seconds: preciseCurrentTime, preferredTimescale: 600)
                 await pipPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
                 player = pipPlayer
+                pipPlayer.play()
+                pipPlayer.rate = playbackRate
+                try await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled else {
+                    pipPlayer.pause()
+                    player = nil
+                    return
+                }
                 pictureInPictureRequestID += 1
             } catch {
                 player = nil
+                setPictureInPictureActive(false)
             }
         }
     }
@@ -157,6 +231,8 @@ final class VideoPlaybackEngine: ObservableObject {
         if isActive, !isPictureInPictureActive {
             resumeMPVAfterPictureInPicture = isPlaying
             renderView.setPaused(true)
+            player?.isMuted = isMuted
+            player?.volume = volume
             if resumeMPVAfterPictureInPicture {
                 player?.play()
                 player?.rate = playbackRate
@@ -170,6 +246,12 @@ final class VideoPlaybackEngine: ObservableObject {
             player = nil
             renderView.setPaused(!resumeMPVAfterPictureInPicture)
             isPlaying = resumeMPVAfterPictureInPicture
+        } else if !isActive {
+            // 启动尚未进入 willStart 就失败或超时：临时 AVPlayer 仍在静音
+            // 预播放，必须清除，否则会保留旧帧并占用后续画中画请求。
+            player?.pause()
+            player = nil
+            if isPlaying { renderView.setPaused(false) }
         }
         isPictureInPictureActive = isActive
     }
@@ -178,10 +260,11 @@ final class VideoPlaybackEngine: ObservableObject {
         renderView.setPaused(true)
         player?.pause()
         isPlaying = false
+        updateNowPlayingInfo()
     }
 
     func resumePlayback() {
-        guard isReady, player != nil else { return }
+        guard isReady else { return }
         startPlayback()
     }
 
@@ -200,6 +283,7 @@ final class VideoPlaybackEngine: ObservableObject {
         renderView.seek(to: seconds)
         player?.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
         currentTime = max(0, seconds)
+        updateNowPlayingInfo()
         if resumeAfter, !isPlaying {
             startPlayback()
         }
@@ -295,6 +379,12 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     func stop() {
+        pictureInPicturePreparationTask?.cancel()
+        pictureInPicturePreparationTask = nil
+        pictureInPicturePrewarmTask?.cancel()
+        pictureInPicturePrewarmTask = nil
+        preparedPictureInPictureItem = nil
+        isPictureInPicturePreparing = false
         wheelEndTask?.cancel()
         wheelEndTask = nil
         isWheelScrubbing = false
@@ -322,6 +412,39 @@ final class VideoPlaybackEngine: ObservableObject {
         videoAspectRatio = 16.0 / 9.0
         playbackRate = 1
         isPictureInPictureActive = false
+        updateNowPlayingInfo()
+    }
+
+    private func startPictureInPicturePrewarming() {
+        pictureInPicturePrewarmTask?.cancel()
+        preparedPictureInPictureItem = nil
+        guard pictureInPictureStream != nil || pictureInPictureStreamLoader != nil else { return }
+        pictureInPicturePrewarmTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { pictureInPicturePrewarmTask = nil }
+            do {
+                preparedPictureInPictureItem = try await preparePictureInPictureItem()
+            } catch {
+                preparedPictureInPictureItem = nil
+            }
+        }
+    }
+
+    private func preparePictureInPictureItem() async throws -> AVPlayerItem {
+        let stream: BiliPlayStream
+        if let pictureInPictureStream {
+            stream = pictureInPictureStream
+        } else if let pictureInPictureStreamLoader {
+            stream = try await pictureInPictureStreamLoader()
+            self.pictureInPictureStream = stream
+        } else {
+            throw APIError.message("没有可用的画中画播放地址")
+        }
+        let item = try await Self.makePlayerItem(stream: stream, headers: playbackHeaders)
+        guard try await item.asset.load(.isPlayable) else {
+            throw APIError.message("画中画视频资源不可播放")
+        }
+        return item
     }
 
     private func startPlayback() {
@@ -331,6 +454,60 @@ final class VideoPlaybackEngine: ObservableObject {
         player?.play()
         player?.rate = playbackRate
         isPlaying = true
+        updateNowPlayingInfo()
+    }
+
+    private func installRemoteCommands() {
+        guard remoteCommandTargets.isEmpty else { return }
+        let center = MPRemoteCommandCenter.shared()
+        center.playCommand.isEnabled = true
+        center.pauseCommand.isEnabled = true
+        center.togglePlayPauseCommand.isEnabled = true
+        center.changePlaybackPositionCommand.isEnabled = true
+        center.skipForwardCommand.isEnabled = true
+        center.skipBackwardCommand.isEnabled = true
+        center.skipForwardCommand.preferredIntervals = [15]
+        center.skipBackwardCommand.preferredIntervals = [15]
+
+        addRemoteTarget(center.playCommand) { [weak self] _ in self?.resumePlayback() }
+        addRemoteTarget(center.pauseCommand) { [weak self] _ in self?.pausePlayback() }
+        addRemoteTarget(center.togglePlayPauseCommand) { [weak self] _ in self?.togglePlayback() }
+        addRemoteTarget(center.skipForwardCommand) { [weak self] event in
+            let interval = (event as? MPSkipIntervalCommandEvent)?.interval ?? 15
+            self?.seek(by: interval)
+        }
+        addRemoteTarget(center.skipBackwardCommand) { [weak self] event in
+            let interval = (event as? MPSkipIntervalCommandEvent)?.interval ?? 15
+            self?.seek(by: -interval)
+        }
+        addRemoteTarget(center.changePlaybackPositionCommand) { [weak self] event in
+            guard let event = event as? MPChangePlaybackPositionCommandEvent else { return }
+            self?.seek(to: event.positionTime, resumeAfter: self?.isPlaying ?? false)
+        }
+    }
+
+    private func addRemoteTarget(_ command: MPRemoteCommand, action: @escaping @MainActor (MPRemoteCommandEvent) -> Void) {
+        let token = command.addTarget { event in
+            Task { @MainActor in action(event) }
+            return .success
+        }
+        remoteCommandTargets.append((command, token))
+    }
+
+    private func updateNowPlayingInfo() {
+        guard !nowPlayingTitle.isEmpty else { return }
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: nowPlayingTitle,
+            MPMediaItemPropertyPlaybackDuration: max(0, duration),
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: max(0, preciseCurrentTime),
+            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? Double(playbackRate) : 0,
+            MPNowPlayingInfoPropertyDefaultPlaybackRate: Double(playbackRate),
+            MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.video.rawValue
+        ]
+        if !nowPlayingArtist.isEmpty { info[MPMediaItemPropertyArtist] = nowPlayingArtist }
+        if let nowPlayingArtwork { info[MPMediaItemPropertyArtwork] = nowPlayingArtwork }
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
     }
 
     private func observeTime(_ player: AVPlayer) {

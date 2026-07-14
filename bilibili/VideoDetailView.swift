@@ -652,6 +652,13 @@ final class VideoDetailModel: ObservableObject {
             let cookieHeader = await api.httpCookieHeader(credential: credential)
             guard isLifecycleActive(generation), !Task.isCancelled else { return }
 
+            let initialStartSeconds: Double = {
+                guard !hasAppliedInitialProgress, initialProgressSeconds > 0 else { return 0 }
+                let knownDuration = displayVideo.duration
+                guard knownDuration <= 0 || initialProgressSeconds < knownDuration else { return 0 }
+                return Double(initialProgressSeconds)
+            }()
+
             try await player.load(
                 stream: resolvedStream,
                 pictureInPictureStream: dashStream == nil ? resolvedStream : nil,
@@ -659,8 +666,12 @@ final class VideoDetailModel: ObservableObject {
                     guard let self else { throw APIError.message("播放页面已关闭") }
                     return try await self.resolvePlayStream(bvid: bvid, cid: cid)
                 },
-                cookieHeader: cookieHeader
+                cookieHeader: cookieHeader,
+                startAt: initialStartSeconds
             )
+            if initialStartSeconds > 0 {
+                hasAppliedInitialProgress = true
+            }
             guard isLifecycleActive(generation) else {
                 player.stop()
                 return
@@ -1286,6 +1297,11 @@ struct VideoDetailView: View {
             publishesFloatingChrome = true
             publishVideoFloatingChrome()
             MediaPlaybackCoordinator.shared.notifyDetailVisible(model)
+            model.player.configureNowPlaying(
+                title: model.displayVideo.title,
+                artist: model.displayVideo.authorName,
+                artworkURL: model.displayVideo.coverURL
+            )
         }
         .task(id: model.seedVideo.id) {
             if publishesFloatingChrome {
@@ -1298,6 +1314,7 @@ struct VideoDetailView: View {
             appModel.resignVideoFloatingChrome()
             fullscreenPresenter.dismissImmediately()
             MediaPlaybackCoordinator.shared.notifyDetailHidden(model)
+            model.player.clearNowPlaying()
             VideoFullscreenPresenter.restoreMainWindowAppearance()
         }
         .onChange(of: commentFullscreenPicture) { _, _ in
@@ -1306,7 +1323,14 @@ struct VideoDetailView: View {
         .onChange(of: fullscreenPresenter.isPresented) { _, _ in
             updateImmersiveChromeSuppression()
         }
-        .onChange(of: model.displayVideo.title) { _, _ in updateFloatingChrome() }
+        .onChange(of: model.displayVideo.title) { _, _ in
+            updateFloatingChrome()
+            model.player.configureNowPlaying(
+                title: model.displayVideo.title,
+                artist: model.displayVideo.authorName,
+                artworkURL: model.displayVideo.coverURL
+            )
+        }
         .onChange(of: model.displayVideo.viewCount) { _, _ in updateFloatingChrome() }
         .onChange(of: model.displayVideo.danmakuCount) { _, _ in updateFloatingChrome() }
         .onChange(of: model.onlineCount) { _, _ in updateFloatingChrome() }

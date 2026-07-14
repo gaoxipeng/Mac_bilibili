@@ -119,14 +119,22 @@ final class VideoFullscreenPresenter: ObservableObject {
             mainWindowAlpha: 1,
             opening: false
         ) { [weak self] in
-            window.orderOut(nil)
-            self?.isPresented = false
-            self?.cleanup()
+            guard let self else { return }
+            // 先让内嵌卡片接管共享的 mpv/OpenGL 视图，全屏窗口在原卡片位置
+            // 再保留一帧作为遮盖，避免 orderOut 与 SwiftUI 重挂载之间露出黑帧。
+            PlayerClipContainerView.beginFullscreenToInlineHandoff()
+            self.isPresented = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60.0) { [weak self] in
+                window.orderOut(nil)
+                PlayerClipContainerView.endFullscreenToInlineHandoff()
+                self?.cleanup()
+            }
         }
     }
 
     func dismissImmediately() {
         cancelTransition()
+        PlayerClipContainerView.endFullscreenToInlineHandoff()
         if let window {
             prepareForSystemChromeRestoration(window: window)
             window.orderOut(nil)
@@ -142,6 +150,7 @@ final class VideoFullscreenPresenter: ObservableObject {
 
     private func cleanup() {
         cancelTransition()
+        PlayerClipContainerView.endFullscreenToInlineHandoff()
         removeEdgeMouseMonitor()
         exitSystemFullscreenChrome()
         window = nil

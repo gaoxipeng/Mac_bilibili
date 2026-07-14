@@ -179,7 +179,14 @@ struct ContentView: View {
     }
 
     private var sidebarPane: some View {
-        Sidebar(model: model, selection: $model.selectedSection)
+        Sidebar(
+            model: model,
+            selection: $model.selectedSection,
+            onReselect: {
+                guard !navigationPath.isEmpty else { return }
+                navigationPath = NavigationPath()
+            }
+        )
             .frame(width: AppLayout.sidebarWidth)
             .frame(maxHeight: .infinity)
             .background(AppLayout.sidebarBackgroundColor)
@@ -490,6 +497,7 @@ private struct DetailFloatingChrome: View {
 private struct Sidebar: View {
     @ObservedObject var model: AppModel
     @Binding var selection: AppSection
+    let onReselect: () -> Void
 
     private var isMineSelected: Bool {
         selection == .mine
@@ -540,6 +548,10 @@ private struct Sidebar: View {
     private func select(_ section: AppSection) {
         if section == .search {
             model.requestSearchFocus()
+        }
+        if selection == section {
+            onReselect()
+            return
         }
         selection = section
     }

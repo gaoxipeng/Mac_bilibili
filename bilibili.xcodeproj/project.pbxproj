@@ -6,6 +6,10 @@
 	objectVersion = 110;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A10000000000000000000003 /* MPVKit in Frameworks */ = {isa = PBXBuildFile; productRef = A10000000000000000000002 /* MPVKit */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		444A5EE02FF42E0C00C6D4C5 /* bilibili.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = bilibili.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -35,6 +39,7 @@
 		444A5EDD2FF42E0C00C6D4C5 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				A10000000000000000000003 /* MPVKit in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -73,6 +78,9 @@
 				444A5EE22FF42E0C00C6D4C5 /* bilibili */,
 			);
 			name = bilibili;
+			packageProductDependencies = (
+				A10000000000000000000002 /* MPVKit */,
+			);
 			productName = bilibili;
 			productReference = 444A5EE02FF42E0C00C6D4C5 /* bilibili.app */;
 			productType = "com.apple.product-type.application";
@@ -101,6 +109,9 @@
 			);
 			mainGroup = 444A5ED72FF42E0C00C6D4C5;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				A10000000000000000000001 /* XCRemoteSwiftPackageReference "MPVKit" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 444A5EE12FF42E0C00C6D4C5 /* Products */;
 			projectDirPath = "";
@@ -330,6 +341,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		A10000000000000000000001 /* XCRemoteSwiftPackageReference "MPVKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/mpvkit/MPVKit.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.41.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A10000000000000000000002 /* MPVKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A10000000000000000000001 /* XCRemoteSwiftPackageReference "MPVKit" */;
+			productName = MPVKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 444A5ED82FF42E0C00C6D4C5 /* Project object */;
 	validationLevel = 1;

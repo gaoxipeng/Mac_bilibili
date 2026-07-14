@@ -1,0 +1,17 @@
+Third-Party Software Notices
+
+This application dynamically links the LGPL build of MPVKit 0.41.0,
+including libmpv, FFmpeg, and their bundled dynamic frameworks.
+
+MPVKit source and license:
+https://github.com/mpvkit/MPVKit/tree/0.41.0
+
+MPVKit and its non-GPL binary bundles are licensed under the GNU Lesser
+General Public License, version 3. Users may replace the dynamically linked
+frameworks with compatible modified versions as permitted by that license.
+
+GNU LGPL version 3:
+https://www.gnu.org/licenses/lgpl-3.0.html
+
+This notice does not alter the licenses of the application code or any other
+third-party software.

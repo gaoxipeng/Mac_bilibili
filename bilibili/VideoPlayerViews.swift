@@ -34,6 +34,7 @@ enum VideoPlayerChrome {
 
 final class PlayerClipContainerView: NSView {
     let playerView = NonSeekingPlayerView()
+    private weak var mpvView: MPVRenderView?
     var cornerRadius: CGFloat {
         didSet { applyRoundedMask() }
     }
@@ -54,9 +55,31 @@ final class PlayerClipContainerView: NSView {
     override func layout() {
         super.layout()
         playerView.frame = bounds
+        mpvView?.frame = bounds
         playerView.autoresizingMask = [.width, .height]
         applyRoundedMask()
         PictureInPictureHost.shared.updatePlaybackSurface(self)
+    }
+
+    func attachMPVView(_ view: MPVRenderView) {
+        guard mpvView !== view || view.superview !== self else { return }
+
+        // 内嵌页和全屏窗口共享同一个 libmpv/OpenGL 渲染视图。全屏控制栏在鼠标
+        // 移动时会频繁刷新 SwiftUI；此时内嵌 representable 也可能收到 update，
+        // 不能让它把渲染视图从仍可见的全屏窗口抢回去，否则画面会持续黑屏闪烁。
+        if let current = view.superview as? PlayerClipContainerView,
+           current !== self,
+           current.cornerRadius == 0,
+           current.window?.isVisible == true,
+           cornerRadius > 0 {
+            return
+        }
+
+        view.removeFromSuperview()
+        mpvView = view
+        addSubview(view, positioned: .above, relativeTo: playerView)
+        view.frame = bounds
+        view.autoresizingMask = [.width, .height]
     }
 
     override func viewDidMoveToWindow() {
@@ -272,7 +295,6 @@ extension PictureInPictureHost: AVPictureInPictureControllerDelegate {
 
     func pictureInPictureControllerWillStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         alignAnchorWithPlaybackSurface()
-        publishPictureInPictureActive(false)
     }
 
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
@@ -434,14 +456,14 @@ struct VideoPlayerSurface: NSViewRepresentable {
         container.playerView.controlsStyle = .none
         container.playerView.allowsPictureInPicturePlayback = false
         container.playerView.videoGravity = .resizeAspect
-        container.playerView.player = player.avPlayer
+        container.attachMPVView(player.renderView)
         return container
     }
 
     func updateNSView(_ nsView: PlayerClipContainerView, context: Context) {
         _ = player.isReady
         nsView.cornerRadius = cornerRadius
-        nsView.playerView.player = player.avPlayer
+        nsView.attachMPVView(player.renderView)
     }
 }
 
@@ -518,7 +540,7 @@ final class FullscreenPlayerHostNSView: NSView {
         let player = model.player
         wheelMonitor.player = player
         keyboardMonitor.handlers = keyboardHandlers
-        playerContainer.playerView.player = player.avPlayer
+        playerContainer.attachMPVView(player.renderView)
 
         guard player.isReady else {
             danmakuView.apply(

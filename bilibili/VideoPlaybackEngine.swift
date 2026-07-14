@@ -11,6 +11,11 @@ final class VideoPlaybackEngine: ObservableObject {
     @Published var scrubPreviewTime: Double?
 
     private var player: AVPlayer?
+    let renderView = MPVRenderView(frame: .zero)
+    private var pictureInPictureStream: BiliPlayStream?
+    private var pictureInPictureStreamLoader: (() async throws -> BiliPlayStream)?
+    private var playbackHeaders: [String: String] = [:]
+    private var resumeMPVAfterPictureInPicture = false
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var statusObservation: NSKeyValueObservation?
@@ -32,10 +37,12 @@ final class VideoPlaybackEngine: ObservableObject {
     var avPlayer: AVPlayer? { player }
 
     var preciseCurrentTime: Double {
-        guard let seconds = player?.currentTime().seconds, seconds.isFinite else {
-            return currentTime
+        if isPictureInPictureActive,
+           let seconds = player?.currentTime().seconds,
+           seconds.isFinite {
+            return seconds
         }
-        return seconds
+        return currentTime
     }
 
     var displayAspectRatio: CGFloat {
@@ -43,21 +50,48 @@ final class VideoPlaybackEngine: ObservableObject {
         return videoAspectRatio
     }
 
-    func load(stream: BiliPlayStream, cookieHeader: String) async throws {
+    init() {
+        renderView.onTimeChanged = { [weak self] value in
+            guard let self, !isScrubbing, !isPictureInPictureActive else { return }
+            currentTime = value
+        }
+        renderView.onDurationChanged = { [weak self] value in
+            guard let self, value.isFinite, value > 0 else { return }
+            duration = value
+        }
+        renderView.onPauseChanged = { [weak self] paused in
+            guard let self, !isPictureInPictureActive else { return }
+            isPlaying = !paused
+        }
+        renderView.onVideoSizeChanged = { [weak self] size in
+            guard let self, size.width > 0, size.height > 0 else { return }
+            videoAspectRatio = size.width / size.height
+        }
+        renderView.onReady = { [weak self] in self?.isReady = true }
+        renderView.onEnded = { [weak self] in self?.isPlaying = false }
+        renderView.onError = { [weak self] _ in
+            self?.isPlaying = false
+            self?.isReady = false
+        }
+    }
+
+    func load(
+        stream: BiliPlayStream,
+        pictureInPictureStream: BiliPlayStream? = nil,
+        pictureInPictureStreamLoader: (() async throws -> BiliPlayStream)? = nil,
+        cookieHeader: String
+    ) async throws {
         stop()
         videoAspectRatio = 16.0 / 9.0
         let headers = BilibiliEndpoints.playbackHeaders(cookie: cookieHeader)
-        let item = try await Self.makePlayerItem(stream: stream, headers: headers)
-        if let ratio = try? await Self.resolveAspectRatio(from: item.asset) {
-            videoAspectRatio = ratio
-        }
-        let player = AVPlayer(playerItem: item)
-        self.player = player
-        isReady = true
-        observeTime(player)
-        observeEnd(player)
-        observeStatus(item)
-        observePresentationSize(item)
+        self.pictureInPictureStream = pictureInPictureStream
+        self.pictureInPictureStreamLoader = pictureInPictureStreamLoader
+        playbackHeaders = headers
+        try renderView.load(
+            videoURL: stream.videoURL,
+            audioURL: stream.audioURL,
+            headers: headers
+        )
         applyVolume()
         startPlayback()
     }
@@ -72,6 +106,7 @@ final class VideoPlaybackEngine: ObservableObject {
             playbackRate = 1
         }
         if isPlaying {
+            renderView.setSpeed(playbackRate)
             player?.rate = playbackRate
         }
     }
@@ -88,15 +123,59 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     func requestPictureInPicture() {
-        guard isReady, player != nil else { return }
-        pictureInPictureRequestID += 1
+        guard isReady else { return }
+        if isPictureInPictureActive {
+            pictureInPictureRequestID += 1
+            return
+        }
+        Task { @MainActor in
+            do {
+                let stream: BiliPlayStream
+                if let pictureInPictureStream {
+                    stream = pictureInPictureStream
+                } else if let pictureInPictureStreamLoader {
+                    stream = try await pictureInPictureStreamLoader()
+                    self.pictureInPictureStream = stream
+                } else {
+                    return
+                }
+                let item = try await Self.makePlayerItem(stream: stream, headers: playbackHeaders)
+                item.preferredForwardBufferDuration = 30
+                let pipPlayer = AVPlayer(playerItem: item)
+                pipPlayer.volume = isMuted ? 0 : volume
+                let time = CMTime(seconds: preciseCurrentTime, preferredTimescale: 600)
+                await pipPlayer.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+                player = pipPlayer
+                pictureInPictureRequestID += 1
+            } catch {
+                player = nil
+            }
+        }
     }
 
     func setPictureInPictureActive(_ isActive: Bool) {
+        if isActive, !isPictureInPictureActive {
+            resumeMPVAfterPictureInPicture = isPlaying
+            renderView.setPaused(true)
+            if resumeMPVAfterPictureInPicture {
+                player?.play()
+                player?.rate = playbackRate
+            }
+        } else if !isActive, isPictureInPictureActive {
+            if let seconds = player?.currentTime().seconds, seconds.isFinite {
+                currentTime = seconds
+                renderView.seek(to: seconds)
+            }
+            player?.pause()
+            player = nil
+            renderView.setPaused(!resumeMPVAfterPictureInPicture)
+            isPlaying = resumeMPVAfterPictureInPicture
+        }
         isPictureInPictureActive = isActive
     }
 
     func pausePlayback() {
+        renderView.setPaused(true)
         player?.pause()
         isPlaying = false
     }
@@ -107,7 +186,7 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     func togglePlayback() {
-        guard player != nil else { return }
+        guard isReady else { return }
         if isPlaying {
             pausePlayback()
         } else {
@@ -116,9 +195,10 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     func seek(to seconds: Double, resumeAfter: Bool = true) {
-        guard let player else { return }
+        guard isReady else { return }
         let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
-        player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
+        renderView.seek(to: seconds)
+        player?.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
         currentTime = max(0, seconds)
         if resumeAfter, !isPlaying {
             startPlayback()
@@ -128,6 +208,7 @@ final class VideoPlaybackEngine: ObservableObject {
     func beginScrub(at seconds: Double) {
         isScrubbing = true
         scrubPreviewTime = seconds
+        renderView.setPaused(true)
         player?.pause()
         isPlaying = false
     }
@@ -161,6 +242,8 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     private func applyVolume() {
+        renderView.setMuted(isMuted)
+        renderView.setVolume(volume)
         player?.volume = isMuted ? 0 : volume
     }
 
@@ -229,6 +312,7 @@ final class VideoPlaybackEngine: ObservableObject {
         endObserver = nil
         player?.pause()
         player = nil
+        renderView.setPaused(true)
         isReady = false
         isPlaying = false
         currentTime = 0
@@ -241,9 +325,11 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     private func startPlayback() {
-        guard let player else { return }
-        player.play()
-        player.rate = playbackRate
+        guard isReady || player == nil else { return }
+        renderView.setSpeed(playbackRate)
+        renderView.setPaused(false)
+        player?.play()
+        player?.rate = playbackRate
         isPlaying = true
     }
 

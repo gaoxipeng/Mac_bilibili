@@ -629,16 +629,14 @@ final class VideoDetailModel: ObservableObject {
         defer { isLoadingPlayback = false }
 
         do {
+            let dashStream = try? await resolveDASHStream(bvid: bvid, cid: cid)
             let stream: BiliPlayStream
-            if let prefetchedStream,
-               prefetchedStream.cid == cid,
-               !prefetchedStream.videoURL.isEmpty {
-                stream = BiliPlayStream(
-                    videoURL: prefetchedStream.videoURL,
-                    audioURL: prefetchedStream.audioURL,
-                    aid: displayVideo.aid > 0 ? displayVideo.aid : prefetchedStream.aid,
-                    cid: cid
-                )
+            if let dashStream {
+                stream = dashStream
+            } else if let prefetchedStream,
+                      prefetchedStream.cid == cid,
+                      !prefetchedStream.videoURL.isEmpty {
+                stream = prefetchedStream
                 self.prefetchedStream = nil
             } else {
                 stream = try await resolvePlayStream(bvid: bvid, cid: cid)
@@ -654,7 +652,15 @@ final class VideoDetailModel: ObservableObject {
             let cookieHeader = await api.httpCookieHeader(credential: credential)
             guard isLifecycleActive(generation), !Task.isCancelled else { return }
 
-            try await player.load(stream: resolvedStream, cookieHeader: cookieHeader)
+            try await player.load(
+                stream: resolvedStream,
+                pictureInPictureStream: dashStream == nil ? resolvedStream : nil,
+                pictureInPictureStreamLoader: { [weak self] in
+                    guard let self else { throw APIError.message("播放页面已关闭") }
+                    return try await self.resolvePlayStream(bvid: bvid, cid: cid)
+                },
+                cookieHeader: cookieHeader
+            )
             guard isLifecycleActive(generation) else {
                 player.stop()
                 return
@@ -742,6 +748,31 @@ final class VideoDetailModel: ObservableObject {
             )
         }
         throw APIError.message("无法获取播放地址")
+    }
+
+    private func resolveDASHStream(bvid: String, cid: Int64) async throws -> BiliPlayStream {
+        let referer = playbackRefererURL?.absoluteString ?? "https://www.bilibili.com"
+        if !bvid.isEmpty, cid > 0 {
+            do {
+                return try await api.dashPlayURL(bvid: bvid, cid: cid, credential: credential)
+            } catch {
+                if isBangumiPlayback, activeEpid > 0 {
+                    return try await api.pgcDASHPlayURL(
+                        epid: activeEpid,
+                        cid: cid,
+                        credential: credential,
+                        referer: referer
+                    )
+                }
+                throw error
+            }
+        }
+        return try await api.pgcDASHPlayURL(
+            epid: activeEpid,
+            cid: cid,
+            credential: credential,
+            referer: referer
+        )
     }
 
     private func applyInitialProgressIfNeeded() {

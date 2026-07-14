@@ -1488,6 +1488,26 @@ actor BilibiliAPI {
         throw APIError.message("当前视频格式暂不支持播放，请稍后重试")
     }
 
+    func dashPlayURL(bvid: String, cid: Int64, credential: BilibiliCredential? = nil) async throws -> BiliPlayStream {
+        try await requestPlayURL(bvid: bvid, cid: cid, fnval: "4048", credential: credential)
+    }
+
+    func pgcDASHPlayURL(
+        epid: Int64,
+        cid: Int64,
+        credential: BilibiliCredential? = nil,
+        referer: String = "https://www.bilibili.com"
+    ) async throws -> BiliPlayStream {
+        try await requestPGCPlayURL(
+            epid: epid,
+            cid: cid,
+            fnval: "4048",
+            credential: credential,
+            referer: referer,
+            useV2: true
+        )
+    }
+
     private func requestPlayURL(
         bvid: String,
         cid: Int64,

@@ -530,9 +530,6 @@ final class FullscreenPlayerHostNSView: NSView {
         danmakuView.autoresizingMask = [.width, .height]
         wheelMonitor.autoresizingMask = [.width, .height]
         keyboardMonitor.autoresizingMask = [.width, .height]
-        if let currentModel {
-            sync(model: currentModel, keyboardHandlers: keyboardMonitor.handlers)
-        }
     }
 
     func sync(model: VideoDetailModel, keyboardHandlers: VideoPlayerKeyboardHandlers) {

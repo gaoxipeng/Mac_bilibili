@@ -10,8 +10,8 @@ final class VideoFullscreenPresenter: ObservableObject {
     private var window: NSWindow?
     private var sourceFrameProvider: (() -> NSRect)?
     private var escapeMonitor: Any?
-    private var transitionTimer: Timer?
-    private var transitionDriver: WindowTransitionDriver?
+    private var transitionGeneration = 0
+    private weak var transitionContentLayer: CALayer?
     private var savedPresentationOptions: NSApplication.PresentationOptions?
     private var edgeMouseMonitor: Any?
     private var isRestoringSystemChrome = false
@@ -86,7 +86,7 @@ final class VideoFullscreenPresenter: ObservableObject {
             container: container,
             from: sourceFrame,
             to: targetFrame,
-            duration: 0.54,
+            duration: 0.72,
             mainWindowAlpha: 0,
             opening: true
         ) {
@@ -115,7 +115,7 @@ final class VideoFullscreenPresenter: ObservableObject {
             container: container,
             from: window.frame,
             to: targetFrame,
-            duration: 0.46,
+            duration: 0.62,
             mainWindowAlpha: 1,
             opening: false
         ) { [weak self] in
@@ -234,15 +234,6 @@ final class VideoFullscreenPresenter: ObservableObject {
         return screen.frame
     }
 
-    private func fadeMainWindow(to alpha: CGFloat, duration: TimeInterval) {
-        guard let mainWindow = NSApp.mainWindow, mainWindow !== window else { return }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = duration
-            context.timingFunction = CAMediaTimingFunction(controlPoints: 0.22, 1, 0.36, 1)
-            mainWindow.animator().alphaValue = alpha
-        }
-    }
-
     private func animateWindow(
         _ window: NSWindow,
         container: FullscreenWindowContainerView,
@@ -254,107 +245,99 @@ final class VideoFullscreenPresenter: ObservableObject {
         completion: @escaping @MainActor () -> Void
     ) {
         cancelTransition()
-
-        let startTime = CACurrentMediaTime()
-        let startMainAlpha = NSApp.mainWindow === window ? 1 : (NSApp.mainWindow?.alphaValue ?? 1)
+        let generation = transitionGeneration
         let mainWindow = NSApp.mainWindow === window ? nil : NSApp.mainWindow
-        let startCorner = container.cornerRadius
-        let endCorner: CGFloat = 0
-        let startProgress = container.transitionProgress
-        let endProgress: CGFloat = opening ? 1 : 0
+        let fixedWindowFrame = opening ? endFrame : startFrame
+        let localStartFrame = localFrame(startFrame, in: fixedWindowFrame)
+        let localEndFrame = localFrame(endFrame, in: fixedWindowFrame)
 
-        window.setFrame(startFrame, display: true)
-        window.alphaValue = opening ? 0.985 : 1
+        // 窗口保持固定尺寸，直接变换持续渲染的完整内容图层。mpv 在动画期间
+        // 继续解码和呈现新帧，同时避免窗口尺寸变化触发逐帧 SwiftUI 布局。
+        window.setFrame(fixedWindowFrame, display: true)
+        window.alphaValue = 1
+        container.setContentVisible(true)
+        container.transitionProgress = opening ? 0 : 1
+        container.layoutSubtreeIfNeeded()
+        guard let contentLayer = container.transitionLayer else {
+            completion()
+            return
+        }
+        transitionContentLayer = contentLayer
 
-        let driver = WindowTransitionDriver()
-        driver.presenter = self
-        driver.window = window
-        driver.container = container
-        driver.mainWindow = mainWindow
-        driver.startTime = startTime
-        driver.duration = duration
-        driver.startFrame = startFrame
-        driver.endFrame = endFrame
-        driver.startMainAlpha = startMainAlpha
-        driver.targetMainWindowAlpha = targetMainWindowAlpha
-        driver.startCorner = startCorner
-        driver.endCorner = endCorner
-        driver.startProgress = startProgress
-        driver.endProgress = endProgress
-        driver.opening = opening
-        driver.completion = completion
+        let presenter = self
+        let animatedWindow = window
+        let animatedContainer = container
 
-        let timer = Timer(
-            timeInterval: 1.0 / 120.0,
-            target: driver,
-            selector: #selector(WindowTransitionDriver.tick(_:)),
-            userInfo: nil,
-            repeats: true
+        let timing = opening
+            ? CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.30, 1.0)
+            : CAMediaTimingFunction(controlPoints: 0.40, 0.0, 0.20, 1.0)
+        let startTransform = contentTransform(layer: contentLayer, to: localStartFrame)
+        let endTransform = contentTransform(layer: contentLayer, to: localEndFrame)
+        let transformAnimation = CABasicAnimation(keyPath: "transform")
+        transformAnimation.fromValue = NSValue(caTransform3D: startTransform)
+        transformAnimation.toValue = NSValue(caTransform3D: endTransform)
+
+        let transitionAnimation = CAAnimationGroup()
+        transitionAnimation.animations = [transformAnimation]
+        transitionAnimation.duration = duration
+        transitionAnimation.timingFunction = timing
+        transitionAnimation.isRemovedOnCompletion = false
+        transitionAnimation.fillMode = .forwards
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        CATransaction.setCompletionBlock {
+            MainActor.assumeIsolated {
+                guard presenter.transitionGeneration == generation else { return }
+                contentLayer.removeAnimation(forKey: "fullscreenTransition")
+                presenter.transitionContentLayer = nil
+                animatedWindow.setFrame(endFrame, display: true)
+                animatedWindow.alphaValue = 1
+                animatedContainer.cornerRadius = 0
+                animatedContainer.transitionProgress = opening ? 1 : 0
+                mainWindow?.alphaValue = targetMainWindowAlpha
+                completion()
+            }
+        }
+        contentLayer.transform = endTransform
+        contentLayer.add(transitionAnimation, forKey: "fullscreenTransition")
+        mainWindow?.animator().alphaValue = targetMainWindowAlpha
+        CATransaction.commit()
+    }
+
+    private func localFrame(_ screenFrame: NSRect, in windowFrame: NSRect) -> NSRect {
+        NSRect(
+            x: screenFrame.minX - windowFrame.minX,
+            y: screenFrame.minY - windowFrame.minY,
+            width: screenFrame.width,
+            height: screenFrame.height
         )
-        driver.timer = timer
-        transitionDriver = driver
-        transitionTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func contentTransform(layer: CALayer, to destination: NSRect) -> CATransform3D {
+        let source = layer.bounds
+        guard source.width > 0, source.height > 0 else { return CATransform3DIdentity }
+        let anchor = layer.anchorPoint
+        let desiredAnchor = CGPoint(
+            x: destination.minX + destination.width * anchor.x,
+            y: destination.minY + destination.height * anchor.y
+        )
+        var transform = CATransform3DMakeScale(
+            destination.width / source.width,
+            destination.height / source.height,
+            1
+        )
+        transform.m41 = desiredAnchor.x - layer.position.x
+        transform.m42 = desiredAnchor.y - layer.position.y
+        return transform
     }
 
     private func cancelTransition() {
-        transitionTimer?.invalidate()
-        transitionTimer = nil
-        transitionDriver = nil
-    }
-
-    fileprivate func finishTransition(timer: Timer) {
-        transitionTimer = nil
-        transitionDriver = nil
-        timer.invalidate()
-    }
-
-    private nonisolated static func safariFullscreenEase(_ progress: CGFloat, opening: Bool) -> CGFloat {
-        let p = progress.clamped(to: 0...1)
-        if opening {
-            return cubicBezier(p, x1: 0.16, y1: 1.0, x2: 0.30, y2: 1.0)
-        }
-        return cubicBezier(p, x1: 0.40, y1: 0.0, x2: 0.20, y2: 1.0)
-    }
-
-    private nonisolated static func cubicBezier(_ x: CGFloat, x1: CGFloat, y1: CGFloat, x2: CGFloat, y2: CGFloat) -> CGFloat {
-        var t = x
-        for _ in 0..<5 {
-            let currentX = bezier(t, 0, x1, x2, 1)
-            let derivative = bezierDerivative(t, 0, x1, x2, 1)
-            guard abs(derivative) > 0.001 else { break }
-            t -= (currentX - x) / derivative
-            t = t.clamped(to: 0...1)
-        }
-        return bezier(t, 0, y1, y2, 1).clamped(to: 0...1)
-    }
-
-    private nonisolated static func bezier(_ t: CGFloat, _ p0: CGFloat, _ p1: CGFloat, _ p2: CGFloat, _ p3: CGFloat) -> CGFloat {
-        let oneMinusT = 1 - t
-        return oneMinusT * oneMinusT * oneMinusT * p0
-            + 3 * oneMinusT * oneMinusT * t * p1
-            + 3 * oneMinusT * t * t * p2
-            + t * t * t * p3
-    }
-
-    private nonisolated static func bezierDerivative(_ t: CGFloat, _ p0: CGFloat, _ p1: CGFloat, _ p2: CGFloat, _ p3: CGFloat) -> CGFloat {
-        let oneMinusT = 1 - t
-        return 3 * oneMinusT * oneMinusT * (p1 - p0)
-            + 6 * oneMinusT * t * (p2 - p1)
-            + 3 * t * t * (p3 - p2)
-    }
-
-    private nonisolated static func interpolateRect(from start: NSRect, to end: NSRect, progress: CGFloat) -> NSRect {
-        NSRect(
-            x: interpolate(from: start.origin.x, to: end.origin.x, progress: progress),
-            y: interpolate(from: start.origin.y, to: end.origin.y, progress: progress),
-            width: interpolate(from: start.width, to: end.width, progress: progress),
-            height: interpolate(from: start.height, to: end.height, progress: progress)
-        )
-    }
-
-    private nonisolated static func interpolate(from start: CGFloat, to end: CGFloat, progress: CGFloat) -> CGFloat {
-        start + (end - start) * progress
+        transitionGeneration &+= 1
+        transitionContentLayer?.removeAnimation(forKey: "fullscreenTransition")
+        transitionContentLayer?.transform = CATransform3DIdentity
+        transitionContentLayer = nil
+        (window?.contentView as? FullscreenWindowContainerView)?.setContentVisible(true)
     }
 
     private func installEscapeMonitor() {
@@ -373,53 +356,6 @@ final class VideoFullscreenPresenter: ObservableObject {
         }
     }
 
-    @MainActor
-    private final class WindowTransitionDriver: NSObject {
-        weak var presenter: VideoFullscreenPresenter?
-        weak var window: NSWindow?
-        weak var container: FullscreenWindowContainerView?
-        weak var mainWindow: NSWindow?
-        weak var timer: Timer?
-
-        var startTime: CFTimeInterval = 0
-        var duration: TimeInterval = 0
-        var startFrame = NSRect.zero
-        var endFrame = NSRect.zero
-        var startMainAlpha: CGFloat = 1
-        var targetMainWindowAlpha: CGFloat = 1
-        var startCorner: CGFloat = 0
-        var endCorner: CGFloat = 0
-        var startProgress: CGFloat = 0
-        var endProgress: CGFloat = 0
-        var opening = false
-        var completion: (@MainActor () -> Void)?
-
-        @MainActor
-        @objc func tick(_ timer: Timer) {
-            guard let presenter, let window, let container else {
-                presenter?.finishTransition(timer: timer)
-                return
-            }
-
-            let elapsed = CACurrentMediaTime() - startTime
-            let rawProgress = min(1, max(0, elapsed / duration))
-            let eased = VideoFullscreenPresenter.safariFullscreenEase(CGFloat(rawProgress), opening: opening)
-
-            window.setFrame(VideoFullscreenPresenter.interpolateRect(from: startFrame, to: endFrame, progress: eased), display: true)
-            window.alphaValue = opening
-                ? VideoFullscreenPresenter.interpolate(from: 0.985, to: 1, progress: eased)
-                : VideoFullscreenPresenter.interpolate(from: 1, to: 0.985, progress: eased)
-            container.cornerRadius = VideoFullscreenPresenter.interpolate(from: startCorner, to: endCorner, progress: eased)
-            container.transitionProgress = VideoFullscreenPresenter.interpolate(from: startProgress, to: endProgress, progress: eased)
-            mainWindow?.alphaValue = VideoFullscreenPresenter.interpolate(from: startMainAlpha, to: targetMainWindowAlpha, progress: eased)
-
-            if rawProgress >= 1 {
-                mainWindow?.alphaValue = targetMainWindowAlpha
-                presenter.finishTransition(timer: timer)
-                completion?()
-            }
-        }
-    }
 }
 
 private struct FullscreenWindowRoot<Content: View>: View {
@@ -475,6 +411,12 @@ private final class FullscreenWindowContainerView: NSView {
     }
 
     override var acceptsFirstResponder: Bool { true }
+
+    var transitionLayer: CALayer? { contentView.layer }
+
+    func setContentVisible(_ visible: Bool) {
+        contentView.isHidden = !visible
+    }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard bounds.contains(point) else { return nil }

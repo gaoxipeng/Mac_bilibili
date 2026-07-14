@@ -2,6 +2,14 @@ import AppKit
 import Libmpv
 import OpenGL.GL
 
+private final class MPVCallbackContext: @unchecked Sendable {
+    weak var view: MPVRenderView?
+
+    init(view: MPVRenderView) {
+        self.view = view
+    }
+}
+
 @MainActor
 final class MPVRenderView: NSOpenGLView {
     var onTimeChanged: ((Double) -> Void)?
@@ -18,6 +26,7 @@ final class MPVRenderView: NSOpenGLView {
     private var defaultFBO: GLint = -1
     private var isConfigured = false
     private var pendingAudioURL: String?
+    private var callbackContext: Unmanaged<MPVCallbackContext>?
 
     override class func defaultPixelFormat() -> NSOpenGLPixelFormat {
         let attributes: [NSOpenGLPixelFormatAttribute] = [
@@ -50,6 +59,12 @@ final class MPVRenderView: NSOpenGLView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    deinit {
+        MainActor.assumeIsolated {
+            shutdown()
+        }
+    }
+
     func load(videoURL: String, audioURL: String?, headers: [String: String], start: Double = 0) throws {
         guard mpv != nil else { throw APIError.message("libmpv 初始化失败") }
         setString("http-header-fields", headers.map { "\($0.key): \($0.value)" }.joined(separator: ","))
@@ -66,7 +81,12 @@ final class MPVRenderView: NSOpenGLView {
     func seek(to seconds: Double) { command("seek", [String(max(0, seconds)), "absolute+exact"]) }
 
     func shutdown() {
-        guard let mpv else { return }
+        let retainedContext = callbackContext
+        callbackContext = nil
+        guard let mpv else {
+            retainedContext?.release()
+            return
+        }
         mpv_set_wakeup_callback(mpv, nil, nil)
         if let renderContext {
             mpv_render_context_set_update_callback(renderContext, nil, nil)
@@ -75,6 +95,7 @@ final class MPVRenderView: NSOpenGLView {
         }
         mpv_terminate_destroy(mpv)
         self.mpv = nil
+        retainedContext?.release()
     }
 
     private func setupMPV() {
@@ -106,12 +127,16 @@ final class MPVRenderView: NSOpenGLView {
             guard mpv_render_context_create(&renderContext, handle, &params) >= 0 else { return }
         }
 
+        let retainedContext = Unmanaged.passRetained(MPVCallbackContext(view: self))
+        callbackContext = retainedContext
+
         if let renderContext {
             mpv_render_context_set_update_callback(renderContext, { context in
                 guard let context else { return }
-                let view = Unmanaged<MPVRenderView>.fromOpaque(context).takeUnretainedValue()
-                DispatchQueue.main.async { view.needsDisplay = true }
-            }, Unmanaged.passUnretained(self).toOpaque())
+                let callback = Unmanaged<MPVCallbackContext>.fromOpaque(context).takeUnretainedValue()
+                let view = callback.view
+                DispatchQueue.main.async { [weak view] in view?.needsDisplay = true }
+            }, retainedContext.toOpaque())
         }
 
         observe("time-pos", MPV_FORMAT_DOUBLE)
@@ -121,8 +146,10 @@ final class MPVRenderView: NSOpenGLView {
         observe("video-params/h", MPV_FORMAT_INT64)
         mpv_set_wakeup_callback(handle, { context in
             guard let context else { return }
-            Unmanaged<MPVRenderView>.fromOpaque(context).takeUnretainedValue().readEvents()
-        }, Unmanaged.passUnretained(self).toOpaque())
+            let callback = Unmanaged<MPVCallbackContext>.fromOpaque(context).takeUnretainedValue()
+            let view = callback.view
+            DispatchQueue.main.async { [weak view] in view?.readEvents() }
+        }, retainedContext.toOpaque())
     }
 
     override func draw(_ dirtyRect: NSRect) {

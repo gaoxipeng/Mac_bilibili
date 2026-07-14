@@ -1167,11 +1167,26 @@ enum JSONParser {
 
     private nonisolated static func pickStreamURL(from dash: [String: Any], type: String) -> String? {
         guard let streams = dash[type] as? [[String: Any]], !streams.isEmpty else { return nil }
-        let candidates = streams.flatMap { streamURLs(from: $0) }
+        let candidates = streams.flatMap {
+            type == "audio" ? audioStreamURLs(from: $0) : streamURLs(from: $0)
+        }
         if let native = candidates.first(where: { BiliPlayStream.isAVPlayerNativeURL($0) }) {
             return native
         }
         return candidates.first
+    }
+
+    private nonisolated static func audioStreamURLs(from stream: [String: Any]) -> [String] {
+        var urls: [String] = []
+        let base = string(stream, "baseUrl", "base_url")
+        if !base.isEmpty { urls.append(base) }
+        if let backups = stream["backup_url"] as? [String] {
+            urls.append(contentsOf: backups.filter { !$0.isEmpty })
+        }
+        if let backups = stream["backupUrl"] as? [String] {
+            urls.append(contentsOf: backups.filter { !$0.isEmpty })
+        }
+        return urls
     }
 
     private nonisolated static func streamURLs(from stream: [String: Any]) -> [String] {

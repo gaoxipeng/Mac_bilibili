@@ -245,6 +245,7 @@ final class VideoPlaybackEngine: ObservableObject {
             }
             player?.pause()
             player = nil
+            applyVolume()
             renderView.setPaused(!resumeMPVAfterPictureInPicture)
             isPlaying = resumeMPVAfterPictureInPicture
         } else if !isActive {

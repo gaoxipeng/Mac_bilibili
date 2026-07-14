@@ -6,6 +6,7 @@ import MediaPlayer
 
 @MainActor
 final class VideoPlaybackEngine: ObservableObject {
+    var onSeekCommitted: ((Double) -> Void)?
     @Published private(set) var isPlaying = false
     @Published private(set) var currentTime: Double = 0
     @Published private(set) var duration: Double = 0
@@ -82,6 +83,7 @@ final class VideoPlaybackEngine: ObservableObject {
             videoAspectRatio = size.width / size.height
         }
         renderView.onReady = { [weak self] in self?.isReady = true }
+        renderView.onAudioReady = { [weak self] in self?.applyVolume() }
         renderView.onEnded = { [weak self] in self?.isPlaying = false }
         renderView.onError = { [weak self] _ in
             self?.isPlaying = false
@@ -283,6 +285,7 @@ final class VideoPlaybackEngine: ObservableObject {
         renderView.seek(to: seconds)
         player?.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
         currentTime = max(0, seconds)
+        onSeekCommitted?(currentTime)
         updateNowPlayingInfo()
         if resumeAfter, !isPlaying {
             startPlayback()

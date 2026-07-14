@@ -15,6 +15,7 @@ final class VideoDetailModel: ObservableObject {
     @Published var detailError: String?
     @Published var playError: String?
     @Published var isLoadingPlayback = false
+    @Published var videoShot: BiliVideoShot?
 
     @Published var commentSort: BiliCommentSort = .hot
     @Published var comments: [BiliCommentItem] = []
@@ -31,6 +32,7 @@ final class VideoDetailModel: ObservableObject {
     private var danmakuCache: [Int64: [BiliDanmakuItem]] = [:]
     private let watchHistoryReporter = WatchHistoryReporter()
     private var watchHistoryTask: Task<Void, Never>?
+    private var videoShotLoadTask: Task<Void, Never>?
     private var watchHistoryContext: (aid: Int64, cid: Int64)?
     private let initialProgressSeconds: Int
     private var activeEpid: Int64
@@ -85,6 +87,9 @@ final class VideoDetailModel: ObservableObject {
         self.playbackRefererURL = playbackRefererURL
         playerChangeSink = player.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
+        }
+        player.onSeekCommitted = { [weak self] seconds in
+            self?.reportCommittedSeek(seconds)
         }
     }
 
@@ -608,6 +613,8 @@ final class VideoDetailModel: ObservableObject {
 
     func loadPlayback() async {
         let generation = lifecycleGeneration
+        videoShotLoadTask?.cancel()
+        videoShotLoadTask = nil
         stopWatchHistoryReporting()
 
         let bvid = displayVideo.bvid
@@ -684,6 +691,12 @@ final class VideoDetailModel: ObservableObject {
             applyInitialProgressIfNeeded()
             let reportAid = displayVideo.aid > 0 ? displayVideo.aid : resolvedStream.aid
             startWatchHistoryReporting(aid: reportAid, cid: cid)
+            scheduleVideoShotLoadAfterPlaybackReady(
+                generation: generation,
+                bvid: bvid,
+                aid: reportAid,
+                cid: cid
+            )
             if cid > 0 {
                 await loadDanmaku(cid: cid)
             } else {
@@ -692,6 +705,42 @@ final class VideoDetailModel: ObservableObject {
         } catch {
             guard isLifecycleActive(generation), !Task.isCancelled else { return }
             playError = error.localizedDescription
+        }
+    }
+
+    /// Sprite metadata and images are auxiliary resources. Do not let their
+    /// requests compete with DASH for the initial connection/first frame.
+    private func scheduleVideoShotLoadAfterPlaybackReady(
+        generation: Int,
+        bvid: String,
+        aid: Int64,
+        cid: Int64,
+    ) {
+        videoShotLoadTask?.cancel()
+        videoShotLoadTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                while !self.player.isReady || self.player.duration <= 0 {
+                    try await Task.sleep(for: .milliseconds(150))
+                    guard !Task.isCancelled,
+                          self.isLifecycleActive(generation),
+                          self.activeCID == cid else { return }
+                }
+                let shot = try? await self.api.videoShot(
+                    bvid: bvid,
+                    aid: aid,
+                    cid: cid,
+                    credential: self.credential
+                )
+                guard !Task.isCancelled,
+                      self.isLifecycleActive(generation),
+                      self.activeCID == cid else { return }
+                self.videoShot = shot ?? nil
+            } catch is CancellationError {
+                return
+            } catch {
+                return
+            }
         }
     }
 
@@ -805,7 +854,6 @@ final class VideoDetailModel: ObservableObject {
         watchHistoryTask = Task { @MainActor [weak self] in
             guard let self else { return }
 
-            await self.reportWatchHistoryProgress(aid: aid, cid: cid, credential: credential)
             var ticksSinceReport = 0
 
             do {
@@ -826,7 +874,43 @@ final class VideoDetailModel: ObservableObject {
                 }
             } catch {}
 
-            await self.reportWatchHistoryProgress(aid: aid, cid: cid, credential: credential)
+        }
+    }
+
+    private func reportCommittedSeek(_ seconds: Double) {
+        guard let credential, let context = watchHistoryContext else { return }
+        let progress = Int64(max(0, seconds).rounded(.down))
+        let api = api
+        let reporter = watchHistoryReporter
+        Task {
+            await reporter.reportIfNeeded(
+                api: api,
+                aid: context.aid,
+                cid: context.cid,
+                progressSeconds: progress,
+                credential: credential,
+                force: true
+            )
+        }
+    }
+
+    private func flushWatchHistoryProgress() {
+        guard let credential, let context = watchHistoryContext else { return }
+        let progress = Int64(max(0, player.currentTime).rounded(.down))
+        // A player that has not produced its first timestamp must not erase an
+        // existing cloud resume point with a synthetic zero.
+        guard progress > 0 else { return }
+        let api = api
+        let reporter = watchHistoryReporter
+        Task {
+            await reporter.reportIfNeeded(
+                api: api,
+                aid: context.aid,
+                cid: context.cid,
+                progressSeconds: progress,
+                credential: credential,
+                force: true
+            )
         }
     }
 
@@ -860,6 +944,7 @@ final class VideoDetailModel: ObservableObject {
         isPlaybackSuspended = true
         wasPlayingBeforeSuspend = player.isPlaying
         player.pausePlayback()
+        flushWatchHistoryProgress()
         stopWatchHistoryReporting()
     }
 
@@ -868,6 +953,7 @@ final class VideoDetailModel: ObservableObject {
         isPlaybackSuspended = false
         wasPlayingBeforeSuspend = false
         player.pausePlayback()
+        flushWatchHistoryProgress()
         stopWatchHistoryReporting()
     }
 
@@ -906,9 +992,13 @@ final class VideoDetailModel: ObservableObject {
     }
 
     func cleanup() {
+        videoShotLoadTask?.cancel()
+        videoShotLoadTask = nil
+        flushWatchHistoryProgress()
         stopWatchHistoryReporting()
         watchHistoryContext = nil
         player.stop()
+        videoShot = nil
         danmakuItems = []
         danmakuCache.removeAll()
         comments = []
@@ -2195,6 +2285,8 @@ private struct VideoPlayerSection: View {
                 if !model.showDanmakuSettings {
                     VideoControlCapsule(
                         player: player,
+                        videoShot: model.videoShot,
+                        videoRefererURL: URL(string: "https://www.bilibili.com/video/\(model.displayVideo.bvid)"),
                         danmakuVisible: model.danmakuVisible,
                         onDanmakuToggle: model.toggleDanmakuVisible,
                         onDanmakuRightClick: { model.showDanmakuSettings = true },
@@ -2438,6 +2530,8 @@ private struct VideoFullscreenTitleBar: View {
 
 private struct VideoControlCapsule: View {
     @ObservedObject var player: VideoPlaybackEngine
+    let videoShot: BiliVideoShot?
+    let videoRefererURL: URL?
     let danmakuVisible: Bool
     let onDanmakuToggle: () -> Void
     let onDanmakuRightClick: () -> Void
@@ -2445,6 +2539,8 @@ private struct VideoControlCapsule: View {
 
     @State private var dragProgress: Double?
     @State private var displayedProgress: Double = 0
+    @State private var hoverProgress: Double?
+    @State private var capsuleWidth: CGFloat = 1
 
     private var progress: Double {
         if let dragProgress { return dragProgress }
@@ -2467,6 +2563,10 @@ private struct VideoControlCapsule: View {
                 Color.clear
                     .contentShape(Capsule())
                     .gesture(scrubGesture(totalWidth: proxy.size.width))
+                    .onAppear { capsuleWidth = max(1, proxy.size.width) }
+                    .onChange(of: proxy.size.width) { _, width in
+                        capsuleWidth = max(1, width)
+                    }
             }
 
             VideoControlCapsuleProgress(progress: displayedProgress)
@@ -2558,6 +2658,32 @@ private struct VideoControlCapsule: View {
         .frame(height: VideoControlLayout.capsuleHeight)
         .clipShape(Capsule(style: .continuous))
         .modifier(VideoControlCapsuleChrome())
+        .overlay(alignment: .topLeading) {
+            GeometryReader { proxy in
+                if let hoverProgress {
+                    let previewWidth: CGFloat = 340
+                    let previewAspectRatio = min(2.4, max(0.5, player.displayAspectRatio))
+                    let previewHeight = previewWidth / previewAspectRatio
+                    VideoScrubHoverPreview(
+                        videoShot: videoShot,
+                        seconds: hoverProgress * max(player.duration, 0),
+                        duration: player.duration,
+                        aspectRatio: previewAspectRatio,
+                        refererURL: videoRefererURL
+                    )
+                    .offset(
+                        x: min(
+                            max(0, proxy.size.width * hoverProgress - previewWidth / 2),
+                            max(0, proxy.size.width - previewWidth)
+                        ),
+                        // Image + 6pt internal gap + 40pt time capsule + the
+                        // same 6pt external gap above the progress controls.
+                        y: -(previewHeight + 52)
+                    )
+                }
+            }
+            .allowsHitTesting(false)
+        }
         .onChange(of: progress) { _, newValue in
             if player.isScrubbing || !player.isPlaying {
                 displayedProgress = newValue
@@ -2573,6 +2699,16 @@ private struct VideoControlCapsule: View {
         .onHover { hovering in
             if hovering {
                 onInteraction()
+            } else if dragProgress == nil {
+                hoverProgress = nil
+            }
+        }
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let location):
+                hoverProgress = scrubFraction(at: location.x, totalWidth: capsuleWidth)
+            case .ended:
+                if dragProgress == nil { hoverProgress = nil }
             }
         }
     }
@@ -2625,6 +2761,154 @@ private struct VideoControlCapsuleChrome: ViewModifier {
         }
         .shadow(color: .black.opacity(0.22), radius: 10, x: 0, y: 3)
     }
+}
+
+@MainActor
+private final class VideoShotImageLoader {
+    static let shared = VideoShotImageLoader()
+
+    private let spriteCache = NSCache<NSURL, NSImage>()
+    private let tileCache = NSCache<NSString, NSImage>()
+    private var spriteTasks: [URL: Task<NSImage?, Never>] = [:]
+
+    func tileImage(
+        tile: BiliVideoShotTile,
+        shot: BiliVideoShot,
+        refererURL: URL?
+    ) async -> NSImage? {
+        let key = "\(tile.imageURL.absoluteString)#\(tile.column)x\(tile.row)" as NSString
+        if let cached = tileCache.object(forKey: key) { return cached }
+
+        guard let sprite = await spriteImage(url: tile.imageURL, refererURL: refererURL) else { return nil }
+
+        var proposedRect = NSRect(origin: .zero, size: sprite.size)
+        guard let source = sprite.cgImage(forProposedRect: &proposedRect, context: nil, hints: nil) else { return nil }
+        let columns = max(1, shot.tileColumns)
+        let rows = max(1, shot.tileRows)
+        let width = source.width / columns
+        let height = source.height / rows
+        guard width > 0, height > 0 else { return nil }
+        // Match Android Bitmap.createBitmap: the videoshot API indexes sprite
+        // rows from the top and CGImage.cropping uses the image pixel grid.
+        let cropRect = CGRect(
+            x: tile.column * width,
+            y: tile.row * height,
+            width: width,
+            height: height
+        )
+        guard let cropped = source.cropping(to: cropRect) else { return nil }
+        let image = NSImage(cgImage: cropped, size: NSSize(width: shot.tileWidth, height: shot.tileHeight))
+        tileCache.setObject(image, forKey: key)
+        return image
+    }
+
+    private func spriteImage(url: URL, refererURL: URL?) async -> NSImage? {
+        if let cached = spriteCache.object(forKey: url as NSURL) { return cached }
+        let task: Task<NSImage?, Never>
+        if let existing = spriteTasks[url] {
+            task = existing
+        } else {
+            let preferredReferer = refererURL ?? BilibiliEndpoints.homeURL
+            task = Task { @MainActor in
+                for referer in [preferredReferer, BilibiliEndpoints.homeURL, nil] as [URL?] {
+                    var request = URLRequest(url: url)
+                    request.timeoutInterval = 20
+                    request.cachePolicy = .returnCacheDataElseLoad
+                    request.setValue(BilibiliEndpoints.userAgent, forHTTPHeaderField: "User-Agent")
+                    if let referer {
+                        request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
+                    }
+                    guard let (data, response) = try? await URLSession.shared.data(for: request),
+                          let http = response as? HTTPURLResponse,
+                          (200..<300).contains(http.statusCode),
+                          let image = NSImage(data: data) else { continue }
+                    return image
+                }
+                return nil
+            }
+            spriteTasks[url] = task
+        }
+
+        let image = await task.value
+        spriteTasks[url] = nil
+        if let image {
+            spriteCache.setObject(image, forKey: url as NSURL)
+        }
+        return image
+    }
+}
+
+private struct VideoScrubHoverPreview: View {
+    let videoShot: BiliVideoShot?
+    let seconds: Double
+    let duration: Double
+    let aspectRatio: CGFloat
+    let refererURL: URL?
+
+    @State private var image: NSImage?
+
+    private var tile: BiliVideoShotTile? {
+        videoShot?.tile(at: seconds, duration: duration)
+    }
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(.black.opacity(0.72))
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                } else {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                }
+            }
+            .frame(width: 340, height: 340 / min(2.4, max(0.5, aspectRatio)))
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(.white.opacity(0.22), lineWidth: 1)
+            }
+
+            Text("\(formatVideoShotTime(seconds)) / \(formatVideoShotTime(duration))")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 8)
+                .background(.black.opacity(0.68), in: Capsule())
+        }
+        .frame(width: 340)
+        .task(id: tile) {
+            image = nil
+            guard let tile, let videoShot else { return }
+            for attempt in 0..<2 {
+                let loaded = await VideoShotImageLoader.shared.tileImage(
+                    tile: tile,
+                    shot: videoShot,
+                    refererURL: refererURL
+                )
+                guard !Task.isCancelled else { return }
+                if let loaded {
+                    image = loaded
+                    return
+                }
+                if attempt == 0 { try? await Task.sleep(for: .milliseconds(300)) }
+            }
+        }
+    }
+}
+
+private func formatVideoShotTime(_ seconds: Double) -> String {
+    guard seconds.isFinite, seconds > 0 else { return "0:00" }
+    let total = Int(seconds.rounded())
+    let hours = total / 3600
+    let minutes = (total % 3600) / 60
+    let remainder = total % 60
+    return hours > 0
+        ? String(format: "%d:%02d:%02d", hours, minutes, remainder)
+        : String(format: "%d:%02d", minutes, remainder)
 }
 
 private struct VideoControlCapsuleProgress: View {

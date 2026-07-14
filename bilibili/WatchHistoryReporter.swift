@@ -10,7 +10,8 @@ actor WatchHistoryReporter {
         aid: Int64,
         cid: Int64,
         progressSeconds: Int64,
-        credential: BilibiliCredential
+        credential: BilibiliCredential,
+        force: Bool = false
     ) async {
         guard aid > 0, cid > 0 else { return }
 
@@ -19,7 +20,7 @@ actor WatchHistoryReporter {
         let progress = max(0, progressSeconds)
         let sameVideo = key == lastKey
         let progressDelta = abs(progress - lastProgressSeconds)
-        if sameVideo, progressDelta < 3, now - lastReportAtMs < 5_000 {
+        if !force, sameVideo, progressDelta < 3, now - lastReportAtMs < 5_000 {
             return
         }
 

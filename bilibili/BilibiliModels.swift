@@ -653,6 +653,49 @@ struct BiliPlayStream: Hashable, Sendable {
     }
 }
 
+nonisolated struct BiliVideoShot: Hashable, Sendable {
+    let images: [URL]
+    let indexSeconds: [Int]
+    let tileColumns: Int
+    let tileRows: Int
+    let tileWidth: Int
+    let tileHeight: Int
+
+    var tilesPerImage: Int { tileColumns * tileRows }
+    var totalTiles: Int { images.count * tilesPerImage }
+
+    func tile(at seconds: Double, duration: Double) -> BiliVideoShotTile? {
+        guard !images.isEmpty, totalTiles > 0 else { return nil }
+        let thumbnailIndex: Int
+        if !indexSeconds.isEmpty {
+            let second = max(0, Int(seconds.rounded(.down)))
+            let indexedFrame = indexSeconds.lastIndex(where: { $0 <= second }) ?? 0
+            // Some videos expose one or more trailing timestamps without a
+            // matching sprite tile. Clamp them to the last real frame so the
+            // latter half/end of the timeline still has a preview.
+            thumbnailIndex = min(totalTiles - 1, max(0, indexedFrame))
+        } else if duration > 0 {
+            thumbnailIndex = min(totalTiles - 1, max(0, Int((seconds / duration * Double(totalTiles)).rounded())))
+        } else {
+            thumbnailIndex = 0
+        }
+        let imageIndex = thumbnailIndex / tilesPerImage
+        let tileIndex = thumbnailIndex % tilesPerImage
+        guard images.indices.contains(imageIndex) else { return nil }
+        return BiliVideoShotTile(
+            imageURL: images[imageIndex],
+            column: tileIndex % tileColumns,
+            row: tileIndex / tileColumns
+        )
+    }
+}
+
+nonisolated struct BiliVideoShotTile: Hashable, Sendable {
+    let imageURL: URL
+    let column: Int
+    let row: Int
+}
+
 enum BiliCommentSort: String, CaseIterable, Sendable {
     case hot
     case time

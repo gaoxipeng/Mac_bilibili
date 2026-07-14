@@ -854,6 +854,87 @@ actor BilibiliAPI {
         return true
     }
 
+    func videoShot(
+        bvid: String,
+        aid: Int64,
+        cid: Int64,
+        credential: BilibiliCredential?
+    ) async throws -> BiliVideoShot? {
+        guard cid > 0 else { return nil }
+        let referer = bvid.isEmpty ? BilibiliEndpoints.home : "https://www.bilibili.com/video/\(bvid)"
+
+        for index in ["1", "", "2"] {
+            var params = ["cid": "\(cid)"]
+            if !bvid.isEmpty { params["bvid"] = bvid }
+            if aid > 0 { params["aid"] = "\(aid)" }
+            if !index.isEmpty { params["index"] = index }
+            guard let root = try? await json(
+                url: BilibiliEndpoints.videoShot,
+                params: params,
+                credential: credential,
+                referer: referer
+            ) as? [String: Any],
+            let data = root["data"] as? [String: Any],
+            let imageValues = data["image"] as? [Any] else { continue }
+
+            let images = imageValues.compactMap { rawValue -> URL? in
+                guard let value = rawValue as? String else { return nil }
+                let normalized = value.hasPrefix("//") ? "https:\(value)" : value
+                return URL(string: normalized)
+            }
+            guard !images.isEmpty else { continue }
+            var indices: [Int] = (data["index"] as? [Any])?.compactMap { value -> Int? in
+                if let value = value as? Int { return value }
+                if let value = value as? NSNumber { return value.intValue }
+                if let value = value as? String { return Int(value) }
+                return nil
+            } ?? []
+            if indices.isEmpty, let rawPVData = data["pvdata"] as? String {
+                let normalized = rawPVData.hasPrefix("//") ? "https:\(rawPVData)" : rawPVData
+                if let url = URL(string: normalized) {
+                    indices = await videoShotIndexData(url: url, referer: referer)
+                }
+            }
+            func intValue(_ key: String, fallback: Int) -> Int {
+                if let value = data[key] as? NSNumber { return max(1, value.intValue) }
+                if let value = data[key] as? String, let parsed = Int(value) { return max(1, parsed) }
+                return fallback
+            }
+            return BiliVideoShot(
+                images: images,
+                indexSeconds: indices,
+                tileColumns: intValue("img_x_len", fallback: 10),
+                tileRows: intValue("img_y_len", fallback: 10),
+                tileWidth: intValue("img_x_size", fallback: 160),
+                tileHeight: intValue("img_y_size", fallback: 90)
+            )
+        }
+        return nil
+    }
+
+    private func videoShotIndexData(url: URL, referer: String) async -> [Int] {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        request.setValue(BilibiliEndpoints.userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue(referer, forHTTPHeaderField: "Referer")
+        guard let (payload, response) = try? await URLSession.shared.data(for: request),
+              let http = response as? HTTPURLResponse,
+              (200..<300).contains(http.statusCode),
+              payload.count >= 2 else { return [] }
+
+        var values: [Int] = []
+        values.reserveCapacity(payload.count / 2)
+        payload.withUnsafeBytes { bytes in
+            let raw = bytes.bindMemory(to: UInt8.self)
+            var offset = 0
+            while offset + 1 < raw.count {
+                values.append(Int(UInt16(raw[offset]) << 8 | UInt16(raw[offset + 1])))
+                offset += 2
+            }
+        }
+        return values
+    }
+
     func history(
         credential: BilibiliCredential,
         cursorMax: Int64 = 0,

@@ -482,6 +482,9 @@ final class AppModel: ObservableObject {
     private func refreshHistoryQuietly() async {
         guard let credential = account?.credential else { return }
         do {
+            // Give the detail page's final cloud progress report time to commit
+            // before reading the authoritative history page back.
+            try await Task.sleep(nanoseconds: 600_000_000)
             let page = try await api.history(credential: credential)
             historyItems = page.items
             historyCursor = page.cursor

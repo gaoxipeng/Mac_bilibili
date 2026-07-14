@@ -17,7 +17,6 @@ final class MPVRenderView: NSOpenGLView {
     var onPauseChanged: ((Bool) -> Void)?
     var onVideoSizeChanged: ((CGSize) -> Void)?
     var onReady: (() -> Void)?
-    var onAudioReady: (() -> Void)?
     var onEnded: (() -> Void)?
     var onError: ((String) -> Void)?
 
@@ -27,8 +26,6 @@ final class MPVRenderView: NSOpenGLView {
     private var defaultFBO: GLint = -1
     private var isConfigured = false
     private var pendingAudioURL: String?
-    private var activeAudioURL: String?
-    private var audioAttachTask: Task<Void, Never>?
     private var callbackContext: Unmanaged<MPVCallbackContext>?
 
     override class func defaultPixelFormat() -> NSOpenGLPixelFormat {
@@ -72,9 +69,6 @@ final class MPVRenderView: NSOpenGLView {
         guard mpv != nil else { throw APIError.message("libmpv 初始化失败") }
         setString("http-header-fields", headers.map { "\($0.key): \($0.value)" }.joined(separator: ","))
         pendingAudioURL = audioURL
-        activeAudioURL = audioURL
-        audioAttachTask?.cancel()
-        audioAttachTask = nil
         var options: [String] = []
         if start > 0 { options.append("start=\(start)") }
         command("loadfile", [videoURL, "replace", "-1", options.joined(separator: ",")])
@@ -87,8 +81,6 @@ final class MPVRenderView: NSOpenGLView {
     func seek(to seconds: Double) { command("seek", [String(max(0, seconds)), "absolute+exact"]) }
 
     func shutdown() {
-        audioAttachTask?.cancel()
-        audioAttachTask = nil
         let retainedContext = callbackContext
         callbackContext = nil
         guard let mpv else {
@@ -223,7 +215,6 @@ final class MPVRenderView: NSOpenGLView {
                     // 稳定地附着到当前文件；必须等主视频加载完成后显式加入并选中音轨。
                     pendingAudioURL = nil
                     command("audio-add", [audioURL, "select"])
-                    restoreAudioIfNeeded(audioURL: audioURL)
                 }
                 updateVideoSize()
                 onReady?()
@@ -247,23 +238,6 @@ final class MPVRenderView: NSOpenGLView {
         let height = getInt64("video-params/h")
         if width > 0, height > 0 {
             onVideoSizeChanged?(CGSize(width: CGFloat(width), height: CGFloat(height)))
-        }
-    }
-
-    private func restoreAudioIfNeeded(audioURL: String) {
-        audioAttachTask?.cancel()
-        audioAttachTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            for delay in [350, 900, 1_800] {
-                try? await Task.sleep(for: .milliseconds(delay))
-                guard !Task.isCancelled, activeAudioURL == audioURL else { return }
-                if getInt64("audio-params/channel-count") > 0 {
-                    onAudioReady?()
-                    return
-                }
-                command("audio-add", [audioURL, "select"])
-            }
-            onAudioReady?()
         }
     }
 

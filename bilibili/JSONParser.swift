@@ -1167,50 +1167,24 @@ enum JSONParser {
 
     private nonisolated static func pickStreamURL(from dash: [String: Any], type: String) -> String? {
         guard let streams = dash[type] as? [[String: Any]], !streams.isEmpty else { return nil }
-        let filtered = streams.filter { stream in
-            guard type == "video" else { return true }
-            return !string(stream, "codecs").lowercased().hasPrefix("mp4a")
+        let candidates = streams.flatMap { streamURLs(from: $0) }
+        if let native = candidates.first(where: { BiliPlayStream.isAVPlayerNativeURL($0) }) {
+            return native
         }
-        let ordered: [[String: Any]]
-        if type == "video" {
-            ordered = filtered.enumerated().sorted { lhs, rhs in
-                let left = videoCodecPriority(string(lhs.element, "codecs"))
-                let right = videoCodecPriority(string(rhs.element, "codecs"))
-                return left == right ? lhs.offset < rhs.offset : left < right
-            }.map(\.element)
-        } else {
-            ordered = filtered
-        }
-        // Respect the playurl response priority. `base_url` is the selected
-        // CDN representation; backup URLs are failover locations and must not
-        // silently replace it just because their hostname contains "mirror".
-        for stream in ordered {
-            let urls = streamURLs(from: stream)
-            if let url = urls.first { return url }
-        }
-        return nil
-    }
-
-    private nonisolated static func videoCodecPriority(_ codecs: String) -> Int {
-        let value = codecs.lowercased()
-        if value.contains("avc1") { return 0 }
-        if value.contains("avc") { return 1 }
-        if value.contains("hev") { return 2 }
-        if value.contains("av01") { return 3 }
-        return 4
+        return candidates.first
     }
 
     private nonisolated static func streamURLs(from stream: [String: Any]) -> [String] {
         var urls: [String] = []
-        let base = string(stream, "baseUrl", "base_url")
-        if !base.isEmpty {
-            urls.append(base)
-        }
         if let backups = stream["backup_url"] as? [String] {
             urls.append(contentsOf: backups.filter { !$0.isEmpty })
         }
         if let backups = stream["backupUrl"] as? [String] {
             urls.append(contentsOf: backups.filter { !$0.isEmpty })
+        }
+        let base = string(stream, "baseUrl", "base_url")
+        if !base.isEmpty {
+            urls.append(base)
         }
         return urls
     }

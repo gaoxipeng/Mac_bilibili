@@ -83,7 +83,6 @@ final class VideoPlaybackEngine: ObservableObject {
             videoAspectRatio = size.width / size.height
         }
         renderView.onReady = { [weak self] in self?.isReady = true }
-        renderView.onAudioReady = { [weak self] in self?.applyVolume() }
         renderView.onEnded = { [weak self] in self?.isPlaying = false }
         renderView.onError = { [weak self] _ in
             self?.isPlaying = false

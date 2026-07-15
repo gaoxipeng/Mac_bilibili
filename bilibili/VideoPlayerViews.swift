@@ -64,17 +64,34 @@ final class PlayerClipContainerView: NSView {
 
     override func layout() {
         super.layout()
-        playerView.frame = bounds
-        mpvView?.frame = bounds
-        playerView.autoresizingMask = [.width, .height]
+        updatePlaybackSubviewFrames()
         applyRoundedMask()
         PictureInPictureHost.shared.updatePlaybackSurface(self)
     }
 
-    func attachMPVView(_ view: MPVRenderView) {
-        guard mpvView !== view || view.superview !== self else { return }
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        updatePlaybackSubviewFrames()
+    }
 
-        // 内嵌页和全屏窗口共享同一个 libmpv/OpenGL 渲染视图。全屏控制栏在鼠标
+    override func setBoundsSize(_ newSize: NSSize) {
+        super.setBoundsSize(newSize)
+        updatePlaybackSubviewFrames()
+    }
+
+    private func updatePlaybackSubviewFrames() {
+        playerView.frame = bounds
+        mpvView?.frame = bounds
+        playerView.autoresizingMask = [.width, .height]
+    }
+
+    func attachMPVView(_ view: MPVRenderView) {
+        if mpvView === view, view.superview === self {
+            view.frame = bounds
+            return
+        }
+
+        // 内嵌页和全屏窗口共享同一个 libmpv/Metal 渲染视图。全屏控制栏在鼠标
         // 移动时会频繁刷新 SwiftUI；此时内嵌 representable 也可能收到 update，
         // 不能让它把渲染视图从仍可见的全屏窗口抢回去，否则画面会持续黑屏闪烁。
         if let current = view.superview as? PlayerClipContainerView,

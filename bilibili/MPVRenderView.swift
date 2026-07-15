@@ -1,7 +1,29 @@
 import AppKit
 import Libmpv
-import OpenGL.GL
+import Metal
 import OSLog
+import QuartzCore
+
+private final class MPVMetalLayer: CAMetalLayer {
+    override var drawableSize: CGSize {
+        get { super.drawableSize }
+        set {
+            guard newValue.width > 1, newValue.height > 1 else { return }
+            super.drawableSize = newValue
+        }
+    }
+
+    override var wantsExtendedDynamicRangeContent: Bool {
+        get { super.wantsExtendedDynamicRangeContent }
+        set {
+            if Thread.isMainThread {
+                super.wantsExtendedDynamicRangeContent = newValue
+            } else {
+                DispatchQueue.main.sync { super.wantsExtendedDynamicRangeContent = newValue }
+            }
+        }
+    }
+}
 
 private final class MPVCallbackContext: @unchecked Sendable {
     weak var view: MPVRenderView?
@@ -11,9 +33,136 @@ private final class MPVCallbackContext: @unchecked Sendable {
     }
 }
 
+private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
+    private let layer: CAMetalLayer
+    private let queue = DispatchQueue(label: "bilibili.mpv.metal-render", qos: .userInteractive)
+    private let commandQueue: MTLCommandQueue
+    private var context: OpaquePointer?
+    private var drawPending = false
+    private var stopped = false
+    private var buffers: [MTLBuffer] = []
+    private var bufferIndex = 0
+
+    init?(layer: CAMetalLayer) {
+        guard let device = MTLCreateSystemDefaultDevice(),
+              let commandQueue = device.makeCommandQueue() else { return nil }
+        self.layer = layer
+        self.commandQueue = commandQueue
+        layer.device = device
+        layer.pixelFormat = .bgra8Unorm
+        layer.framebufferOnly = false
+        layer.isOpaque = true
+        layer.presentsWithTransaction = false
+        layer.maximumDrawableCount = 3
+    }
+
+    func createContext(for mpv: OpaquePointer) -> Int32 {
+        var api = Array("sw".utf8CString)
+        return api.withUnsafeMutableBufferPointer { apiBuffer in
+            var params = [
+                mpv_render_param(type: MPV_RENDER_PARAM_API_TYPE, data: apiBuffer.baseAddress),
+                mpv_render_param(type: MPV_RENDER_PARAM_INVALID, data: nil),
+            ]
+            return mpv_render_context_create(&context, mpv, &params)
+        }
+    }
+
+    func start() {
+        guard let context else { return }
+        mpv_render_context_set_update_callback(context, { opaque in
+            guard let opaque else { return }
+            Unmanaged<MPVSoftwareMetalRenderer>.fromOpaque(opaque)
+                .takeUnretainedValue().requestDraw()
+        }, Unmanaged.passUnretained(self).toOpaque())
+    }
+
+    func stop() {
+        guard !stopped else { return }
+        stopped = true
+        if let context {
+            mpv_render_context_set_update_callback(context, nil, nil)
+            queue.sync { mpv_render_context_free(context) }
+            self.context = nil
+        }
+        buffers.removeAll()
+    }
+
+    func requestDraw() {
+        queue.async { [weak self] in
+            guard let self, !self.stopped, !self.drawPending else { return }
+            self.drawPending = true
+            self.draw()
+            self.drawPending = false
+        }
+    }
+
+    private func draw() {
+        guard let context, let drawable = layer.nextDrawable() else { return }
+        let width = drawable.texture.width
+        let height = drawable.texture.height
+        guard width > 1, height > 1 else { return }
+
+        let bytesPerRow = ((width * 4 + 63) / 64) * 64
+        let requiredLength = bytesPerRow * height
+        guard let device = layer.device,
+              let buffer = nextBuffer(device: device, length: requiredLength) else { return }
+
+        var size = [Int32(width), Int32(height)]
+        var stride = bytesPerRow
+        var format = Array("bgr0".utf8CString)
+        let result: Int32 = size.withUnsafeMutableBufferPointer { sizeBuffer in
+            format.withUnsafeMutableBufferPointer { formatBuffer in
+                var params = [
+                    mpv_render_param(type: MPV_RENDER_PARAM_SW_SIZE, data: sizeBuffer.baseAddress),
+                    mpv_render_param(type: MPV_RENDER_PARAM_SW_FORMAT, data: formatBuffer.baseAddress),
+                    mpv_render_param(type: MPV_RENDER_PARAM_SW_STRIDE, data: &stride),
+                    mpv_render_param(type: MPV_RENDER_PARAM_SW_POINTER, data: buffer.contents()),
+                    mpv_render_param(type: MPV_RENDER_PARAM_INVALID, data: nil),
+                ]
+                return mpv_render_context_render(context, &params)
+            }
+        }
+        guard result >= 0,
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+        blit.copy(
+            from: buffer,
+            sourceOffset: 0,
+            sourceBytesPerRow: bytesPerRow,
+            sourceBytesPerImage: requiredLength,
+            sourceSize: MTLSize(width: width, height: height, depth: 1),
+            to: drawable.texture,
+            destinationSlice: 0,
+            destinationLevel: 0,
+            destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
+        )
+        blit.endEncoding()
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+        // The software renderer writes directly into this shared buffer. Do
+        // not let a later frame overwrite it before Metal has completed blitting.
+        commandBuffer.waitUntilCompleted()
+    }
+
+    private func nextBuffer(device: MTLDevice, length: Int) -> MTLBuffer? {
+        if buffers.count < 3 {
+            guard let buffer = device.makeBuffer(length: length, options: .storageModeShared) else { return nil }
+            buffers.append(buffer)
+            return buffer
+        }
+        bufferIndex = (bufferIndex + 1) % buffers.count
+        if buffers[bufferIndex].length < length {
+            guard let buffer = device.makeBuffer(length: length, options: .storageModeShared) else { return nil }
+            buffers[bufferIndex] = buffer
+        }
+        return buffers[bufferIndex]
+    }
+}
+
 @MainActor
-final class MPVRenderView: NSOpenGLView {
+final class MPVRenderView: NSView {
     private static let playbackLogger = Logger(subsystem: "gaoxipeng.bilibili", category: "Playback")
+
     var onTimeChanged: ((Double) -> Void)?
     var onDurationChanged: ((Double) -> Void)?
     var onPauseChanged: ((Bool) -> Void)?
@@ -23,33 +172,21 @@ final class MPVRenderView: NSOpenGLView {
     var onError: ((String) -> Void)?
 
     private var mpv: OpaquePointer?
-    private var renderContext: OpaquePointer?
     private let eventQueue = DispatchQueue(label: "bilibili.mpv.events", qos: .userInitiated)
-    private var defaultFBO: GLint = -1
+    private let metalLayer = MPVMetalLayer()
+    private var metalRenderer: MPVSoftwareMetalRenderer?
     private var isConfigured = false
+    private var mpvCoreReady = false
     private var pendingAudioURL: String?
     private var remainingVideoURLs: [String] = []
     private var loadOptions: [String] = []
     private var currentFileLoaded = false
     private var callbackContext: Unmanaged<MPVCallbackContext>?
-
-    override class func defaultPixelFormat() -> NSOpenGLPixelFormat {
-        let attributes: [NSOpenGLPixelFormatAttribute] = [
-            NSOpenGLPixelFormatAttribute(NSOpenGLPFADoubleBuffer),
-            NSOpenGLPixelFormatAttribute(NSOpenGLPFAColorSize), 32,
-            NSOpenGLPixelFormatAttribute(NSOpenGLPFADepthSize), 24,
-            NSOpenGLPixelFormatAttribute(0)
-        ]
-        return NSOpenGLPixelFormat(attributes: attributes)!
-    }
+    private var geometryObservers: [NSObjectProtocol] = []
+    private var lastDrawablePixelSize = CGSize.zero
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
-        configureView()
-    }
-
-    override init?(frame frameRect: NSRect, pixelFormat format: NSOpenGLPixelFormat?) {
-        super.init(frame: frameRect, pixelFormat: format ?? Self.defaultPixelFormat())
         configureView()
     }
 
@@ -57,8 +194,30 @@ final class MPVRenderView: NSOpenGLView {
         guard !isConfigured else { return }
         isConfigured = true
         autoresizingMask = [.width, .height]
-        wantsBestResolutionOpenGLSurface = true
-        setupMPV()
+        metalLayer.backgroundColor = NSColor.black.cgColor
+        metalLayer.frame = bounds
+        metalLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        layer = metalLayer
+        wantsLayer = true
+        postsFrameChangedNotifications = true
+        postsBoundsChangedNotifications = true
+        geometryObservers = [
+            NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification,
+                object: self,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.updateMetalLayerGeometry() }
+            },
+            NotificationCenter.default.addObserver(
+                forName: NSView.boundsDidChangeNotification,
+                object: self,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.updateMetalLayerGeometry() }
+            },
+        ]
+        updateMetalLayerGeometry()
     }
 
     @available(*, unavailable)
@@ -66,11 +225,15 @@ final class MPVRenderView: NSOpenGLView {
 
     deinit {
         MainActor.assumeIsolated {
+            for observer in geometryObservers {
+                NotificationCenter.default.removeObserver(observer)
+            }
             shutdown()
         }
     }
 
     func load(videoURL: String, fallbackVideoURLs: [String] = [], audioURL: String?, headers: [String: String], start: Double = 0) throws {
+        try ensureMPVCore()
         guard mpv != nil else { throw APIError.message("libmpv 初始化失败") }
         setString("http-header-fields", headers.map { "\($0.key): \($0.value)" }.joined(separator: ","))
         pendingAudioURL = audioURL
@@ -98,28 +261,62 @@ final class MPVRenderView: NSOpenGLView {
         let retainedContext = callbackContext
         callbackContext = nil
         guard let mpv else {
+            metalRenderer?.stop()
+            metalRenderer = nil
             retainedContext?.release()
             return
         }
         mpv_set_wakeup_callback(mpv, nil, nil)
-        if let renderContext {
-            mpv_render_context_set_update_callback(renderContext, nil, nil)
-            mpv_render_context_free(renderContext)
-            self.renderContext = nil
-        }
+        metalRenderer?.stop()
+        metalRenderer = nil
         mpv_terminate_destroy(mpv)
         self.mpv = nil
+        mpvCoreReady = false
         retainedContext?.release()
     }
 
-    private func setupMPV() {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        updateMetalLayerGeometry()
+        guard window != nil, !mpvCoreReady else { return }
+        do {
+            try ensureMPVCore()
+        } catch {
+            reportSetupFailure(error.localizedDescription)
+        }
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateMetalLayerGeometry()
+    }
+
+    override func layout() {
+        super.layout()
+        updateMetalLayerGeometry()
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        updateMetalLayerGeometry()
+    }
+
+    override func setBoundsSize(_ newSize: NSSize) {
+        super.setBoundsSize(newSize)
+        updateMetalLayerGeometry()
+    }
+
+    private func setupMPVCore() {
+        guard !mpvCoreReady else { return }
         guard let handle = mpv_create() else { return }
         mpv = handle
+        guard let renderer = MPVSoftwareMetalRenderer(layer: metalLayer) else {
+            mpv_destroy(handle)
+            mpv = nil
+            return
+        }
+        metalRenderer = renderer
         setOption("vo", "libmpv")
-        // Keep the legacy OpenGL context used by the stable player, while
-        // copying VideoToolbox surfaces to ordinary frames. Direct VT rectangle
-        // textures require a newer GL path that MPVKit's current FBO renderer
-        // does not present correctly on macOS.
         setOption("hwdec", "videotoolbox-copy")
         setOption("ytdl", "no")
         setOption("keep-open", "yes")
@@ -129,38 +326,22 @@ final class MPVRenderView: NSOpenGLView {
         // layout and leave playback silent even though the track opened.
         setOption("audio-channels", "stereo")
         guard mpv_initialize(handle) >= 0 else {
+            metalRenderer = nil
             mpv_destroy(handle)
             mpv = nil
             return
         }
-        mpv_request_log_messages(handle, "warn")
-
-        openGLContext?.makeCurrentContext()
-        var glInit = mpv_opengl_init_params(
-            get_proc_address: { _, name in MPVRenderView.openGLProcAddress(name) },
-            get_proc_address_ctx: nil
-        )
-        let api = UnsafeMutableRawPointer(mutating: (MPV_RENDER_API_TYPE_OPENGL as NSString).utf8String)
-        withUnsafeMutablePointer(to: &glInit) { pointer in
-            var params = [
-                mpv_render_param(type: MPV_RENDER_PARAM_API_TYPE, data: api),
-                mpv_render_param(type: MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, data: pointer),
-                mpv_render_param()
-            ]
-            guard mpv_render_context_create(&renderContext, handle, &params) >= 0 else { return }
+        guard renderer.createContext(for: handle) >= 0 else {
+            metalRenderer = nil
+            mpv_terminate_destroy(handle)
+            mpv = nil
+            return
         }
+        renderer.start()
+        mpv_request_log_messages(handle, "warn")
 
         let retainedContext = Unmanaged.passRetained(MPVCallbackContext(view: self))
         callbackContext = retainedContext
-
-        if let renderContext {
-            mpv_render_context_set_update_callback(renderContext, { context in
-                guard let context else { return }
-                let callback = Unmanaged<MPVCallbackContext>.fromOpaque(context).takeUnretainedValue()
-                let view = callback.view
-                DispatchQueue.main.async { [weak view] in view?.needsDisplay = true }
-            }, retainedContext.toOpaque())
-        }
 
         observe("time-pos", MPV_FORMAT_DOUBLE)
         observe("duration", MPV_FORMAT_DOUBLE)
@@ -173,39 +354,43 @@ final class MPVRenderView: NSOpenGLView {
             let view = callback.view
             DispatchQueue.main.async { [weak view] in view?.readEvents() }
         }, retainedContext.toOpaque())
+        mpvCoreReady = true
     }
 
-    override func draw(_ dirtyRect: NSRect) {
-        guard let renderContext, let openGLContext else { return }
-        openGLContext.makeCurrentContext()
-        glClearColor(0, 0, 0, 1)
-        glClear(UInt32(GL_COLOR_BUFFER_BIT))
-        glGetIntegerv(UInt32(GL_FRAMEBUFFER_BINDING), &defaultFBO)
-        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 1
-        var fbo = mpv_opengl_fbo(
-            fbo: Int32(defaultFBO),
-            w: Int32(max(1, bounds.width * scale)),
-            h: Int32(max(1, bounds.height * scale)),
-            internal_format: 0
-        )
-        var flip: CInt = 1
-        withUnsafeMutablePointer(to: &fbo) { fboPointer in
-            withUnsafeMutablePointer(to: &flip) { flipPointer in
-                var params = [
-                    mpv_render_param(type: MPV_RENDER_PARAM_OPENGL_FBO, data: fboPointer),
-                    mpv_render_param(type: MPV_RENDER_PARAM_FLIP_Y, data: flipPointer),
-                    mpv_render_param()
-                ]
-                mpv_render_context_render(renderContext, &params)
+    private func ensureMPVCore() throws {
+        if mpv == nil {
+            setupMPVCore()
+        }
+        guard mpv != nil, mpvCoreReady else {
+            throw APIError.message("libmpv 初始化失败")
+        }
+    }
+
+    private func updateMetalLayerGeometry() {
+        // Render at logical view resolution. Scaling to Retina pixels here would
+        // make libmpv's software color conversion needlessly process 4x pixels.
+        let scale: CGFloat = 1
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        metalLayer.frame = bounds
+        metalLayer.contentsScale = scale
+        let pixelSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
+        if pixelSize.width > 1, pixelSize.height > 1 {
+            metalLayer.drawableSize = pixelSize
+            if pixelSize != lastDrawablePixelSize {
+                lastDrawablePixelSize = pixelSize
+                Self.playbackLogger.notice("Metal geometry view=\(Int(self.bounds.width), privacy: .public)x\(Int(self.bounds.height), privacy: .public) drawable=\(Int(pixelSize.width), privacy: .public)x\(Int(pixelSize.height), privacy: .public)")
             }
         }
-        openGLContext.flushBuffer()
+        CATransaction.commit()
+        metalRenderer?.requestDraw()
     }
 
     private func readEvents() {
         guard let handle = mpv else { return }
+        let handleAddress = UInt(bitPattern: handle)
         eventQueue.async { [weak self] in
-            guard let self else { return }
+            guard let self, let handle = OpaquePointer(bitPattern: handleAddress) else { return }
             while let event = mpv_wait_event(handle, 0), event.pointee.event_id != MPV_EVENT_NONE {
                 self.handle(event.pointee)
             }
@@ -234,7 +419,8 @@ final class MPVRenderView: NSOpenGLView {
         case MPV_EVENT_FILE_LOADED:
             Task { @MainActor in
                 currentFileLoaded = true
-                Self.playbackLogger.notice("FILE_LOADED")
+                let layerBound = self.layer === self.metalLayer
+                Self.playbackLogger.notice("FILE_LOADED vo=\(self.getString("current-vo") ?? "unknown", privacy: .public) metalLayer=\(layerBound, privacy: .public) drawable=\(Int(self.metalLayer.drawableSize.width), privacy: .public)x\(Int(self.metalLayer.drawableSize.height), privacy: .public)")
                 if let audioURL = pendingAudioURL {
                     // DASH 的音轨是独立资源。audio-file 是启动选项，运行期修改并不会
                     // 稳定地附着到当前文件；必须等主视频加载完成后显式加入并选中音轨。
@@ -269,7 +455,7 @@ final class MPVRenderView: NSOpenGLView {
             guard let raw = event.data else { return }
             let message = raw.assumingMemoryBound(to: mpv_event_log_message.self).pointee
             let level = String(cString: message.level)
-            guard level == "error" || level == "fatal" else { return }
+            guard level == "warn" || level == "error" || level == "fatal" else { return }
             let text = String(cString: message.text).trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { return }
             Task { @MainActor in
@@ -277,6 +463,11 @@ final class MPVRenderView: NSOpenGLView {
             }
         default: break
         }
+    }
+
+    private func reportSetupFailure(_ message: String) {
+        Self.playbackLogger.error("mpv setup failed: \(message, privacy: .public)")
+        onError?(message)
     }
 
     private func updateVideoSize() {
@@ -322,6 +513,12 @@ final class MPVRenderView: NSOpenGLView {
         return value
     }
 
+    private func getString(_ name: String) -> String? {
+        guard let mpv, let value = mpv_get_property_string(mpv, name) else { return nil }
+        defer { mpv_free(value) }
+        return String(cString: value)
+    }
+
     @discardableResult
     private func command(_ name: String, _ args: [String]) -> Int32 {
         guard let mpv else { return Int32(MPV_ERROR_UNINITIALIZED.rawValue) }
@@ -335,13 +532,6 @@ final class MPVRenderView: NSOpenGLView {
             }
         }
         return mpv_command(mpv, &pointers)
-    }
-
-    private static func openGLProcAddress(_ name: UnsafePointer<CChar>?) -> UnsafeMutableRawPointer? {
-        guard let name else { return nil }
-        let symbol = CFStringCreateWithCString(nil, name, CFStringBuiltInEncodings.ASCII.rawValue)
-        let bundle = CFBundleGetBundleWithIdentifier("com.apple.opengl" as CFString)
-        return CFBundleGetFunctionPointerForName(bundle, symbol)
     }
 
 }

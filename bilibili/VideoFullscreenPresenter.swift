@@ -120,7 +120,7 @@ final class VideoFullscreenPresenter: ObservableObject {
             opening: false
         ) { [weak self] in
             guard let self else { return }
-            // 先让内嵌卡片接管共享的 mpv/OpenGL 视图，全屏窗口在原卡片位置
+            // 先让内嵌卡片接管共享的 mpv/Metal 视图，全屏窗口在原卡片位置
             // 再保留一帧作为遮盖，避免 orderOut 与 SwiftUI 重挂载之间露出黑帧。
             PlayerClipContainerView.beginFullscreenToInlineHandoff()
             self.isPresented = false

@@ -1087,6 +1087,7 @@ actor BilibiliAPI {
         }
         stream = BiliPlayStream(
             videoURL: stream.videoURL,
+            videoFallbackURLs: stream.videoFallbackURLs,
             audioURL: stream.audioURL,
             aid: stream.aid,
             cid: cid > 0 ? cid : stream.cid
@@ -1616,6 +1617,7 @@ actor BilibiliAPI {
         }
         stream = BiliPlayStream(
             videoURL: stream.videoURL,
+            videoFallbackURLs: stream.videoFallbackURLs,
             audioURL: stream.audioURL,
             aid: stream.aid,
             cid: cid

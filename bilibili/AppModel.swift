@@ -690,6 +690,7 @@ final class AppModel: ObservableObject {
             let stream = try await api.playURL(bvid: video.bvid, cid: cid, credential: credential)
             let resolved = BiliPlayStream(
                 videoURL: stream.videoURL,
+                videoFallbackURLs: stream.videoFallbackURLs,
                 audioURL: stream.audioURL,
                 aid: aid,
                 cid: cid

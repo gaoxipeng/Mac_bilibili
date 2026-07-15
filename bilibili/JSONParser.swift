@@ -1044,9 +1044,10 @@ enum JSONParser {
         }
 
         if let dash = data["dash"] as? [String: Any],
-           let videoURL = pickStreamURL(from: dash, type: "video") {
+           let videoURLs = pickStreamURLs(from: dash, type: "video"),
+           let videoURL = videoURLs.first {
             let audioURL = pickStreamURL(from: dash, type: "audio")
-            let dashStream = BiliPlayStream(videoURL: videoURL, audioURL: audioURL, aid: 0, cid: 0)
+            let dashStream = BiliPlayStream(videoURL: videoURL, videoFallbackURLs: Array(videoURLs.dropFirst()), audioURL: audioURL, aid: 0, cid: 0)
             if dashStream.isAVPlayerCompatible {
                 return dashStream
             }
@@ -1057,9 +1058,10 @@ enum JSONParser {
         }
 
         if let dash = data["dash"] as? [String: Any],
-           let videoURL = pickStreamURL(from: dash, type: "video") {
+           let videoURLs = pickStreamURLs(from: dash, type: "video"),
+           let videoURL = videoURLs.first {
             let audioURL = pickStreamURL(from: dash, type: "audio")
-            return BiliPlayStream(videoURL: videoURL, audioURL: audioURL, aid: 0, cid: 0)
+            return BiliPlayStream(videoURL: videoURL, videoFallbackURLs: Array(videoURLs.dropFirst()), audioURL: audioURL, aid: 0, cid: 0)
         }
 
         return nil
@@ -1166,14 +1168,35 @@ enum JSONParser {
     }
 
     private nonisolated static func pickStreamURL(from dash: [String: Any], type: String) -> String? {
+        pickStreamURLs(from: dash, type: type)?.first
+    }
+
+    private nonisolated static func pickStreamURLs(from dash: [String: Any], type: String) -> [String]? {
         guard let streams = dash[type] as? [[String: Any]], !streams.isEmpty else { return nil }
-        let candidates = streams.flatMap {
+        let orderedStreams = type == "audio"
+            ? streams.enumerated().sorted { lhs, rhs in
+                let leftMCDN = isMCDNBaseURL(lhs.element)
+                let rightMCDN = isMCDNBaseURL(rhs.element)
+                return leftMCDN == rightMCDN ? lhs.offset < rhs.offset : leftMCDN
+            }.map(\.element)
+            : streams
+        let rawCandidates = orderedStreams.flatMap {
             type == "audio" ? audioStreamURLs(from: $0) : streamURLs(from: $0)
         }
+        let candidates = rawCandidates.enumerated().sorted { lhs, rhs in
+            let leftIsCOS = isCOSCDNURL(lhs.element)
+            let rightIsCOS = isCOSCDNURL(rhs.element)
+            return leftIsCOS == rightIsCOS ? lhs.offset < rhs.offset : !leftIsCOS
+        }.map(\.element)
         if let native = candidates.first(where: { BiliPlayStream.isAVPlayerNativeURL($0) }) {
-            return native
+            return [native] + candidates.filter { $0 != native }
         }
-        return candidates.first
+        return candidates.isEmpty ? nil : candidates
+    }
+
+    private nonisolated static func isMCDNBaseURL(_ stream: [String: Any]) -> Bool {
+        let base = string(stream, "baseUrl", "base_url")
+        return URL(string: base)?.host?.lowercased().contains("mcdn.bilivideo") == true
     }
 
     private nonisolated static func audioStreamURLs(from stream: [String: Any]) -> [String] {
@@ -1201,7 +1224,22 @@ enum JSONParser {
         if !base.isEmpty {
             urls.append(base)
         }
-        return urls
+        // mirrorcos occasionally closes this video's long DASH response early
+        // and then ignores the byte range used by mpv to seek/recover. Keep the
+        // same representation and prefer another URL supplied for that stream.
+        return urls.enumerated().sorted { lhs, rhs in
+            let leftIsMirrorCOS = isMirrorCOSURL(lhs.element)
+            let rightIsMirrorCOS = isMirrorCOSURL(rhs.element)
+            return leftIsMirrorCOS == rightIsMirrorCOS ? lhs.offset < rhs.offset : !leftIsMirrorCOS
+        }.map(\.element)
+    }
+
+    private nonisolated static func isMirrorCOSURL(_ value: String) -> Bool {
+        URL(string: value)?.host?.lowercased().contains("mirrorcos") == true
+    }
+
+    private nonisolated static func isCOSCDNURL(_ value: String) -> Bool {
+        URL(string: value)?.host?.lowercased().contains("cos") == true
     }
 
     private nonisolated static func parseCommentPaginationReply(_ cursor: [String: Any]?) -> [String: Any]? {

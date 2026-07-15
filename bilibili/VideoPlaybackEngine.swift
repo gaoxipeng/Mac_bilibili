@@ -7,6 +7,7 @@ import MediaPlayer
 @MainActor
 final class VideoPlaybackEngine: ObservableObject {
     var onSeekCommitted: ((Double) -> Void)?
+    var onPlaybackError: ((String) -> Void)?
     @Published private(set) var isPlaying = false
     @Published private(set) var currentTime: Double = 0
     @Published private(set) var duration: Double = 0
@@ -84,10 +85,11 @@ final class VideoPlaybackEngine: ObservableObject {
         }
         renderView.onReady = { [weak self] in self?.isReady = true }
         renderView.onEnded = { [weak self] in self?.isPlaying = false }
-        renderView.onError = { [weak self] _ in
+        renderView.onError = { [weak self] message in
             self?.isPlaying = false
             self?.isReady = false
             self?.updateNowPlayingInfo()
+            self?.onPlaybackError?(message)
         }
         installRemoteCommands()
     }
@@ -143,6 +145,7 @@ final class VideoPlaybackEngine: ObservableObject {
         playbackHeaders = headers
         try renderView.load(
             videoURL: stream.videoURL,
+            fallbackVideoURLs: stream.videoFallbackURLs,
             audioURL: stream.audioURL,
             headers: headers,
             start: max(0, startSeconds)

@@ -91,6 +91,9 @@ final class VideoDetailModel: ObservableObject {
         player.onSeekCommitted = { [weak self] seconds in
             self?.reportCommittedSeek(seconds)
         }
+        player.onPlaybackError = { [weak self] message in
+            self?.playError = message
+        }
     }
 
     var isBangumiPlayback: Bool {
@@ -652,6 +655,7 @@ final class VideoDetailModel: ObservableObject {
 
             let resolvedStream = BiliPlayStream(
                 videoURL: stream.videoURL,
+                videoFallbackURLs: stream.videoFallbackURLs,
                 audioURL: stream.audioURL,
                 aid: displayVideo.aid > 0 ? displayVideo.aid : stream.aid,
                 cid: cid

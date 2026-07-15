@@ -633,9 +633,18 @@ nonisolated struct BiliVideoTripleResult: Sendable, Equatable {
 
 struct BiliPlayStream: Hashable, Sendable {
     let videoURL: String
+    let videoFallbackURLs: [String]
     let audioURL: String?
     let aid: Int64
     let cid: Int64
+
+    nonisolated init(videoURL: String, videoFallbackURLs: [String] = [], audioURL: String?, aid: Int64, cid: Int64) {
+        self.videoURL = videoURL
+        self.videoFallbackURLs = videoFallbackURLs.filter { !$0.isEmpty && $0 != videoURL }
+        self.audioURL = audioURL
+        self.aid = aid
+        self.cid = cid
+    }
 
     nonisolated var isAVPlayerCompatible: Bool {
         Self.isAVPlayerNativeURL(videoURL)

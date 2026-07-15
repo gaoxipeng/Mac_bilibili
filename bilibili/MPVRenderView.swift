@@ -1,6 +1,7 @@
 import AppKit
 import Libmpv
 import OpenGL.GL
+import OSLog
 
 private final class MPVCallbackContext: @unchecked Sendable {
     weak var view: MPVRenderView?
@@ -12,6 +13,7 @@ private final class MPVCallbackContext: @unchecked Sendable {
 
 @MainActor
 final class MPVRenderView: NSOpenGLView {
+    private static let playbackLogger = Logger(subsystem: "gaoxipeng.bilibili", category: "Playback")
     var onTimeChanged: ((Double) -> Void)?
     var onDurationChanged: ((Double) -> Void)?
     var onPauseChanged: ((Bool) -> Void)?
@@ -26,6 +28,9 @@ final class MPVRenderView: NSOpenGLView {
     private var defaultFBO: GLint = -1
     private var isConfigured = false
     private var pendingAudioURL: String?
+    private var remainingVideoURLs: [String] = []
+    private var loadOptions: [String] = []
+    private var currentFileLoaded = false
     private var callbackContext: Unmanaged<MPVCallbackContext>?
 
     override class func defaultPixelFormat() -> NSOpenGLPixelFormat {
@@ -65,13 +70,22 @@ final class MPVRenderView: NSOpenGLView {
         }
     }
 
-    func load(videoURL: String, audioURL: String?, headers: [String: String], start: Double = 0) throws {
+    func load(videoURL: String, fallbackVideoURLs: [String] = [], audioURL: String?, headers: [String: String], start: Double = 0) throws {
         guard mpv != nil else { throw APIError.message("libmpv 初始化失败") }
         setString("http-header-fields", headers.map { "\($0.key): \($0.value)" }.joined(separator: ","))
         pendingAudioURL = audioURL
-        var options: [String] = []
-        if start > 0 { options.append("start=\(start)") }
-        command("loadfile", [videoURL, "replace", "-1", options.joined(separator: ",")])
+        remainingVideoURLs = fallbackVideoURLs.filter { !$0.isEmpty && $0 != videoURL }
+        loadOptions = start > 0 ? ["start=\(start)"] : []
+        currentFileLoaded = false
+        try submitLoad(videoURL: videoURL)
+    }
+
+    private func submitLoad(videoURL: String) throws {
+        let result = command("loadfile", [videoURL, "replace", "-1", loadOptions.joined(separator: ",")])
+        Self.playbackLogger.notice("loadfile host=\(URL(string: videoURL)?.host ?? "invalid", privacy: .public) audio=\(self.pendingAudioURL != nil, privacy: .public) result=\(result, privacy: .public)")
+        guard result >= 0 else {
+            throw APIError.message("mpv 无法提交播放任务：\(String(cString: mpv_error_string(result)))")
+        }
     }
 
     func setPaused(_ paused: Bool) { setFlag("pause", paused) }
@@ -102,15 +116,24 @@ final class MPVRenderView: NSOpenGLView {
         guard let handle = mpv_create() else { return }
         mpv = handle
         setOption("vo", "libmpv")
-        setOption("hwdec", "videotoolbox")
+        // Keep the legacy OpenGL context used by the stable player, while
+        // copying VideoToolbox surfaces to ordinary frames. Direct VT rectangle
+        // textures require a newer GL path that MPVKit's current FBO renderer
+        // does not present correctly on macOS.
+        setOption("hwdec", "videotoolbox-copy")
         setOption("ytdl", "no")
         setOption("keep-open", "yes")
         setOption("audio-display", "no")
+        // Normalize unusual/malformed DASH channel layouts before CoreAudio.
+        // Some Bilibili AAC tracks otherwise make AudioUnit reject its input
+        // layout and leave playback silent even though the track opened.
+        setOption("audio-channels", "stereo")
         guard mpv_initialize(handle) >= 0 else {
             mpv_destroy(handle)
             mpv = nil
             return
         }
+        mpv_request_log_messages(handle, "warn")
 
         openGLContext?.makeCurrentContext()
         var glInit = mpv_opengl_init_params(
@@ -210,6 +233,8 @@ final class MPVRenderView: NSOpenGLView {
             }
         case MPV_EVENT_FILE_LOADED:
             Task { @MainActor in
+                currentFileLoaded = true
+                Self.playbackLogger.notice("FILE_LOADED")
                 if let audioURL = pendingAudioURL {
                     // DASH 的音轨是独立资源。audio-file 是启动选项，运行期修改并不会
                     // 稳定地附着到当前文件；必须等主视频加载完成后显式加入并选中音轨。
@@ -224,10 +249,31 @@ final class MPVRenderView: NSOpenGLView {
             Task { @MainActor in
                 if reason?.reason == MPV_END_FILE_REASON_ERROR {
                     let code = reason?.error ?? Int32(MPV_ERROR_GENERIC.rawValue)
+                    Self.playbackLogger.error("END_FILE error=\(code, privacy: .public) message=\(String(cString: mpv_error_string(code)), privacy: .public)")
+                    if !currentFileLoaded, !remainingVideoURLs.isEmpty {
+                        let nextURL = remainingVideoURLs.removeFirst()
+                        Self.playbackLogger.notice("retrying unopened DASH candidate host=\(URL(string: nextURL)?.host ?? "invalid", privacy: .public)")
+                        do {
+                            try submitLoad(videoURL: nextURL)
+                        } catch {
+                            onError?(error.localizedDescription)
+                        }
+                        return
+                    }
                     onError?(String(cString: mpv_error_string(code)))
                 } else {
                     onEnded?()
                 }
+            }
+        case MPV_EVENT_LOG_MESSAGE:
+            guard let raw = event.data else { return }
+            let message = raw.assumingMemoryBound(to: mpv_event_log_message.self).pointee
+            let level = String(cString: message.level)
+            guard level == "error" || level == "fatal" else { return }
+            let text = String(cString: message.text).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return }
+            Task { @MainActor in
+                Self.playbackLogger.error("mpv: \(text, privacy: .public)")
             }
         default: break
         }
@@ -237,6 +283,7 @@ final class MPVRenderView: NSOpenGLView {
         let width = getInt64("video-params/w")
         let height = getInt64("video-params/h")
         if width > 0, height > 0 {
+            Self.playbackLogger.notice("video-size=\(width, privacy: .public)x\(height, privacy: .public)")
             onVideoSizeChanged?(CGSize(width: CGFloat(width), height: CGFloat(height)))
         }
     }
@@ -275,8 +322,9 @@ final class MPVRenderView: NSOpenGLView {
         return value
     }
 
-    private func command(_ name: String, _ args: [String]) {
-        guard let mpv else { return }
+    @discardableResult
+    private func command(_ name: String, _ args: [String]) -> Int32 {
+        guard let mpv else { return Int32(MPV_ERROR_UNINITIALIZED.rawValue) }
         let strings: [String?] = [name] + args.map(Optional.some) + [nil]
         var pointers: [UnsafePointer<CChar>?] = strings.map { value in
             value.flatMap { UnsafePointer<CChar>(strdup($0)) }
@@ -286,7 +334,7 @@ final class MPVRenderView: NSOpenGLView {
                 free(UnsafeMutablePointer(mutating: pointer!))
             }
         }
-        _ = mpv_command(mpv, &pointers)
+        return mpv_command(mpv, &pointers)
     }
 
     private static func openGLProcAddress(_ name: UnsafePointer<CChar>?) -> UnsafeMutableRawPointer? {

@@ -495,11 +495,11 @@ private struct DanmakuLayoutStrategy {
         case .inline:
             spawnSpreadMillis = 560
             fixedSpawnSpreadMillis = 220
-            densityKeepRatio = metrics.layoutHeight < 220 ? 0.84 : 0.92
+            densityKeepRatio = metrics.layoutHeight < 220 ? 0.94 : 0.98
             minimumTrackLineHeight = 24
             lineHeightMultiplier = 1.38
             lineHeightPadding = 7
-            maxTrackCount = 20
+            maxTrackCount = 24
         case .fullscreen:
             spawnSpreadMillis = width > 1_600 ? 780 : 680
             fixedSpawnSpreadMillis = 320
@@ -548,11 +548,11 @@ private struct DanmakuLayoutStrategy {
         guard densityKeepRatio < 0.999 else { return true }
         let pressureRatio: Double
         if totalItemCount > 8_000 {
-            pressureRatio = densityKeepRatio * 0.70
+            pressureRatio = densityKeepRatio * 0.83
         } else if totalItemCount > 4_000 {
-            pressureRatio = densityKeepRatio * 0.78
+            pressureRatio = densityKeepRatio * 0.89
         } else if totalItemCount > 2_000 {
-            pressureRatio = densityKeepRatio * 0.88
+            pressureRatio = densityKeepRatio * 0.95
         } else {
             pressureRatio = densityKeepRatio
         }
@@ -709,8 +709,12 @@ private func canSpawnScrollOnTrack(
         }
         let rightPx = leftPx + active.textWidth
         if reverse {
-            if rightPx + gapPx > screenWidth { return false }
-        } else if leftPx < screenWidth + gapPx {
+            // Reverse comments enter from the left. The previous comment must
+            // have moved far enough right to leave an entry gap at x = 0.
+            if leftPx - gapPx < 0 { return false }
+        } else if rightPx + gapPx > screenWidth {
+            // Normal comments enter from the right. Reuse the track once the
+            // previous comment's trailing edge has cleared the entry gap.
             return false
         }
     }

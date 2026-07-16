@@ -1130,7 +1130,6 @@ private struct HistoryVideoCard: View, Equatable {
 
                 VideoCoverFeedMetaOverlay(durationText: durationBadgeText)
             }
-            .clipShape(RoundedRectangle(cornerRadius: VideoCardLayout.cornerRadius, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: VideoCardLayout.cornerRadius, style: .continuous))
         }
         .buttonStyle(.plain)
@@ -1389,7 +1388,6 @@ struct VideoCard: View, Equatable {
                     durationText: video.duration > 0 ? video.durationText : ""
                 )
             }
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         }
     }

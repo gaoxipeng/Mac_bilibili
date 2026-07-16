@@ -70,6 +70,8 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
     private let commandQueue: MTLCommandQueue
     private let inFlightFrames = DispatchSemaphore(value: 3)
     private let bufferPool = MPVMetalBufferPool()
+    private let displayStateLock = NSLock()
+    private var displayAvailable = true
     private var context: OpaquePointer?
     private var drawPending = false
     private var stopped = false
@@ -85,6 +87,9 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
         layer.isOpaque = true
         layer.presentsWithTransaction = false
         layer.maximumDrawableCount = 3
+        // When the display is off, WindowServer may temporarily stop vending
+        // drawables. Never let the serial mpv render queue wait forever.
+        layer.allowsNextDrawableTimeout = true
     }
 
     func createContext(for mpv: OpaquePointer) -> Int32 {
@@ -120,15 +125,31 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
 
     func requestDraw() {
         queue.async { [weak self] in
-            guard let self, !self.stopped, !self.drawPending else { return }
+            guard let self, !self.stopped, self.isDisplayAvailable, !self.drawPending else { return }
             self.drawPending = true
             self.draw()
             self.drawPending = false
         }
     }
 
+    func setDisplayAvailable(_ available: Bool) {
+        displayStateLock.lock()
+        displayAvailable = available
+        displayStateLock.unlock()
+        if available {
+            requestDraw()
+        }
+    }
+
+    private var isDisplayAvailable: Bool {
+        displayStateLock.lock()
+        let available = displayAvailable
+        displayStateLock.unlock()
+        return available
+    }
+
     private func draw() {
-        guard let context, let drawable = layer.nextDrawable() else { return }
+        guard isDisplayAvailable, let context, let drawable = layer.nextDrawable() else { return }
         let width = drawable.texture.width
         let height = drawable.texture.height
         guard width > 1, height > 1 else { return }
@@ -217,6 +238,7 @@ final class MPVRenderView: NSView {
     private var currentFileLoaded = false
     private var callbackContext: Unmanaged<MPVCallbackContext>?
     private var geometryObservers: [NSObjectProtocol] = []
+    private var workspaceObservers: [NSObjectProtocol] = []
     private var lastDrawablePixelSize = CGSize.zero
 
     override init(frame frameRect: NSRect) {
@@ -251,6 +273,23 @@ final class MPVRenderView: NSView {
                 Task { @MainActor [weak self] in self?.updateMetalLayerGeometry() }
             },
         ]
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        workspaceObservers = [
+            workspaceCenter.addObserver(
+                forName: NSWorkspace.screensDidSleepNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.screenDidSleep() }
+            },
+            workspaceCenter.addObserver(
+                forName: NSWorkspace.screensDidWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.screenDidWake() }
+            },
+        ]
         updateMetalLayerGeometry()
     }
 
@@ -262,8 +301,24 @@ final class MPVRenderView: NSView {
             for observer in geometryObservers {
                 NotificationCenter.default.removeObserver(observer)
             }
+            let workspaceCenter = NSWorkspace.shared.notificationCenter
+            for observer in workspaceObservers {
+                workspaceCenter.removeObserver(observer)
+            }
             shutdown()
         }
+    }
+
+    private func screenDidSleep() {
+        // Stop audio/decoding before WindowServer withdraws the CAMetalLayer.
+        // Deliberately do not auto-resume playback after unlock.
+        setPaused(true)
+        metalRenderer?.setDisplayAvailable(false)
+    }
+
+    private func screenDidWake() {
+        metalRenderer?.setDisplayAvailable(true)
+        updateMetalLayerGeometry()
     }
 
     func load(videoURL: String, fallbackVideoURLs: [String] = [], audioURL: String?, headers: [String: String], start: Double = 0) throws {

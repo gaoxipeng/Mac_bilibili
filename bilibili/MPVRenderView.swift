@@ -349,18 +349,31 @@ final class MPVRenderView: NSView {
     func shutdown() {
         let retainedContext = callbackContext
         callbackContext = nil
-        guard let mpv else {
+        guard let handle = mpv else {
             metalRenderer?.stop()
             metalRenderer = nil
             retainedContext?.release()
             return
         }
-        mpv_set_wakeup_callback(mpv, nil, nil)
+
+        // Make the handle unavailable before draining callbacks. A wakeup that
+        // was already posted to the main queue will then return without queuing
+        // another mpv_wait_event operation.
+        mpv = nil
+        mpvCoreReady = false
+        mpv_set_wakeup_callback(handle, nil, nil)
+
         metalRenderer?.stop()
         metalRenderer = nil
-        mpv_terminate_destroy(mpv)
-        self.mpv = nil
-        mpvCoreReady = false
+
+        // readEvents() consumes the handle on eventQueue. Destroying it on the
+        // main actor while that queue is inside mpv_wait_event/log processing
+        // is a use-after-free (often surfacing in omp_msg_va after display
+        // sleep). Drain all previously submitted event work and destroy the
+        // client on that same serial queue.
+        eventQueue.sync {
+            mpv_terminate_destroy(handle)
+        }
         retainedContext?.release()
     }
 

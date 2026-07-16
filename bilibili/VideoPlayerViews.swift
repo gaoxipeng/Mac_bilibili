@@ -536,6 +536,102 @@ struct VideoPlayerSurface: NSViewRepresentable {
     }
 }
 
+/// Keeps the mpv surface and danmaku in one AppKit layer tree.  In particular,
+/// this prevents the inline player from asking SwiftUI's scrolling detail page
+/// to composite a second animated representable on every display refresh.
+struct VideoPlayerCompositeSurface: NSViewRepresentable {
+    // Playback time is consumed directly by DanmakuRenderNSView from the
+    // engine's precise clock. Observing the complete engine here would make
+    // SwiftUI update this AppKit container for every published progress tick.
+    let player: VideoPlaybackEngine
+    let items: [BiliDanmakuItem]
+    let positionMs: Int64
+    let isPlaying: Bool
+    let danmakuEnabled: Bool
+    let danmakuSettings: DanmakuSettings
+    let layoutMode: DanmakuLayoutMode
+    var cornerRadius: CGFloat = VideoPlayerChrome.cornerRadius
+
+    func makeNSView(context: Context) -> VideoPlayerCompositeNSView {
+        VideoPlayerCompositeNSView(cornerRadius: cornerRadius)
+    }
+
+    func updateNSView(_ nsView: VideoPlayerCompositeNSView, context: Context) {
+        _ = player.isReady
+        nsView.cornerRadius = cornerRadius
+        nsView.attachMPVView(player.renderView)
+        nsView.danmakuView.playbackEngine = player
+        nsView.danmakuView.apply(
+            items: items,
+            positionMs: positionMs,
+            isPlaying: isPlaying,
+            enabled: danmakuEnabled,
+            isActive: true,
+            settings: danmakuSettings,
+            layoutMode: layoutMode
+        )
+    }
+
+    static func dismantleNSView(_ nsView: VideoPlayerCompositeNSView, coordinator: ()) {
+        nsView.danmakuView.stopDisplayLink()
+    }
+}
+
+final class VideoPlayerCompositeNSView: NSView {
+    private let playerContainer: PlayerClipContainerView
+    let danmakuView = DanmakuRenderNSView()
+
+    var cornerRadius: CGFloat {
+        didSet {
+            playerContainer.cornerRadius = cornerRadius
+            updateCornerRadius()
+        }
+    }
+
+    init(cornerRadius: CGFloat) {
+        self.cornerRadius = cornerRadius
+        playerContainer = PlayerClipContainerView(cornerRadius: cornerRadius)
+        super.init(frame: .zero)
+
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.cgColor
+        layer?.masksToBounds = true
+        playerContainer.playerView.controlsStyle = .none
+        playerContainer.playerView.allowsPictureInPicturePlayback = false
+        playerContainer.playerView.videoGravity = .resizeAspect
+        danmakuView.wantsLayer = true
+        danmakuView.layer?.backgroundColor = NSColor.clear.cgColor
+        danmakuView.layer?.masksToBounds = true
+        danmakuView.layer?.zPosition = 10
+
+        addSubview(playerContainer)
+        addSubview(danmakuView)
+        updateCornerRadius()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        playerContainer.frame = bounds
+        danmakuView.frame = bounds
+    }
+
+    func attachMPVView(_ view: MPVRenderView) {
+        playerContainer.attachMPVView(view)
+    }
+
+    private func updateCornerRadius() {
+        layer?.cornerRadius = cornerRadius
+        layer?.cornerCurve = .continuous
+        danmakuView.layer?.cornerRadius = cornerRadius
+        danmakuView.layer?.cornerCurve = .continuous
+    }
+}
+
 struct FullscreenPlayerHostView: NSViewRepresentable {
     @ObservedObject var model: VideoDetailModel
     var keyboardHandlers: VideoPlayerKeyboardHandlers

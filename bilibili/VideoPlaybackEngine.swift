@@ -3,6 +3,7 @@ import AppKit
 import Combine
 import Foundation
 import MediaPlayer
+import QuartzCore
 
 @MainActor
 final class VideoPlaybackEngine: ObservableObject {
@@ -26,6 +27,9 @@ final class VideoPlaybackEngine: ObservableObject {
     private var wheelScrubResumePlayback = false
     private var isWheelScrubbing = false
     private var wheelEndTask: Task<Void, Never>?
+    private var preciseMPVTime: Double = 0
+    private var lastTimePublishClock: CFTimeInterval = 0
+    private var lastNowPlayingTimeUpdateClock: CFTimeInterval = 0
 
     @Published private(set) var isReady = false
     @Published private(set) var videoAspectRatio: CGFloat = 16.0 / 9.0
@@ -55,7 +59,7 @@ final class VideoPlaybackEngine: ObservableObject {
            seconds.isFinite {
             return seconds
         }
-        return currentTime
+        return preciseMPVTime
     }
 
     var displayAspectRatio: CGFloat {
@@ -66,8 +70,16 @@ final class VideoPlaybackEngine: ObservableObject {
     init() {
         renderView.onTimeChanged = { [weak self] value in
             guard let self, !isScrubbing, !isPictureInPictureActive else { return }
-            currentTime = value
-            updateNowPlayingInfo()
+            preciseMPVTime = value
+            let clock = CACurrentMediaTime()
+            if clock - lastTimePublishClock >= 1.0 / 15.0 || abs(value - currentTime) > 0.5 {
+                lastTimePublishClock = clock
+                currentTime = value
+            }
+            if clock - lastNowPlayingTimeUpdateClock >= 1 {
+                lastNowPlayingTimeUpdateClock = clock
+                updateNowPlayingInfo()
+            }
         }
         renderView.onDurationChanged = { [weak self] value in
             guard let self, value.isFinite, value > 0 else { return }
@@ -243,6 +255,7 @@ final class VideoPlaybackEngine: ObservableObject {
             }
         } else if !isActive, isPictureInPictureActive {
             if let seconds = player?.currentTime().seconds, seconds.isFinite {
+                preciseMPVTime = seconds
                 currentTime = seconds
                 renderView.seek(to: seconds)
             }
@@ -287,7 +300,8 @@ final class VideoPlaybackEngine: ObservableObject {
         let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
         renderView.seek(to: seconds)
         player?.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
-        currentTime = max(0, seconds)
+        preciseMPVTime = max(0, seconds)
+        currentTime = preciseMPVTime
         onSeekCommitted?(currentTime)
         updateNowPlayingInfo()
         if resumeAfter, !isPlaying {
@@ -411,6 +425,9 @@ final class VideoPlaybackEngine: ObservableObject {
         renderView.setPaused(true)
         isReady = false
         isPlaying = false
+        preciseMPVTime = 0
+        lastTimePublishClock = 0
+        lastNowPlayingTimeUpdateClock = 0
         currentTime = 0
         duration = 0
         isScrubbing = false
@@ -523,6 +540,7 @@ final class VideoPlaybackEngine: ObservableObject {
         ) { [weak self] time in
             MainActor.assumeIsolated {
                 guard let self, !self.isScrubbing else { return }
+                self.preciseMPVTime = time.seconds
                 self.currentTime = time.seconds
                 if let itemDuration = player.currentItem?.duration.seconds, itemDuration.isFinite, itemDuration > 0 {
                     self.duration = itemDuration

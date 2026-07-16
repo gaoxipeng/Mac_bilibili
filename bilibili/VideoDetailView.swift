@@ -38,7 +38,7 @@ final class VideoDetailModel: ObservableObject {
     private var activeEpid: Int64
     private let playbackRefererURL: URL?
     private var hasAppliedInitialProgress = false
-    private var playerChangeSink: AnyCancellable?
+    private var playerLayoutSink: AnyCancellable?
     private var lifecycleGeneration = 0
     private var isTornDown = false
     private var isPlaybackSuspended = false
@@ -85,9 +85,17 @@ final class VideoDetailModel: ObservableObject {
         let resolvedEpid = playbackEpid > 0 ? playbackEpid : video.pgcEpid
         self.activeEpid = max(0, resolvedEpid)
         self.playbackRefererURL = playbackRefererURL
-        playerChangeSink = player.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }
+        // The detail page is a large view tree (metadata, episode list and
+        // comments). Forwarding the player's complete objectWillChange stream
+        // invalidated that whole tree for every progress tick and starved the
+        // inline danmaku compositor. Only aspect-ratio changes affect the page
+        // layout; player controls observe the engine directly.
+        playerLayoutSink = player.$videoAspectRatio
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
         player.onSeekCommitted = { [weak self] seconds in
             self?.reportCommittedSeek(seconds)
         }
@@ -2142,9 +2150,36 @@ private struct VideoDetailTagFlowLayout: Layout {
     }
 }
 
+@MainActor
+private final class VideoPlayerVisualState: ObservableObject {
+    @Published private(set) var isPlaying: Bool
+    @Published private(set) var isReady: Bool
+    @Published private(set) var isScrubbing: Bool
+    @Published private(set) var isPictureInPictureActive: Bool
+    @Published private(set) var displayAspectRatio: CGFloat
+
+    init(player: VideoPlaybackEngine) {
+        isPlaying = player.isPlaying
+        isReady = player.isReady
+        isScrubbing = player.isScrubbing
+        isPictureInPictureActive = player.isPictureInPictureActive
+        displayAspectRatio = player.displayAspectRatio
+
+        player.$isPlaying.removeDuplicates().assign(to: &$isPlaying)
+        player.$isReady.removeDuplicates().assign(to: &$isReady)
+        player.$isScrubbing.removeDuplicates().assign(to: &$isScrubbing)
+        player.$isPictureInPictureActive.removeDuplicates().assign(to: &$isPictureInPictureActive)
+        player.$videoAspectRatio
+            .map { ratio in ratio.isFinite && ratio > 0 ? ratio : 16.0 / 9.0 }
+            .removeDuplicates()
+            .assign(to: &$displayAspectRatio)
+    }
+}
+
 private struct VideoPlayerSection: View {
     @ObservedObject var model: VideoDetailModel
-    @ObservedObject private var player: VideoPlaybackEngine
+    private let player: VideoPlaybackEngine
+    @StateObject private var visualState: VideoPlayerVisualState
     @StateObject private var chromeState = VideoPlayerChromeState()
     let maxWidth: CGFloat
     let maxHeight: CGFloat
@@ -2172,23 +2207,27 @@ private struct VideoPlayerSection: View {
         self.rendersDanmaku = rendersDanmaku
         self.acceptsKeyboardShortcuts = acceptsKeyboardShortcuts
         self.onToggleFullscreen = onToggleFullscreen
-        _player = ObservedObject(wrappedValue: model.player)
+        player = model.player
+        _visualState = StateObject(wrappedValue: VideoPlayerVisualState(player: model.player))
     }
 
     private var fittedSize: CGSize {
         VideoPlayerChrome.detailPlayerSize(
             maxWidth: maxWidth,
             maxHeight: maxHeight,
-            aspectRatio: player.displayAspectRatio
+            aspectRatio: visualState.displayAspectRatio
         )
     }
 
     var body: some View {
         ZStack {
-            Color.black
+            RoundedRectangle(
+                cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius,
+                style: .continuous
+            )
+            .fill(.black)
 
             playerContentStack
-                .compositingGroup()
 
             playerChromeOverlay
         }
@@ -2198,7 +2237,7 @@ private struct VideoPlayerSection: View {
         .onAppear {
             syncChromeVisibility()
         }
-        .onChange(of: player.isPlaying) { _, _ in
+        .onChange(of: visualState.isPlaying) { _, _ in
             syncChromeVisibility()
         }
         .overlay {
@@ -2206,14 +2245,13 @@ private struct VideoPlayerSection: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(width: isFullscreen ? nil : fittedSize.width, height: isFullscreen ? nil : fittedSize.height)
-        .clipShape(RoundedRectangle(cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius, style: .continuous))
         .overlay {
             if !isFullscreen {
                 RoundedRectangle(cornerRadius: VideoPlayerChrome.cornerRadius, style: .continuous)
                     .stroke(Color.white.opacity(0.14), lineWidth: 0.6)
             }
         }
-        .animation(.easeOut(duration: 0.2), value: player.displayAspectRatio)
+        .animation(.easeOut(duration: 0.2), value: visualState.displayAspectRatio)
         .onChange(of: chromeState.showsControls) { _, visible in
             guard isFullscreen else { return }
             if !visible && !model.showDanmakuSettings {
@@ -2228,27 +2266,23 @@ private struct VideoPlayerSection: View {
             if let playError = model.playError {
                 ContentUnavailableView("无法播放", systemImage: "play.slash", description: Text(playError))
                     .foregroundStyle(.white.opacity(0.86))
-            } else if !player.isReady {
+            } else if !visualState.isReady {
                 Color.clear
             } else {
-                VideoPlayerSurface(
+                VideoPlayerCompositeSurface(
                     player: player,
+                    items: model.danmakuItems,
+                    positionMs: Int64(playbackTimeMs(player).rounded()),
+                    isPlaying: visualState.isPlaying && !visualState.isScrubbing,
+                    danmakuEnabled: model.danmakuVisible
+                        && !model.danmakuItems.isEmpty
+                        && rendersDanmaku
+                        && !visualState.isPictureInPictureActive,
+                    danmakuSettings: model.danmakuSettings,
+                    layoutMode: isFullscreen ? .fullscreen : .inline,
                     cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius
                 )
-                if model.danmakuVisible, !model.danmakuItems.isEmpty, rendersDanmaku, !player.isPictureInPictureActive {
-                    DanmakuOverlayView(
-                        items: model.danmakuItems,
-                        positionMs: Int64(playbackTimeMs(player).rounded()),
-                        isPlaying: player.isPlaying && !player.isScrubbing,
-                        enabled: model.danmakuVisible,
-                        settings: model.danmakuSettings,
-                        layoutMode: isFullscreen ? .fullscreen : .inline,
-                        isActive: rendersDanmaku,
-                        playbackEngine: player
-                    )
-                    .equatable()
-                }
-                if player.isPictureInPictureActive {
+                if visualState.isPictureInPictureActive {
                     Color.black
                 }
             }
@@ -2286,7 +2320,7 @@ private struct VideoPlayerSection: View {
 
                 Spacer()
 
-                if !model.showDanmakuSettings {
+                if !model.showDanmakuSettings, chromeState.showsControls {
                     VideoControlCapsule(
                         player: player,
                         videoShot: model.videoShot,
@@ -2296,8 +2330,7 @@ private struct VideoPlayerSection: View {
                         onDanmakuRightClick: { model.showDanmakuSettings = true },
                         onInteraction: { chromeState.revealControls() }
                     )
-                    .opacity(chromeState.showsControls ? 1 : 0)
-                    .allowsHitTesting(chromeState.showsControls)
+                    .transition(.opacity)
                     .padding(.horizontal, 16)
                     .padding(.bottom, isFullscreen ? 32 : 28)
                 }

@@ -31,7 +31,7 @@ struct DanmakuOverlayView: NSViewRepresentable, Equatable {
         let view = DanmakuRenderNSView()
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.clear.cgColor
-        view.layer?.masksToBounds = false
+        view.layer?.masksToBounds = true
         return view
     }
 
@@ -115,6 +115,8 @@ final class DanmakuRenderNSView: NSView {
         self.isActive = isActive
         self.settings = settings
         self.layoutMode = layoutMode
+        layer?.cornerRadius = layoutMode == .inline ? VideoPlayerChrome.cornerRadius : 0
+        layer?.cornerCurve = .continuous
 
         let playStateChanged = isPlaying != wasPlaying
         let currentPositionMillis = resolvedPositionMillis()
@@ -208,11 +210,15 @@ final class DanmakuRenderNSView: NSView {
         let targetLink = link ?? displayLink
         guard let targetLink else { return }
 
-        let maxFPS = max(window?.screen?.maximumFramesPerSecond ?? 60, 60)
+        // Match the display that actually contains the player. Hard-coding
+        // 60 Hz makes the inline overlay update only every other refresh on a
+        // 120 Hz ProMotion display, while the fullscreen window is composited
+        // at the display's native rate.
+        let refreshRate = Float(max(window?.screen?.maximumFramesPerSecond ?? 60, 60))
         targetLink.preferredFrameRateRange = CAFrameRateRange(
-            minimum: Float(maxFPS),
-            maximum: Float(maxFPS),
-            preferred: Float(maxFPS)
+            minimum: refreshRate,
+            maximum: refreshRate,
+            preferred: refreshRate
         )
     }
 
@@ -279,7 +285,6 @@ final class DanmakuRenderNSView: NSView {
         CATransaction.commit()
 
         removeStaleTextLayers(keeping: visibleIDs)
-        CATransaction.flush()
     }
 
     private func render(frame: DanmakuDrawFrame, contentsScale: CGFloat) {
@@ -352,7 +357,6 @@ final class DanmakuRenderNSView: NSView {
             textLayers.removeValue(forKey: id)
         }
         CATransaction.commit()
-        CATransaction.flush()
     }
 
     private func resetRenderedLayersIfPositionJumped(_ positionMillis: Double) {

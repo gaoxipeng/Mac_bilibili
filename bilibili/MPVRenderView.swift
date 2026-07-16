@@ -33,15 +33,46 @@ private final class MPVCallbackContext: @unchecked Sendable {
     }
 }
 
+private final class MPVMetalBufferPool: @unchecked Sendable {
+    private let lock = NSLock()
+    private var available: [MTLBuffer] = []
+    private var stopped = false
+
+    func take(device: MTLDevice, minimumLength: Int) -> MTLBuffer? {
+        lock.lock()
+        available.removeAll { $0.length < minimumLength }
+        let buffer = available.popLast()
+        let isStopped = stopped
+        lock.unlock()
+        guard !isStopped else { return nil }
+        return buffer ?? device.makeBuffer(length: minimumLength, options: .storageModeShared)
+    }
+
+    func put(_ buffer: MTLBuffer) {
+        lock.lock()
+        if !stopped, available.count < 3 {
+            available.append(buffer)
+        }
+        lock.unlock()
+    }
+
+    func stop() {
+        lock.lock()
+        stopped = true
+        available.removeAll()
+        lock.unlock()
+    }
+}
+
 private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
     private let layer: CAMetalLayer
     private let queue = DispatchQueue(label: "bilibili.mpv.metal-render", qos: .userInteractive)
     private let commandQueue: MTLCommandQueue
+    private let inFlightFrames = DispatchSemaphore(value: 3)
+    private let bufferPool = MPVMetalBufferPool()
     private var context: OpaquePointer?
     private var drawPending = false
     private var stopped = false
-    private var buffers: [MTLBuffer] = []
-    private var bufferIndex = 0
 
     init?(layer: CAMetalLayer) {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -79,12 +110,12 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
     func stop() {
         guard !stopped else { return }
         stopped = true
+        bufferPool.stop()
         if let context {
             mpv_render_context_set_update_callback(context, nil, nil)
             queue.sync { mpv_render_context_free(context) }
             self.context = nil
         }
-        buffers.removeAll()
     }
 
     func requestDraw() {
@@ -101,30 +132,40 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
         let width = drawable.texture.width
         let height = drawable.texture.height
         guard width > 1, height > 1 else { return }
+        guard inFlightFrames.wait(timeout: .now()) == .success else { return }
 
         let bytesPerRow = ((width * 4 + 63) / 64) * 64
         let requiredLength = bytesPerRow * height
         guard let device = layer.device,
-              let buffer = nextBuffer(device: device, length: requiredLength) else { return }
+              let buffer = bufferPool.take(device: device, minimumLength: requiredLength) else {
+            inFlightFrames.signal()
+            return
+        }
 
         var size = [Int32(width), Int32(height)]
         var stride = bytesPerRow
         var format = Array("bgr0".utf8CString)
         let result: Int32 = size.withUnsafeMutableBufferPointer { sizeBuffer in
             format.withUnsafeMutableBufferPointer { formatBuffer in
-                var params = [
-                    mpv_render_param(type: MPV_RENDER_PARAM_SW_SIZE, data: sizeBuffer.baseAddress),
-                    mpv_render_param(type: MPV_RENDER_PARAM_SW_FORMAT, data: formatBuffer.baseAddress),
-                    mpv_render_param(type: MPV_RENDER_PARAM_SW_STRIDE, data: &stride),
-                    mpv_render_param(type: MPV_RENDER_PARAM_SW_POINTER, data: buffer.contents()),
-                    mpv_render_param(type: MPV_RENDER_PARAM_INVALID, data: nil),
-                ]
-                return mpv_render_context_render(context, &params)
+                withUnsafeMutablePointer(to: &stride) { stridePointer in
+                    var params = [
+                        mpv_render_param(type: MPV_RENDER_PARAM_SW_SIZE, data: sizeBuffer.baseAddress),
+                        mpv_render_param(type: MPV_RENDER_PARAM_SW_FORMAT, data: formatBuffer.baseAddress),
+                        mpv_render_param(type: MPV_RENDER_PARAM_SW_STRIDE, data: stridePointer),
+                        mpv_render_param(type: MPV_RENDER_PARAM_SW_POINTER, data: buffer.contents()),
+                        mpv_render_param(type: MPV_RENDER_PARAM_INVALID, data: nil),
+                    ]
+                    return mpv_render_context_render(context, &params)
+                }
             }
         }
         guard result >= 0,
               let commandBuffer = commandQueue.makeCommandBuffer(),
-              let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+              let blit = commandBuffer.makeBlitCommandEncoder() else {
+            bufferPool.put(buffer)
+            inFlightFrames.signal()
+            return
+        }
         blit.copy(
             from: buffer,
             sourceOffset: 0,
@@ -137,25 +178,18 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
             destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0)
         )
         blit.endEncoding()
+        let frameSemaphore = inFlightFrames
+        let completedBufferPool = bufferPool
+        commandBuffer.addCompletedHandler { _ in
+            completedBufferPool.put(buffer)
+            frameSemaphore.signal()
+        }
         commandBuffer.present(drawable)
         commandBuffer.commit()
-        // The software renderer writes directly into this shared buffer. Do
-        // not let a later frame overwrite it before Metal has completed blitting.
-        commandBuffer.waitUntilCompleted()
-    }
-
-    private func nextBuffer(device: MTLDevice, length: Int) -> MTLBuffer? {
-        if buffers.count < 3 {
-            guard let buffer = device.makeBuffer(length: length, options: .storageModeShared) else { return nil }
-            buffers.append(buffer)
-            return buffer
-        }
-        bufferIndex = (bufferIndex + 1) % buffers.count
-        if buffers[bufferIndex].length < length {
-            guard let buffer = device.makeBuffer(length: length, options: .storageModeShared) else { return nil }
-            buffers[bufferIndex] = buffer
-        }
-        return buffers[bufferIndex]
+        // MTLCommandBuffer retains encoded resources until GPU completion.
+        // Never wait synchronously here: after display sleep/wake Metal may
+        // temporarily stop completing presents, and a blocking wait would also
+        // prevent the player from shutting down or responding to AppKit events.
     }
 }
 

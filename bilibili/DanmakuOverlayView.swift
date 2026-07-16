@@ -31,7 +31,10 @@ struct DanmakuOverlayView: NSViewRepresentable, Equatable {
         let view = DanmakuRenderNSView()
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.clear.cgColor
-        view.layer?.masksToBounds = false
+        // Scrolling text starts just outside the right edge and ends outside
+        // the left edge. Keep those animation layers clipped to the video
+        // viewport instead of allowing them to leak across the whole window.
+        view.layer?.masksToBounds = true
         return view
     }
 

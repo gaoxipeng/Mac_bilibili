@@ -29,7 +29,6 @@ final class VideoPlaybackEngine: ObservableObject {
     private var wheelEndTask: Task<Void, Never>?
     private var preciseMPVTime: Double = 0
     private var lastTimePublishClock: CFTimeInterval = 0
-    private var lastNowPlayingTimeUpdateClock: CFTimeInterval = 0
 
     @Published private(set) var isReady = false
     @Published private(set) var videoAspectRatio: CGFloat = 16.0 / 9.0
@@ -75,10 +74,6 @@ final class VideoPlaybackEngine: ObservableObject {
             if clock - lastTimePublishClock >= 1.0 / 15.0 || abs(value - currentTime) > 0.5 {
                 lastTimePublishClock = clock
                 currentTime = value
-            }
-            if clock - lastNowPlayingTimeUpdateClock >= 1 {
-                lastNowPlayingTimeUpdateClock = clock
-                updateNowPlayingInfo()
             }
         }
         renderView.onDurationChanged = { [weak self] value in
@@ -427,7 +422,6 @@ final class VideoPlaybackEngine: ObservableObject {
         isPlaying = false
         preciseMPVTime = 0
         lastTimePublishClock = 0
-        lastNowPlayingTimeUpdateClock = 0
         currentTime = 0
         duration = 0
         isScrubbing = false

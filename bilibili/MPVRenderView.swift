@@ -410,9 +410,10 @@ final class MPVRenderView: NSView {
         setOption("ytdl", "no")
         setOption("keep-open", "yes")
         setOption("audio-display", "no")
-        // Normalize unusual/malformed DASH channel layouts before CoreAudio.
-        // Some Bilibili AAC tracks otherwise make AudioUnit reject its input
-        // layout and leave playback silent even though the track opened.
+        // Ask mpv to downmix unusual DASH layouts, while leaving output-device
+        // selection and format negotiation automatic. CoreAudio on macOS 27
+        // can reject its first layout attempt; mpv's automatic AO path retries
+        // successfully, whereas pinning `ao=coreaudio` leaves playback silent.
         setOption("audio-channels", "stereo")
         guard mpv_initialize(handle) >= 0 else {
             metalRenderer = nil
@@ -573,9 +574,16 @@ final class MPVRenderView: NSView {
         mpv_observe_property(mpv, 0, name, format)
     }
 
-    private func setOption(_ name: String, _ value: String) {
-        guard let mpv else { return }
-        mpv_set_option_string(mpv, name, value)
+    @discardableResult
+    private func setOption(_ name: String, _ value: String) -> Int32 {
+        guard let mpv else { return Int32(MPV_ERROR_UNINITIALIZED.rawValue) }
+        let result = mpv_set_option_string(mpv, name, value)
+        if result < 0 {
+            Self.playbackLogger.error(
+                "mpv option rejected name=\(name, privacy: .public) error=\(String(cString: mpv_error_string(result)), privacy: .public)"
+            )
+        }
+        return result
     }
 
     private func setString(_ name: String, _ value: String) {

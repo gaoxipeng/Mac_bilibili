@@ -2653,30 +2653,15 @@ private struct VideoControlCapsule: View {
                     .allowsHitTesting(false)
 
                 HStack(spacing: VideoControlLayout.trailingControlSpacing) {
-                    Button(action: {
-                        onInteraction()
-                        player.requestPictureInPicture()
-                    }) {
-                        Image(nsImage: player.isPictureInPictureActive
-                            ? AVPictureInPictureController.pictureInPictureButtonStopImage
-                            : AVPictureInPictureController.pictureInPictureButtonStartImage
-                        )
-                            .renderingMode(.template)
-                            .resizable()
-                            .scaledToFit()
-                            .videoControlHoverForeground(isEnabled: pictureInPictureEnabled)
-                            .frame(
-                                width: VideoControlLayout.pictureInPictureIconSize,
-                                height: VideoControlLayout.pictureInPictureIconSize
-                            )
-                            .frame(
-                                width: VideoControlLayout.pictureInPictureButtonSize,
-                                height: VideoControlLayout.pictureInPictureButtonSize
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(!pictureInPictureEnabled)
-                    .opacity(pictureInPictureEnabled ? 1 : 0.42)
+                    PictureInPictureControlButton(
+                        isActive: player.isPictureInPictureActive,
+                        isEnabled: pictureInPictureEnabled,
+                        action: {
+                            onInteraction()
+                            player.requestPictureInPicture()
+                        }
+                    )
+                    .equatable()
 
                     Button(action: {
                         onInteraction()
@@ -2792,6 +2777,42 @@ private struct VideoControlCapsule: View {
             return String(format: "%d:%02d:%02d", hours, minutes, secs)
         }
         return String(format: "%d:%02d", minutes, secs)
+    }
+}
+
+private enum PictureInPictureControlImages {
+    static let start = AVPictureInPictureController.pictureInPictureButtonStartImage
+    static let stop = AVPictureInPictureController.pictureInPictureButtonStopImage
+}
+
+private struct PictureInPictureControlButton: View, Equatable {
+    let isActive: Bool
+    let isEnabled: Bool
+    let action: () -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.isActive == rhs.isActive && lhs.isEnabled == rhs.isEnabled
+    }
+
+    var body: some View {
+        Button(action: action) {
+            Image(nsImage: isActive ? PictureInPictureControlImages.stop : PictureInPictureControlImages.start)
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .videoControlHoverForeground(isEnabled: isEnabled)
+                .frame(
+                    width: VideoControlLayout.pictureInPictureIconSize,
+                    height: VideoControlLayout.pictureInPictureIconSize
+                )
+                .frame(
+                    width: VideoControlLayout.pictureInPictureButtonSize,
+                    height: VideoControlLayout.pictureInPictureButtonSize
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!isEnabled)
+        .opacity(isEnabled ? 1 : 0.42)
     }
 }
 

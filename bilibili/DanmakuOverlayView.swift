@@ -31,7 +31,7 @@ struct DanmakuOverlayView: NSViewRepresentable, Equatable {
         let view = DanmakuRenderNSView()
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.clear.cgColor
-        view.layer?.masksToBounds = true
+        view.layer?.masksToBounds = false
         return view
     }
 
@@ -115,8 +115,6 @@ final class DanmakuRenderNSView: NSView {
         self.isActive = isActive
         self.settings = settings
         self.layoutMode = layoutMode
-        layer?.cornerRadius = layoutMode == .inline ? VideoPlayerChrome.cornerRadius : 0
-        layer?.cornerCurve = .continuous
 
         let playStateChanged = isPlaying != wasPlaying
         let currentPositionMillis = resolvedPositionMillis()
@@ -285,6 +283,7 @@ final class DanmakuRenderNSView: NSView {
         CATransaction.commit()
 
         removeStaleTextLayers(keeping: visibleIDs)
+        CATransaction.flush()
     }
 
     private func render(frame: DanmakuDrawFrame, contentsScale: CGFloat) {
@@ -357,6 +356,7 @@ final class DanmakuRenderNSView: NSView {
             textLayers.removeValue(forKey: id)
         }
         CATransaction.commit()
+        CATransaction.flush()
     }
 
     private func resetRenderedLayersIfPositionJumped(_ positionMillis: Double) {

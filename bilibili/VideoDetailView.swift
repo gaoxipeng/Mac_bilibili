@@ -2269,19 +2269,26 @@ private struct VideoPlayerSection: View {
             } else if !visualState.isReady {
                 Color.clear
             } else {
-                VideoPlayerCompositeSurface(
+                VideoPlayerSurface(
                     player: player,
-                    items: model.danmakuItems,
-                    positionMs: Int64(playbackTimeMs(player).rounded()),
-                    isPlaying: visualState.isPlaying && !visualState.isScrubbing,
-                    danmakuEnabled: model.danmakuVisible
-                        && !model.danmakuItems.isEmpty
-                        && rendersDanmaku
-                        && !visualState.isPictureInPictureActive,
-                    danmakuSettings: model.danmakuSettings,
-                    layoutMode: isFullscreen ? .fullscreen : .inline,
                     cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius
                 )
+                if model.danmakuVisible,
+                   !model.danmakuItems.isEmpty,
+                   rendersDanmaku,
+                   !visualState.isPictureInPictureActive {
+                    DanmakuOverlayView(
+                        items: model.danmakuItems,
+                        positionMs: Int64(playbackTimeMs(player).rounded()),
+                        isPlaying: visualState.isPlaying && !visualState.isScrubbing,
+                        enabled: model.danmakuVisible,
+                        settings: model.danmakuSettings,
+                        layoutMode: isFullscreen ? .fullscreen : .inline,
+                        isActive: rendersDanmaku,
+                        playbackEngine: player
+                    )
+                    .equatable()
+                }
                 if visualState.isPictureInPictureActive {
                     Color.black
                 }

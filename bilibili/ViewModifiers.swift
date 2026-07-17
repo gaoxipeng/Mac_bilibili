@@ -1198,29 +1198,6 @@ struct VideoCoverDurationBadge: View {
     }
 }
 
-struct VideoCoverBottomScrim: View {
-    var heightFraction: CGFloat = VideoCardLayout.coverOverlayScrimHeightFraction
-
-    var body: some View {
-        GeometryReader { geometry in
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
-                LinearGradient(
-                    stops: [
-                        .init(color: .clear, location: 0),
-                        .init(color: .black.opacity(0.28), location: 0.45),
-                        .init(color: .black.opacity(0.72), location: 1),
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .frame(height: max(0, geometry.size.height * heightFraction))
-            }
-        }
-        .allowsHitTesting(false)
-    }
-}
-
 struct VideoCoverFeedMetaOverlay: View {
     var playCount: String? = nil
     var danmakuCount: String? = nil
@@ -1229,8 +1206,6 @@ struct VideoCoverFeedMetaOverlay: View {
 
     var body: some View {
         ZStack {
-            VideoCoverBottomScrim()
-
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
                 HStack(alignment: .bottom, spacing: 8) {

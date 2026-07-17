@@ -104,12 +104,27 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
     }
 
     func start() {
-        guard let context else { return }
+        resumeAfterDisplayWake()
+    }
+
+    func suspendForDisplaySleep() {
+        setDisplayAvailable(false)
+        guard !stopped, let context else { return }
+        // Removing the callback prevents mpv from submitting more draw work.
+        // Drain work that passed requestDraw's availability check before the
+        // screen-sleep notification so it cannot touch a withdrawn drawable.
+        mpv_render_context_set_update_callback(context, nil, nil)
+        queue.sync {}
+    }
+
+    func resumeAfterDisplayWake() {
+        guard !stopped, let context else { return }
         mpv_render_context_set_update_callback(context, { opaque in
             guard let opaque else { return }
             Unmanaged<MPVSoftwareMetalRenderer>.fromOpaque(opaque)
                 .takeUnretainedValue().requestDraw()
         }, Unmanaged.passUnretained(self).toOpaque())
+        setDisplayAvailable(true)
     }
 
     func stop() {
@@ -310,15 +325,16 @@ final class MPVRenderView: NSView {
     }
 
     private func screenDidSleep() {
-        // Stop audio/decoding before WindowServer withdraws the CAMetalLayer.
+        // Detach and drain rendering before WindowServer withdraws the layer.
+        metalRenderer?.suspendForDisplaySleep()
+        // Stop audio/decoding while the display is unavailable.
         // Deliberately do not auto-resume playback after unlock.
         setPaused(true)
-        metalRenderer?.setDisplayAvailable(false)
     }
 
     private func screenDidWake() {
-        metalRenderer?.setDisplayAvailable(true)
         updateMetalLayerGeometry()
+        metalRenderer?.resumeAfterDisplayWake()
     }
 
     func load(videoURL: String, fallbackVideoURLs: [String] = [], audioURL: String?, headers: [String: String], start: Double = 0) throws {

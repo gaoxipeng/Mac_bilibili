@@ -16,7 +16,6 @@ enum VideoCardLayout {
     static let coverOverlayIconSize: CGFloat = 14
     static let coverOverlayFontSize: CGFloat = 12
     static let coverOverlayItemSpacing: CGFloat = 8
-    static let coverOverlayScrimHeightFraction: CGFloat = 0.45
     static let feedMetadataHorizontalPadding: CGFloat = 8
     static let metadataPadding = EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
     static let feedMetadataPadding = EdgeInsets(
@@ -1126,9 +1125,21 @@ private struct HistoryVideoCard: View, Equatable {
                         }
                     }
                     .allowsHitTesting(false)
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: VideoCardLayout.cornerRadius,
+                            style: .continuous
+                        )
+                    )
                 }
 
                 VideoCoverFeedMetaOverlay(durationText: durationBadgeText)
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: VideoCardLayout.cornerRadius,
+                            style: .continuous
+                        )
+                    )
             }
             .contentShape(RoundedRectangle(cornerRadius: VideoCardLayout.cornerRadius, style: .continuous))
         }
@@ -1386,6 +1397,9 @@ struct VideoCard: View, Equatable {
                     danmakuCount: video.danmakuCount.compactCount,
                     likeCount: showsLikeCount ? video.likeCount.compactCount : nil,
                     durationText: video.duration > 0 ? video.durationText : ""
+                )
+                .clipShape(
+                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 )
             }
             .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))

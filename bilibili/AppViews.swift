@@ -362,17 +362,27 @@ private struct FeedCardAuthorLabel: View {
 }
 
 struct FeedLoadMoreFooter: View {
+    private static let prefetchDistance: CGFloat = 320
+
     let anchorID: Int
     let hasMore: Bool
     let loadingMore: Bool
     let onLoadMore: () -> Void
 
+    @State private var isVisible = false
     @State private var requestedWhileVisible = false
+    @State private var showLoadingIndicator = false
+
+    private func requestNextPageIfNeeded() {
+        guard hasMore, !loadingMore, !requestedWhileVisible else { return }
+        requestedWhileVisible = true
+        onLoadMore()
+    }
 
     var body: some View {
         ZStack {
             Color.clear
-            if loadingMore {
+            if showLoadingIndicator {
                 HStack(spacing: 10) {
                     ProgressView()
                         .controlSize(.small)
@@ -383,13 +393,49 @@ struct FeedLoadMoreFooter: View {
         }
         .frame(maxWidth: .infinity, minHeight: 24)
         .padding(.vertical, 8)
-        .onAppear {
-            guard hasMore, !loadingMore, !requestedWhileVisible else { return }
-            requestedWhileVisible = true
-            onLoadMore()
+        .task(id: loadingMore) {
+            guard loadingMore else {
+                showLoadingIndicator = false
+                return
+            }
+            // Publishing a page is followed by a card-layer render commit. Keep
+            // that normal work invisible and only indicate a sustained wait.
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard !Task.isCancelled, loadingMore else { return }
+            showLoadingIndicator = true
+        }
+        .overlay(alignment: .top) {
+            Color.clear
+                .frame(height: 1)
+                .offset(y: -Self.prefetchDistance)
+                .onScrollVisibilityChange(threshold: 0.01) { visible in
+                    isVisible = visible
+                    if visible {
+                        requestNextPageIfNeeded()
+                    } else {
+                        // Appending a page moves this marker below the viewport;
+                        // it can request again only when scrolling near the new end.
+                        requestedWhileVisible = false
+                    }
+                }
         }
         .onDisappear {
+            isVisible = false
             requestedWhileVisible = false
+        }
+        .onChange(of: anchorID) { _, _ in
+            // Keep the request locked while the old prefetch marker is visible.
+            // Its visibility callback unlocks after appended content moves it away.
+            if !isVisible {
+                requestedWhileVisible = false
+            }
+        }
+        .onChange(of: loadingMore) { _, isLoading in
+            // The sentinel can become visible while the initial page is still
+            // loading. Give it its one request when that initial load completes.
+            if !isLoading, isVisible, !requestedWhileVisible {
+                requestNextPageIfNeeded()
+            }
         }
     }
 }
@@ -402,6 +448,7 @@ struct VideoFeedGrid<Trailing: View>: View {
     var usesCardSurface = true
     var resolveWatchProgress = true
     var maxColumnCount: Int? = nil
+    var onApproachingEnd: (() -> Void)? = nil
     @ViewBuilder var trailing: () -> Trailing
     @Environment(\.feedViewportWidth) private var feedViewportWidth
     @Environment(\.feedSymmetricHorizontalInsets) private var feedSymmetricHorizontalInsets
@@ -415,6 +462,7 @@ struct VideoFeedGrid<Trailing: View>: View {
         usesCardSurface: Bool = true,
         resolveWatchProgress: Bool = true,
         maxColumnCount: Int? = nil,
+        onApproachingEnd: (() -> Void)? = nil,
         @ViewBuilder trailing: @escaping () -> Trailing = { EmptyView() }
     ) {
         self.videos = videos
@@ -424,6 +472,7 @@ struct VideoFeedGrid<Trailing: View>: View {
         self.usesCardSurface = usesCardSurface
         self.resolveWatchProgress = resolveWatchProgress
         self.maxColumnCount = maxColumnCount
+        self.onApproachingEnd = onApproachingEnd
         self.trailing = trailing
     }
 
@@ -439,6 +488,7 @@ struct VideoFeedGrid<Trailing: View>: View {
             showsPublishTime: showsPublishTime
         )
         let rowStarts = VideoCardLayout.rowStartIndices(itemCount: videos.count, columnCount: columnCount)
+        let prefetchRowStart = rowStarts.count >= 2 ? rowStarts[rowStarts.count - 2] : rowStarts.first
         let titleAreaHeight = VideoCardLayout.titleAreaHeight(
             for: "",
             columnWidth: columnWidth,
@@ -472,6 +522,11 @@ struct VideoFeedGrid<Trailing: View>: View {
                         )
                         .equatable()
                         .frame(width: columnWidth, height: cardHeight, alignment: .top)
+                    }
+                }
+                .onScrollVisibilityChange(threshold: 0.01) { visible in
+                    if visible, rowStart == prefetchRowStart {
+                        onApproachingEnd?()
                     }
                 }
             }

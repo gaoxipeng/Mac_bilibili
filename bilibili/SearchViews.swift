@@ -719,7 +719,7 @@ struct SearchDashboard: View {
                         SearchPinnedMediaSection(
                             media: searchModel.pinnedMedia,
                             hasMore: searchModel.pinnedMediaHasMore,
-                            loadingMore: searchModel.pinnedMediaLoadingMore,
+                            loadingMore: searchModel.pinnedMediaLoading || searchModel.pinnedMediaLoadingMore,
                             onLoadMore: {
                                 Task { await searchModel.loadPinnedMedia(reset: false) }
                             }
@@ -734,13 +734,22 @@ struct SearchDashboard: View {
                                 .padding(.bottom, 12)
                         }
 
-                        VideoFeedGrid(videos: searchModel.videos, largeTypography: true)
+                        VideoFeedGrid(
+                            videos: searchModel.videos,
+                            largeTypography: true,
+                            onApproachingEnd: {
+                                guard searchModel.videoHasMore,
+                                      !searchModel.videoLoading,
+                                      !searchModel.videoLoadingMore else { return }
+                                Task { await searchModel.loadVideos(reset: false) }
+                            }
+                        )
 
                         if searchModel.videoHasMore {
                             FeedLoadMoreFooter(
                                 anchorID: searchModel.videos.count,
                                 hasMore: searchModel.videoHasMore,
-                                loadingMore: searchModel.videoLoadingMore,
+                                loadingMore: searchModel.videoLoading || searchModel.videoLoadingMore,
                                 onLoadMore: {
                                     Task { await searchModel.loadVideos(reset: false) }
                                 }
@@ -778,7 +787,7 @@ struct SearchDashboard: View {
                     FeedLoadMoreFooter(
                         anchorID: searchModel.users.count,
                         hasMore: searchModel.userHasMore,
-                        loadingMore: searchModel.userLoadingMore,
+                        loadingMore: searchModel.userLoading || searchModel.userLoadingMore,
                         onLoadMore: {
                             Task { await searchModel.loadUsers(reset: false) }
                         }

@@ -105,11 +105,22 @@ final class AppModel: ObservableObject {
 
     func popProfileFloatingChrome(ownerMid: Int64) {
         guard profileChromeOwnerMid == ownerMid else { return }
+        let wasActiveProfile = activeFloatingChromeKind == .profile
         profileChromeOwnerMid = nil
-        activeFloatingChromeKind = nil
+        floatingProfileChrome = nil
         if let restored = profileChromeStack.popLast() {
             profileChromeOwnerMid = restored.mid
             floatingProfileChrome = restored.chrome
+        }
+        // NavigationStack may call the returning video's onAppear before the
+        // outgoing profile's onDisappear. Do not erase a video chrome that has
+        // already taken ownership during that ordering.
+        if wasActiveProfile {
+            if floatingProfileChrome != nil {
+                activeFloatingChromeKind = .profile
+            } else {
+                activeFloatingChromeKind = floatingVideoChrome != nil ? .video : nil
+            }
         }
     }
 

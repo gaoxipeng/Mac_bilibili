@@ -13,7 +13,10 @@ final class MediaPlaybackCoordinator {
 
     func notifyDetailVisible(_ model: VideoDetailModel) {
         if let current = visibleDetail, current !== model {
-            current.teardown()
+            // A different detail becoming visible usually means the previous
+            // one is still retained lower in NavigationStack. Preserve its
+            // metadata and mpv instance so navigating back can restore it.
+            current.suspendPlayback()
         }
         model.reactivateIfNeeded()
         visibleDetail = model
@@ -21,7 +24,10 @@ final class MediaPlaybackCoordinator {
     }
 
     func notifyDetailHidden(_ model: VideoDetailModel) {
-        model.teardown()
+        // onDisappear also fires when another page is pushed on top. Treat it
+        // as a reversible suspension; the StateObject and its render view are
+        // released naturally after the destination is actually popped.
+        model.suspendPlayback()
         if visibleDetail === model {
             visibleDetail = nil
         }

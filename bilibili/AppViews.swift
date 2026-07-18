@@ -297,14 +297,28 @@ struct VideoPlaybackLink<Label: View>: View {
                 } label: {
                     label()
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(VideoCardOpenButtonStyle())
             } else {
-                NavigationLink(value: destination) {
+                Button {
+                    model.openPlayback(destination)
+                } label: {
                     label()
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(VideoCardOpenButtonStyle())
             }
         }
+    }
+}
+
+struct VideoCardOpenButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.985 : 1)
+            .opacity(configuration.isPressed ? 0.86 : 1)
+            .animation(
+                .spring(response: 0.20, dampingFraction: 0.72, blendDuration: 0.02),
+                value: configuration.isPressed
+            )
     }
 }
 
@@ -367,6 +381,7 @@ struct FeedLoadMoreFooter: View {
     let anchorID: Int
     let hasMore: Bool
     let loadingMore: Bool
+    var automaticallyContinueWhileVisible = false
     let onLoadMore: () -> Void
 
     @State private var isVisible = false
@@ -424,9 +439,16 @@ struct FeedLoadMoreFooter: View {
             requestedWhileVisible = false
         }
         .onChange(of: anchorID) { _, _ in
-            // Keep the request locked while the old prefetch marker is visible.
-            // Its visibility callback unlocks after appended content moves it away.
-            if !isVisible {
+            if automaticallyContinueWhileVisible {
+                // Search results may fill a large viewport with more than one
+                // page, so keep paging until the new end leaves the viewport.
+                requestedWhileVisible = false
+                if isVisible {
+                    requestNextPageIfNeeded()
+                }
+            } else if !isVisible {
+                // Other feeds require the user to leave the old end and scroll
+                // to the newly appended end before another request is allowed.
                 requestedWhileVisible = false
             }
         }
@@ -835,14 +857,6 @@ private struct HistorySectionViewportKey: PreferenceKey {
     }
 }
 
-private struct HistoryLoadMoreSentinelKey: PreferenceKey {
-    static var defaultValue: CGFloat? = nil
-
-    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
-        value = nextValue() ?? value
-    }
-}
-
 private struct HistorySection: Identifiable {
     let id: String
     let label: String
@@ -860,8 +874,6 @@ struct HistoryView: View {
     let onDelete: (BiliHistoryItem) -> Void
 
     @State private var sectionHeaderViewportY: [String: CGFloat] = [:]
-    @State private var loadMoreSentinelY: CGFloat?
-    @State private var requestedLoadMoreItemCount: Int?
 
     private var sections: [HistorySection] {
         buildHistorySections(from: items)
@@ -884,14 +896,6 @@ struct HistoryView: View {
         }
 
         return pinned
-    }
-
-    private func triggerLoadMoreIfNeeded(sentinelY: CGFloat?, viewportHeight: CGFloat) {
-        guard loggedIn, hasMore, !loading, !loadingMore, !items.isEmpty else { return }
-        guard let sentinelY, sentinelY < viewportHeight + 360 else { return }
-        guard requestedLoadMoreItemCount != items.count else { return }
-        requestedLoadMoreItemCount = items.count
-        onLoadMore()
     }
 
     var body: some View {
@@ -923,25 +927,9 @@ struct HistoryView: View {
                                 anchorID: items.count,
                                 hasMore: hasMore,
                                 loadingMore: loadingMore,
-                                onLoadMore: {
-                                    triggerLoadMoreIfNeeded(
-                                        sentinelY: loadMoreSentinelY,
-                                        viewportHeight: geometry.size.height
-                                    )
-                                }
+                                onLoadMore: onLoadMore
                             )
                         }
-
-                        Color.clear
-                            .frame(height: 1)
-                            .background {
-                                GeometryReader { sentinelGeometry in
-                                    Color.clear.preference(
-                                        key: HistoryLoadMoreSentinelKey.self,
-                                        value: sentinelGeometry.frame(in: .scrollView(axis: .vertical)).minY
-                                    )
-                                }
-                            }
                     }
                     .padding(.leading, HistoryLayout.pageLeadingInset)
                     .padding(.trailing, AppLayout.feedTrailingInset)
@@ -954,26 +942,6 @@ struct HistoryView: View {
                 .background(MacOverlayScrollConfigurator())
                 .onPreferenceChange(HistorySectionViewportKey.self) { updates in
                     sectionHeaderViewportY = updates
-                }
-                .onPreferenceChange(HistoryLoadMoreSentinelKey.self) { y in
-                    loadMoreSentinelY = y
-                    triggerLoadMoreIfNeeded(sentinelY: y, viewportHeight: geometry.size.height)
-                }
-                .onChange(of: loadingMore) { _, isLoadingMore in
-                    if !isLoadingMore {
-                        requestedLoadMoreItemCount = nil
-                        triggerLoadMoreIfNeeded(
-                            sentinelY: loadMoreSentinelY,
-                            viewportHeight: geometry.size.height
-                        )
-                    }
-                }
-                .onChange(of: items.count) { _, _ in
-                    requestedLoadMoreItemCount = nil
-                    triggerLoadMoreIfNeeded(
-                        sentinelY: loadMoreSentinelY,
-                        viewportHeight: geometry.size.height
-                    )
                 }
 
                 HistoryVerticalLine(height: geometry.size.height + HistoryLayout.lineTopOverscan)

@@ -294,7 +294,7 @@ final class SearchViewModel: ObservableObject {
                 var seen = Set<String>()
                 videos = result.items.filter { seen.insert($0.bvid).inserted }
                 videoHasMore = result.hasMore
-                videoPage = result.page
+                videoPage = max(1, result.page)
             } catch {
                 guard currentGeneration == searchGeneration else { return }
                 errorMessage = error.localizedDescription
@@ -312,14 +312,16 @@ final class SearchViewModel: ObservableObject {
         }
 
         do {
-            let page = videoPage + 1
-            let result = try await api.searchVideos(keyword: query, page: page, credential: credential)
+            let requestedPage = videoPage + 1
+            let result = try await api.searchVideos(keyword: query, page: requestedPage, credential: credential)
             guard currentGeneration == searchGeneration else { return }
             var seen = Set(videos.map(\.bvid))
             let newVideos = result.items.filter { seen.insert($0.bvid).inserted }
             videos.append(contentsOf: newVideos)
             videoHasMore = result.hasMore && !newVideos.isEmpty
-            videoPage = result.page
+            // Some search responses omit or incorrectly echo `page`. Never let
+            // that make the next request repeat the page we just fetched.
+            videoPage = max(requestedPage, result.page)
         } catch {
             guard currentGeneration == searchGeneration else { return }
         }
@@ -434,7 +436,7 @@ struct SearchDashboard: View {
                                 dropdownActiveEntryID: $searchDropdownActiveEntryID,
                                 onSearch: { runSearch($0) },
                                 onVideoSelect: { video in
-                                    navigationPath.append(VideoPlaybackRequest(video))
+                                    model.openPlayback(VideoPlaybackRequest(video))
                                 }
                             )
                             .frame(width: AppLayout.searchBarPreferredWidth, alignment: .leading)
@@ -575,7 +577,7 @@ struct SearchDashboard: View {
         case .suggest(let keyword):
             runSearch(keyword)
         case .video(let video):
-            navigationPath.append(VideoPlaybackRequest(video))
+            model.openPlayback(VideoPlaybackRequest(video))
         }
     }
 
@@ -750,6 +752,7 @@ struct SearchDashboard: View {
                                 anchorID: searchModel.videos.count,
                                 hasMore: searchModel.videoHasMore,
                                 loadingMore: searchModel.videoLoading || searchModel.videoLoadingMore,
+                                automaticallyContinueWhileVisible: true,
                                 onLoadMore: {
                                     Task { await searchModel.loadVideos(reset: false) }
                                 }
@@ -788,6 +791,7 @@ struct SearchDashboard: View {
                         anchorID: searchModel.users.count,
                         hasMore: searchModel.userHasMore,
                         loadingMore: searchModel.userLoading || searchModel.userLoadingMore,
+                        automaticallyContinueWhileVisible: true,
                         onLoadMore: {
                             Task { await searchModel.loadUsers(reset: false) }
                         }
@@ -1652,6 +1656,7 @@ private struct SearchPinnedMediaSection: View {
                         anchorID: media.count,
                         hasMore: hasMore,
                         loadingMore: loadingMore,
+                        automaticallyContinueWhileVisible: true,
                         onLoadMore: onLoadMore
                     )
                 }
@@ -1768,6 +1773,7 @@ private struct SearchBangumiCard: View, Equatable {
     let bangumi: BiliSearchBangumi
     let columnWidth: CGFloat
     let titleAreaHeight: CGFloat
+    @EnvironmentObject private var model: AppModel
 
     static func == (lhs: SearchBangumiCard, rhs: SearchBangumiCard) -> Bool {
         lhs.bangumi == rhs.bangumi
@@ -1805,10 +1811,12 @@ private struct SearchBangumiCard: View, Equatable {
     private var coverSection: some View {
         Group {
             if bangumi.canPlayInApp {
-                NavigationLink(value: playbackRequest) {
+                Button {
+                    model.openPlayback(playbackRequest)
+                } label: {
                     coverContent
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(VideoCardOpenButtonStyle())
             } else if let webURL = bangumi.webURL {
                 Button {
                     NSWorkspace.shared.open(webURL)
@@ -1899,6 +1907,7 @@ private struct SearchBangumiCardTitle: View {
     let areaHeight: CGFloat
     let destination: VideoPlaybackRequest
     @State private var isHovered = false
+    @EnvironmentObject private var model: AppModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1915,11 +1924,13 @@ private struct SearchBangumiCardTitle: View {
         }
         .frame(height: areaHeight, alignment: .top)
         .overlay {
-            NavigationLink(value: destination) {
+            Button {
+                model.openPlayback(destination)
+            } label: {
                 Color.clear
                     .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(VideoCardOpenButtonStyle())
         }
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.15)) {

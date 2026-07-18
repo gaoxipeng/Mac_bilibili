@@ -210,6 +210,8 @@ final class AppModel: ObservableObject {
     private var historyCursor: BiliHistoryCursor?
 
     private let api = BilibiliAPI()
+    private var playbackNavigationLocked = false
+    private var playbackNavigationUnlockTask: Task<Void, Never>?
     private let accountStore = AccountStore()
     private let homeFeedStore = HomeFeedStore()
     private var didLoadInitialData = false
@@ -329,17 +331,12 @@ final class AppModel: ObservableObject {
     }
 
     func openVideo(_ video: BiliVideo, resolveWatchProgress: Bool = false) {
-        guard resolveWatchProgress else {
-            pendingPlaybackRequest = VideoPlaybackRequest(video)
-            return
-        }
-
-        Task {
-            pendingPlaybackRequest = await resolvePlaybackRequest(for: video)
-        }
+        guard beginPlaybackNavigation() else { return }
+        pendingPlaybackRequest = VideoPlaybackRequest(video)
     }
 
     func openHistoryVideo(_ item: BiliHistoryItem) {
+        guard beginPlaybackNavigation() else { return }
         Task {
             pendingPlaybackRequest = await api.resolveHistoryPlaybackRequest(
                 item: item,
@@ -348,44 +345,26 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func resolvePlaybackRequest(for video: BiliVideo) async -> VideoPlaybackRequest {
-        guard let credential = account?.credential else {
-            if video.pgcEpid > 0 {
-                return VideoPlaybackRequest(
-                    video,
-                    epid: video.pgcEpid,
-                    refererURL: URL(string: "https://www.bilibili.com/bangumi/play/ep\(video.pgcEpid)")
-                )
-            }
-            return VideoPlaybackRequest(video)
-        }
-
-        if let progress = try? await api.watchProgress(
-            bvid: video.bvid,
-            aid: video.aid,
-            credential: credential
-        ) {
-            return playbackRequest(for: video, progress: progress)
-        }
-
-        if video.pgcEpid > 0 {
-            return VideoPlaybackRequest(
-                video,
-                epid: video.pgcEpid,
-                refererURL: URL(string: "https://www.bilibili.com/bangumi/play/ep\(video.pgcEpid)")
-            )
-        }
-
-        return VideoPlaybackRequest(video)
+    func openPlayback(_ request: VideoPlaybackRequest) {
+        guard beginPlaybackNavigation() else { return }
+        pendingPlaybackRequest = request
     }
 
-    private func playbackRequest(for video: BiliVideo, progress: BiliWatchProgress) -> VideoPlaybackRequest {
-        VideoPlaybackRequest(
-            video,
-            progressSeconds: progress.progressSeconds,
-            epid: progress.epid,
-            refererURL: progress.refererURL
-        )
+    func didConsumePlaybackNavigation() {
+        pendingPlaybackRequest = nil
+        playbackNavigationUnlockTask?.cancel()
+        playbackNavigationUnlockTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 650_000_000)
+            guard !Task.isCancelled else { return }
+            self?.playbackNavigationLocked = false
+        }
+    }
+
+    private func beginPlaybackNavigation() -> Bool {
+        guard !playbackNavigationLocked else { return false }
+        playbackNavigationUnlockTask?.cancel()
+        playbackNavigationLocked = true
+        return true
     }
 
     private func prefetchHistory() async {
@@ -704,7 +683,9 @@ final class AppModel: ObservableObject {
                 videoFallbackURLs: stream.videoFallbackURLs,
                 audioURL: stream.audioURL,
                 aid: aid,
-                cid: cid
+                cid: cid,
+                lastPlayTimeMilliseconds: stream.lastPlayTimeMilliseconds,
+                lastPlayCID: stream.lastPlayCID
             )
             playURLs[playbackID] = resolved
             return resolved

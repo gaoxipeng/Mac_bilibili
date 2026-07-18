@@ -529,19 +529,6 @@ enum BiliHistoryBusiness: String, Sendable, Hashable {
     case unknown
 }
 
-struct BiliWatchProgress: Sendable {
-    let progressSeconds: Int
-    let epid: Int64
-    let refererURL: URL?
-    let durationSeconds: Int
-
-    nonisolated var isResumable: Bool {
-        guard progressSeconds > 0 else { return false }
-        guard durationSeconds > 0 else { return true }
-        return progressSeconds < durationSeconds
-    }
-}
-
 nonisolated struct VideoPlaybackRequest: Hashable, Sendable {
     let video: BiliVideo
     let progressSeconds: Int
@@ -637,13 +624,35 @@ struct BiliPlayStream: Hashable, Sendable {
     let audioURL: String?
     let aid: Int64
     let cid: Int64
+    let lastPlayTimeMilliseconds: Int64
+    let lastPlayCID: Int64
 
-    nonisolated init(videoURL: String, videoFallbackURLs: [String] = [], audioURL: String?, aid: Int64, cid: Int64) {
+    nonisolated init(
+        videoURL: String,
+        videoFallbackURLs: [String] = [],
+        audioURL: String?,
+        aid: Int64,
+        cid: Int64,
+        lastPlayTimeMilliseconds: Int64 = 0,
+        lastPlayCID: Int64 = 0
+    ) {
         self.videoURL = videoURL
         self.videoFallbackURLs = videoFallbackURLs.filter { !$0.isEmpty && $0 != videoURL }
         self.audioURL = audioURL
         self.aid = aid
         self.cid = cid
+        self.lastPlayTimeMilliseconds = max(0, lastPlayTimeMilliseconds)
+        self.lastPlayCID = max(0, lastPlayCID)
+    }
+
+    nonisolated func resumeSeconds(for targetCID: Int64, durationSeconds: Int) -> Int {
+        guard targetCID > 0,
+              lastPlayCID == targetCID,
+              lastPlayTimeMilliseconds > 0 else { return 0 }
+        let seconds = Int(lastPlayTimeMilliseconds / 1_000)
+        guard seconds > 0 else { return 0 }
+        guard durationSeconds <= 0 || seconds < durationSeconds else { return 0 }
+        return seconds
     }
 
     nonisolated var isAVPlayerCompatible: Bool {

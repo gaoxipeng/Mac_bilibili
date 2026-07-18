@@ -63,9 +63,21 @@ enum JSONParser {
     nonisolated static func parseSearchVideoPage(from object: Any) -> BiliSearchPage<BiliVideo> {
         let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
         let page = max(1, Int(int64(data, "page")))
-        let numPages = max(page, Int(int64(data, "numPages", "numpages")))
         let items = parseVideos(from: object, preferredArrayKeys: ["result"])
-        return BiliSearchPage(items: items, page: page, hasMore: page < numPages)
+        let numPages = Int(int64(data, "numPages", "numpages", "num_pages"))
+        let total = Int(int64(data, "numResults", "numresults", "num_results", "total"))
+        let pageSize = Int(int64(data, "pagesize", "pageSize", "page_size"))
+        let hasMore: Bool
+        if numPages > 0 {
+            hasMore = page < numPages
+        } else if total > 0, pageSize > 0 {
+            hasMore = page * pageSize < total
+        } else {
+            // Missing pagination metadata should not silently disable loading.
+            // One additional request is safe; an empty/duplicate page stops it.
+            hasMore = !items.isEmpty
+        }
+        return BiliSearchPage(items: items, page: page, hasMore: hasMore)
     }
 
     nonisolated static func parseSearchUserPage(from object: Any) -> BiliSearchPage<BiliSearchUser> {
@@ -1039,29 +1051,63 @@ enum JSONParser {
     }
 
     private nonisolated static func parsePlayStreamPayload(from data: [String: Any]) -> BiliPlayStream? {
+        let lastPlayTime = int64(data, "last_play_time", "lastPlayTime")
+        let lastPlayCID = int64(data, "last_play_cid", "lastPlayCid")
         if let durlStream = parseDurlStream(from: data), durlStream.isAVPlayerCompatible {
-            return durlStream
+            return BiliPlayStream(
+                videoURL: durlStream.videoURL,
+                videoFallbackURLs: durlStream.videoFallbackURLs,
+                audioURL: durlStream.audioURL,
+                aid: durlStream.aid,
+                cid: durlStream.cid,
+                lastPlayTimeMilliseconds: lastPlayTime,
+                lastPlayCID: lastPlayCID
+            )
         }
 
         if let dash = data["dash"] as? [String: Any],
            let videoURLs = pickStreamURLs(from: dash, type: "video"),
            let videoURL = videoURLs.first {
             let audioURL = pickStreamURL(from: dash, type: "audio")
-            let dashStream = BiliPlayStream(videoURL: videoURL, videoFallbackURLs: Array(videoURLs.dropFirst()), audioURL: audioURL, aid: 0, cid: 0)
+            let dashStream = BiliPlayStream(
+                videoURL: videoURL,
+                videoFallbackURLs: Array(videoURLs.dropFirst()),
+                audioURL: audioURL,
+                aid: 0,
+                cid: 0,
+                lastPlayTimeMilliseconds: lastPlayTime,
+                lastPlayCID: lastPlayCID
+            )
             if dashStream.isAVPlayerCompatible {
                 return dashStream
             }
         }
 
         if let durlStream = parseDurlStream(from: data) {
-            return durlStream
+            return BiliPlayStream(
+                videoURL: durlStream.videoURL,
+                videoFallbackURLs: durlStream.videoFallbackURLs,
+                audioURL: durlStream.audioURL,
+                aid: durlStream.aid,
+                cid: durlStream.cid,
+                lastPlayTimeMilliseconds: lastPlayTime,
+                lastPlayCID: lastPlayCID
+            )
         }
 
         if let dash = data["dash"] as? [String: Any],
            let videoURLs = pickStreamURLs(from: dash, type: "video"),
            let videoURL = videoURLs.first {
             let audioURL = pickStreamURL(from: dash, type: "audio")
-            return BiliPlayStream(videoURL: videoURL, videoFallbackURLs: Array(videoURLs.dropFirst()), audioURL: audioURL, aid: 0, cid: 0)
+            return BiliPlayStream(
+                videoURL: videoURL,
+                videoFallbackURLs: Array(videoURLs.dropFirst()),
+                audioURL: audioURL,
+                aid: 0,
+                cid: 0,
+                lastPlayTimeMilliseconds: lastPlayTime,
+                lastPlayCID: lastPlayCID
+            )
         }
 
         return nil

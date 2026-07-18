@@ -34,10 +34,8 @@ final class VideoDetailModel: ObservableObject {
     private var watchHistoryTask: Task<Void, Never>?
     private var videoShotLoadTask: Task<Void, Never>?
     private var watchHistoryContext: (aid: Int64, cid: Int64)?
-    private let initialProgressSeconds: Int
     private var activeEpid: Int64
     private let playbackRefererURL: URL?
-    private var hasAppliedInitialProgress = false
     private var playerLayoutSink: AnyCancellable?
     private var lifecycleGeneration = 0
     private var isTornDown = false
@@ -81,7 +79,6 @@ final class VideoDetailModel: ObservableObject {
         self.seedVideo = video
         self.credential = credential
         self.activeCID = video.cid
-        self.initialProgressSeconds = max(0, initialProgressSeconds)
         let resolvedEpid = playbackEpid > 0 ? playbackEpid : video.pgcEpid
         self.activeEpid = max(0, resolvedEpid)
         self.playbackRefererURL = playbackRefererURL
@@ -666,17 +663,19 @@ final class VideoDetailModel: ObservableObject {
                 videoFallbackURLs: stream.videoFallbackURLs,
                 audioURL: stream.audioURL,
                 aid: displayVideo.aid > 0 ? displayVideo.aid : stream.aid,
-                cid: cid
+                cid: cid,
+                lastPlayTimeMilliseconds: stream.lastPlayTimeMilliseconds,
+                lastPlayCID: stream.lastPlayCID
             )
             let cookieHeader = await api.httpCookieHeader(credential: credential)
             guard isLifecycleActive(generation), !Task.isCancelled else { return }
 
-            let initialStartSeconds: Double = {
-                guard !hasAppliedInitialProgress, initialProgressSeconds > 0 else { return 0 }
-                let knownDuration = displayVideo.duration
-                guard knownDuration <= 0 || initialProgressSeconds < knownDuration else { return 0 }
-                return Double(initialProgressSeconds)
-            }()
+            let initialStartSeconds = Double(
+                resolvedStream.resumeSeconds(
+                    for: cid,
+                    durationSeconds: displayVideo.duration
+                )
+            )
 
             try await player.load(
                 stream: resolvedStream,
@@ -688,9 +687,6 @@ final class VideoDetailModel: ObservableObject {
                 cookieHeader: cookieHeader,
                 startAt: initialStartSeconds
             )
-            if initialStartSeconds > 0 {
-                hasAppliedInitialProgress = true
-            }
             guard isLifecycleActive(generation) else {
                 player.stop()
                 return
@@ -700,7 +696,6 @@ final class VideoDetailModel: ObservableObject {
                 player.pausePlayback()
             }
 
-            applyInitialProgressIfNeeded()
             let reportAid = displayVideo.aid > 0 ? displayVideo.aid : resolvedStream.aid
             startWatchHistoryReporting(aid: reportAid, cid: cid)
             scheduleVideoShotLoadAfterPlaybackReady(
@@ -845,18 +840,6 @@ final class VideoDetailModel: ObservableObject {
             credential: credential,
             referer: referer
         )
-    }
-
-    private func applyInitialProgressIfNeeded() {
-        guard !hasAppliedInitialProgress else { return }
-        hasAppliedInitialProgress = true
-        guard initialProgressSeconds > 0 else { return }
-
-        let durationSeconds = player.duration > 0
-            ? Int(player.duration.rounded())
-            : displayVideo.duration
-        guard durationSeconds <= 0 || initialProgressSeconds < durationSeconds else { return }
-        player.seek(to: Double(initialProgressSeconds))
     }
 
     private func startWatchHistoryReporting(aid: Int64, cid: Int64) {

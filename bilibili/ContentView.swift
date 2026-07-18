@@ -164,7 +164,7 @@ struct ContentView: View {
         .onChange(of: model.pendingPlaybackRequest) { _, request in
             guard let request else { return }
             navigationPath.append(request)
-            model.pendingPlaybackRequest = nil
+            model.didConsumePlaybackNavigation()
         }
         .onChange(of: scenePhase) { _, phase in
             switch phase {

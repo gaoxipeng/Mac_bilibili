@@ -958,60 +958,6 @@ actor BilibiliAPI {
         return JSONParser.parseHistoryPage(from: json)
     }
 
-    func watchProgress(
-        bvid: String,
-        aid: Int64,
-        credential: BilibiliCredential,
-        maxPages: Int = 15
-    ) async throws -> BiliWatchProgress? {
-        guard !bvid.isEmpty || aid > 0 else { return nil }
-
-        var cursorMax: Int64 = 0
-        var viewAt: Int64 = 0
-        var business = ""
-        var pageSize = 30
-
-        for _ in 0..<max(1, maxPages) {
-            let page = try await history(
-                credential: credential,
-                cursorMax: cursorMax,
-                viewAt: viewAt,
-                business: business,
-                pageSize: pageSize
-            )
-
-            if let match = page.items.first(where: { matchesHistoryItem($0, bvid: bvid, aid: aid) }),
-               let progress = Self.watchProgress(from: match) {
-                return progress
-            }
-
-            guard let cursor = page.cursor, page.hasMore else { break }
-            cursorMax = cursor.max
-            viewAt = cursor.viewAt
-            business = cursor.business
-            pageSize = cursor.ps > 0 ? cursor.ps : 30
-        }
-
-        return nil
-    }
-
-    private func matchesHistoryItem(_ item: BiliHistoryItem, bvid: String, aid: Int64) -> Bool {
-        if !bvid.isEmpty, item.video.bvid == bvid { return true }
-        if aid > 0, item.video.aid == aid { return true }
-        return false
-    }
-
-    private static func watchProgress(from item: BiliHistoryItem) -> BiliWatchProgress? {
-        let durationSeconds = max(item.durationSeconds, item.video.duration)
-        let progress = BiliWatchProgress(
-            progressSeconds: item.progressSeconds,
-            epid: item.epid,
-            refererURL: item.webURI,
-            durationSeconds: durationSeconds
-        )
-        return progress.isResumable ? progress : nil
-    }
-
     func pgcPlayURL(
         epid: Int64,
         cid: Int64,
@@ -1090,7 +1036,9 @@ actor BilibiliAPI {
             videoFallbackURLs: stream.videoFallbackURLs,
             audioURL: stream.audioURL,
             aid: stream.aid,
-            cid: cid > 0 ? cid : stream.cid
+            cid: cid > 0 ? cid : stream.cid,
+            lastPlayTimeMilliseconds: stream.lastPlayTimeMilliseconds,
+            lastPlayCID: stream.lastPlayCID
         )
         return stream
     }
@@ -1146,7 +1094,7 @@ actor BilibiliAPI {
                     ?? URL(string: "https://www.bilibili.com/bangumi/play/ep\(epid)")
                 return VideoPlaybackRequest(
                     video,
-                    progressSeconds: item.progressSeconds,
+                    progressSeconds: 0,
                     epid: epid,
                     refererURL: referer
                 )
@@ -1155,7 +1103,7 @@ actor BilibiliAPI {
             let video = normalizedPgcHistoryVideo(item.video, epid: epid)
             return VideoPlaybackRequest(
                 video,
-                progressSeconds: item.progressSeconds,
+                progressSeconds: 0,
                 epid: epid,
                 refererURL: item.webURI
                     ?? URL(string: "https://www.bilibili.com/bangumi/play/ep\(epid)")
@@ -1164,7 +1112,7 @@ actor BilibiliAPI {
 
         return VideoPlaybackRequest(
             item.video,
-            progressSeconds: item.progressSeconds,
+            progressSeconds: 0,
             epid: item.epid,
             refererURL: item.webURI
         )
@@ -1620,7 +1568,9 @@ actor BilibiliAPI {
             videoFallbackURLs: stream.videoFallbackURLs,
             audioURL: stream.audioURL,
             aid: stream.aid,
-            cid: cid
+            cid: cid,
+            lastPlayTimeMilliseconds: stream.lastPlayTimeMilliseconds,
+            lastPlayCID: stream.lastPlayCID
         )
         return stream
     }

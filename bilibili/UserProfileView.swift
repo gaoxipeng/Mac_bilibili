@@ -27,15 +27,26 @@ final class UserProfileModel: ObservableObject {
     private var profileIpRefreshTask: Task<Void, Never>?
     private var dynamicsIpEnrichTask: Task<Void, Never>?
     private let api = BilibiliAPI()
+    private let spaceStore = ProfileSpaceStore()
+    private var hasCachedContent = false
+    private let onPersistSpace: ((CachedProfileSpace) -> Void)?
 
     init(
         mid: Int64,
         credential: BilibiliCredential?,
-        viewerMid: Int64?
+        viewerMid: Int64?,
+        seedSpace: CachedProfileSpace? = nil,
+        onPersistSpace: ((CachedProfileSpace) -> Void)? = nil
     ) {
         self.mid = mid
         self.credential = credential
         self.viewerMid = viewerMid
+        self.onPersistSpace = onPersistSpace
+        if let seedSpace, seedSpace.mid == mid {
+            applyCachedSpace(seedSpace)
+        } else {
+            restoreOwnProfileCacheIfNeeded()
+        }
     }
 
     var displayName: String {
@@ -92,7 +103,10 @@ final class UserProfileModel: ObservableObject {
     func load() async {
         profileIpRefreshTask?.cancel()
         dynamicsIpEnrichTask?.cancel()
-        loading = true
+        let showBlockingLoading = !hasCachedContent
+        if showBlockingLoading {
+            loading = true
+        }
         errorMessage = nil
         defer { loading = false }
 
@@ -101,17 +115,22 @@ final class UserProfileModel: ObservableObject {
             if let credential, !isOwnProfile {
                 relation = (try? await api.userRelation(mid: mid, credential: credential)) ?? BiliAuthorRelation()
             }
-            async let videosTask: Void = reloadVideos()
-            async let dynamicsTask: Void = reloadDynamics()
+            async let videosTask: Void = reloadVideos(showLoading: showBlockingLoading)
+            async let dynamicsTask: Void = reloadDynamics(showLoading: showBlockingLoading)
             _ = await (videosTask, dynamicsTask)
             scheduleProfileIpRefresh()
+            persistOwnProfileCache()
         } catch {
-            errorMessage = error.localizedDescription
+            if !hasCachedContent {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 
-    func reloadVideos() async {
-        videosLoading = true
+    func reloadVideos(showLoading: Bool = true) async {
+        if showLoading {
+            videosLoading = true
+        }
         videoPage = 1
         videosHasMore = true
         defer { videosLoading = false }
@@ -126,8 +145,10 @@ final class UserProfileModel: ObservableObject {
             videos = page.videos
             videosHasMore = page.hasMore
             videoPage = 1
+            hasCachedContent = hasCachedContent || profile != nil || !videos.isEmpty || !dynamics.isEmpty
+            persistOwnProfileCache()
         } catch {
-            if errorMessage == nil {
+            if errorMessage == nil, !hasCachedContent {
                 errorMessage = error.localizedDescription
             }
         }
@@ -157,8 +178,10 @@ final class UserProfileModel: ObservableObject {
         }
     }
 
-    func reloadDynamics() async {
-        dynamicsLoading = true
+    func reloadDynamics(showLoading: Bool = true) async {
+        if showLoading {
+            dynamicsLoading = true
+        }
         dynamicsOffset = nil
         dynamicsHasMore = true
         defer { dynamicsLoading = false }
@@ -172,10 +195,12 @@ final class UserProfileModel: ObservableObject {
             dynamics = page.items
             dynamicsOffset = page.nextOffset
             dynamicsHasMore = page.hasMore
+            hasCachedContent = hasCachedContent || profile != nil || !videos.isEmpty || !dynamics.isEmpty
             applyProfileIpLocation(Self.resolveProfileIpFromDynamics(page.items))
             scheduleDynamicsIpEnrichment(page.items)
+            persistOwnProfileCache()
         } catch {
-            if errorMessage == nil {
+            if errorMessage == nil, !hasCachedContent {
                 errorMessage = error.localizedDescription
             }
         }
@@ -206,7 +231,7 @@ final class UserProfileModel: ObservableObject {
     func changeSort(_ sort: BiliUserVideoSort) async {
         guard videoSort != sort else { return }
         videoSort = sort
-        await reloadVideos()
+        await reloadVideos(showLoading: videos.isEmpty)
     }
 
     func followAuthor() async {
@@ -308,6 +333,44 @@ final class UserProfileModel: ObservableObject {
         self.credential = credential
     }
 
+    private func restoreOwnProfileCacheIfNeeded() {
+        guard viewerMid == mid, mid > 0 else { return }
+        guard let cached = spaceStore.read(mid: mid) else { return }
+        applyCachedSpace(cached)
+    }
+
+    private func applyCachedSpace(_ cached: CachedProfileSpace) {
+        profile = cached.profile
+        videos = cached.videos
+        dynamics = cached.dynamics
+        videoSort = cached.videoSort
+        videosHasMore = cached.videosHasMore
+        dynamicsHasMore = cached.dynamicsHasMore
+        dynamicsOffset = cached.dynamicsOffset
+        hasCachedContent = cached.profile != nil || !cached.videos.isEmpty || !cached.dynamics.isEmpty
+        if hasCachedContent {
+            loading = false
+        }
+    }
+
+    private func persistOwnProfileCache() {
+        guard isOwnProfile else { return }
+        guard profile != nil || !videos.isEmpty || !dynamics.isEmpty else { return }
+        let space = CachedProfileSpace(
+            mid: mid,
+            profile: profile,
+            videos: videos,
+            dynamics: dynamics,
+            videoSort: videoSort,
+            videosHasMore: videosHasMore,
+            dynamicsHasMore: dynamicsHasMore,
+            dynamicsOffset: dynamicsOffset
+        )
+        spaceStore.save(space)
+        onPersistSpace?(space)
+        hasCachedContent = true
+    }
+
     func refreshProfileIpLocationIfNeeded() async {
         guard JSONParser.normalizeIpLocation(profile?.ipLocation) == nil else { return }
 
@@ -393,8 +456,6 @@ struct UserProfileChromeHeaderView: View {
     var onFollowersTap: (() -> Void)?
     var onReload: (() -> Void)? = nil
     var isReloadDisabled = false
-
-    @State private var isLogoutHovered = false
 
     private let primaryText = Color(red: 0.11, green: 0.11, blue: 0.12)
     private let secondaryText = Color(red: 0.39, green: 0.39, blue: 0.4)
@@ -507,11 +568,11 @@ struct UserProfileChromeHeaderView: View {
                 )
             }
 
-            if info.showLogoutButton {
-                profileLogoutButton
-            }
-
             GlassMoreButton(webURL: info.webURL)
+
+            if info.showLogoutButton {
+                GlassSettingsButton(onLogout: onLogout)
+            }
 
             if let onReload {
                 GlassRefreshButton(action: onReload)
@@ -520,30 +581,6 @@ struct UserProfileChromeHeaderView: View {
             }
         }
         .fixedSize(horizontal: false, vertical: true)
-    }
-
-    private var profileLogoutButton: some View {
-        Button(action: onLogout) {
-            Text("退出登录")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(isLogoutHovered ? Color.white : secondaryText)
-                .padding(.horizontal, 14)
-                .frame(height: ProfileChromeCapsuleMetrics.height)
-                .background(isLogoutHovered ? Color.red : Color.white, in: Capsule())
-                .overlay {
-                    Capsule()
-                        .strokeBorder(
-                            isLogoutHovered ? Color.clear : Color.black.opacity(0.08),
-                            lineWidth: 0.8
-                        )
-                }
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering in
-            withAnimation(.easeOut(duration: 0.16)) {
-                isLogoutHovered = hovering
-            }
-        }
     }
 
     private var profileAvatar: some View {
@@ -799,13 +836,17 @@ struct UserProfileView: View {
     init(
         mid: Int64,
         credential: BilibiliCredential?,
-        viewerMid: Int64? = nil
+        viewerMid: Int64? = nil,
+        seedSpace: CachedProfileSpace? = nil,
+        onPersistSpace: ((CachedProfileSpace) -> Void)? = nil
     ) {
         _model = StateObject(
             wrappedValue: UserProfileModel(
                 mid: mid,
                 credential: credential,
-                viewerMid: viewerMid
+                viewerMid: viewerMid,
+                seedSpace: seedSpace,
+                onPersistSpace: onPersistSpace
             )
         )
     }
@@ -884,14 +925,12 @@ struct UserProfileView: View {
         .onChange(of: navigationDepth) { _, _ in
             syncProfileChromePublishing()
         }
-        .onChange(of: model.profile?.name) { _, _ in updateFloatingProfileChrome() }
-        .onChange(of: model.profile?.sign) { _, _ in updateFloatingProfileChrome() }
-        .onChange(of: model.profile?.ipLocation) { _, _ in updateFloatingProfileChrome() }
-        .onChange(of: model.profile?.level) { _, _ in updateFloatingProfileChrome() }
-        .onChange(of: model.profile?.follower) { _, _ in updateFloatingProfileChrome() }
+        .onChange(of: model.profile) { _, _ in updateFloatingProfileChrome() }
         .onChange(of: model.relation.following) { _, _ in updateFloatingProfileChrome() }
         .onChange(of: model.followLoading) { _, _ in updateFloatingProfileChrome() }
         .onChange(of: model.loading) { _, _ in updateFloatingProfileChrome() }
+        .onChange(of: appModel.account?.name) { _, _ in updateFloatingProfileChrome() }
+        .onChange(of: appModel.account?.faceURLString) { _, _ in updateFloatingProfileChrome() }
         .onChange(of: appModel.activeFloatingChromeKind) { _, kind in
             guard kind == .profile else { return }
             syncProfileChromePublishing()
@@ -927,39 +966,65 @@ struct UserProfileView: View {
             follow: { Task { await model.followAuthor() } },
             unfollow: { Task { await model.unfollowAuthor() } },
             openRelationList: { tab in
+                let chrome = Self.resolvedChromeInfo(model: model, account: appModel.account)
                 appModel.requestUserRelationList(
                     UserRelationListRequest(
                         hostMid: model.mid,
-                        hostName: model.chromeInfo.name,
-                        hostFaceURL: model.chromeInfo.faceURL,
-                        hostSign: model.chromeInfo.sign,
+                        hostName: chrome.name,
+                        hostFaceURL: chrome.faceURL,
+                        hostSign: chrome.sign,
                         initialTab: tab
                     )
                 )
             },
-            reload: { Task { await model.load() } },
+            reload: {
+                Task { @MainActor in
+                    await model.load()
+                    // Always republish floating header after refresh. Videos/dynamics
+                    // update via @Published on the page model; chrome lives in AppModel
+                    // and can stay stale when field-level onChange does not fire.
+                    appModel.presentProfileFloatingChrome(
+                        Self.resolvedChromeInfo(model: model, account: appModel.account),
+                        ownerMid: model.mid
+                    )
+                }
+            },
             logout: model.isOwnProfile ? { appModel.logout() } : nil
         )
     }
 
     private var profileChromePreference: UserProfileChromeInfo? {
-        UserProfileChromeInfo(
-            faceURL: model.chromeInfo.faceURL,
-            name: model.chromeInfo.name,
-            level: model.chromeInfo.level,
-            sign: model.chromeInfo.sign,
-            ipLocation: model.chromeInfo.ipLocation,
-            following: model.chromeInfo.following,
-            follower: model.chromeInfo.follower,
-            likes: model.chromeInfo.likes,
-            videoCount: model.chromeInfo.videoCount,
-            webURL: model.chromeInfo.webURL,
-            showFollowButton: model.chromeInfo.showFollowButton,
-            isFollowing: model.chromeInfo.isFollowing,
-            followerMe: model.chromeInfo.followerMe,
-            followerCount: model.chromeInfo.followerCount,
-            followLoading: model.chromeInfo.followLoading,
-            showLogoutButton: model.chromeInfo.showLogoutButton
+        Self.resolvedChromeInfo(model: model, account: appModel.account)
+    }
+
+    /// Own-profile chrome falls back to the logged-in account so avatar/ID still
+    /// show when space API data has not arrived (or failed to publish).
+    private static func resolvedChromeInfo(
+        model: UserProfileModel,
+        account: BiliAccount?
+    ) -> UserProfileChromeInfo {
+        let base = model.chromeInfo
+        guard model.isOwnProfile, let account else { return base }
+        let name = base.name.isEmpty ? account.name : base.name
+        let faceURL = base.faceURL ?? account.faceURL
+        guard name != base.name || faceURL != base.faceURL else { return base }
+        return UserProfileChromeInfo(
+            faceURL: faceURL,
+            name: name,
+            level: base.level,
+            sign: base.sign,
+            ipLocation: base.ipLocation,
+            following: base.following,
+            follower: base.follower,
+            likes: base.likes,
+            videoCount: base.videoCount,
+            webURL: base.webURL,
+            showFollowButton: base.showFollowButton,
+            isFollowing: base.isFollowing,
+            followerMe: base.followerMe,
+            followerCount: base.followerCount,
+            followLoading: base.followLoading,
+            showLogoutButton: base.showLogoutButton
         )
     }
 
@@ -1019,7 +1084,7 @@ struct UserProfileView: View {
 
     @ViewBuilder
     private var videosScrollContent: some View {
-        if model.loading || model.videosLoading {
+        if (model.loading || model.videosLoading) && model.videos.isEmpty {
             loadingPlaceholder(title: "正在加载投稿")
         } else if model.videos.isEmpty {
             ContentUnavailableView("暂无投稿", systemImage: "video.slash")
@@ -1050,7 +1115,7 @@ struct UserProfileView: View {
 
     @ViewBuilder
     private var dynamicsScrollContent: some View {
-        if model.loading || model.dynamicsLoading {
+        if (model.loading || model.dynamicsLoading) && model.dynamics.isEmpty {
             loadingPlaceholder(title: "正在加载动态")
         } else if model.dynamics.isEmpty {
             ContentUnavailableView("暂无动态", systemImage: "text.bubble")

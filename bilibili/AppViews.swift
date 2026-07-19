@@ -1243,7 +1243,9 @@ struct MineView: View {
                 UserProfileView(
                     mid: mid,
                     credential: account.credential,
-                    viewerMid: mid
+                    viewerMid: mid,
+                    seedSpace: model.mineSpaceCache(for: mid),
+                    onPersistSpace: { model.adoptMineSpaceCache($0) }
                 )
                 .id(mid)
             } else {

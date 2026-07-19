@@ -1006,25 +1006,25 @@ private struct VideoDetailActionBarMetrics {
         case ..<188:
             iconSize = 20
             ringSize = 28
-            labelFontSize = 9
+            labelFontSize = 12
             columnSpacing = 2
             itemPaddingH = 3
         case ..<240:
             iconSize = 24
             ringSize = 34
-            labelFontSize = 10
+            labelFontSize = 13
             columnSpacing = 3
             itemPaddingH = 4
         case ..<280:
             iconSize = 24
             ringSize = 36
-            labelFontSize = 11
+            labelFontSize = 14
             columnSpacing = 4
             itemPaddingH = 4
         default:
             iconSize = 30
             ringSize = 44
-            labelFontSize = 13
+            labelFontSize = 16
             columnSpacing = 8
             itemPaddingH = 6
         }

@@ -183,8 +183,15 @@ struct ContentView: View {
             model: model,
             selection: $model.selectedSection,
             onReselect: {
-                guard !navigationPath.isEmpty else { return }
-                navigationPath = NavigationPath()
+                if !navigationPath.isEmpty {
+                    navigationPath = NavigationPath()
+                    return
+                }
+                // Re-tapping the sidebar avatar on「我的」should also refresh the
+                // floating header (avatar / ID), not only when leaving and returning.
+                if model.selectedSection == .mine {
+                    model.profilePageHandlers?.reload()
+                }
             }
         )
             .frame(width: AppLayout.sidebarWidth)

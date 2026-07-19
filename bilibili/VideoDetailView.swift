@@ -1264,23 +1264,33 @@ struct VideoDetailChromeHeaderView: View {
     private var videoHeader: some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(info.title)
-                .font(.title)
+                .font(.largeTitle)
                 .foregroundStyle(.primary)
                 .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             HStack(spacing: 16) {
-                BiliStatLabel(icon: .play, value: info.viewCount.compactCount, iconSize: 20)
-                BiliStatLabel(icon: .danmaku, value: info.danmakuCount.compactCount, iconSize: 20)
+                BiliStatLabel(
+                    icon: .play,
+                    value: info.viewCount.compactCount,
+                    iconSize: 20,
+                    font: .body
+                )
+                BiliStatLabel(
+                    icon: .danmaku,
+                    value: info.danmakuCount.compactCount,
+                    iconSize: 20,
+                    font: .body
+                )
                 if let publishTime = info.publishTime {
                     Text(publishTime.numericDateString)
-                        .font(.callout)
+                        .font(.body)
                         .foregroundStyle(.secondary)
                 }
                 if info.onlineCount > 0 {
                     Text("\(info.onlineCount.compactCount) 人在看")
-                        .font(.callout)
+                        .font(.body)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -1680,7 +1690,7 @@ struct VideoDetailView: View {
     private var commentsHeader: some View {
         HStack {
             Text("评论 \(commentCountLabel)")
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 17, weight: .semibold))
             Spacer()
             BiliCommentSortToggle(sort: model.commentSort) {
                 Task { await model.toggleCommentSort() }
@@ -1918,7 +1928,7 @@ private struct VideoIntroCard: View {
         VStack(alignment: .leading, spacing: 14) {
             if let error = model.detailError {
                 Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.system(size: 13))
+                    .font(.system(size: 14))
                     .foregroundStyle(.orange)
             }
 
@@ -1931,7 +1941,7 @@ private struct VideoIntroCard: View {
     private var overviewContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(descriptionText)
-                .font(.system(size: 14))
+                .font(.system(size: 15))
                 .foregroundStyle(hasDescription ? .primary : .secondary)
                 .lineSpacing(5)
                 .fixedSize(horizontal: false, vertical: true)
@@ -2064,7 +2074,7 @@ private struct VideoTagChip: View {
     var body: some View {
         Button(action: onTap) {
             Text(title)
-                .font(.system(size: 12))
+                .font(.system(size: 13))
                 .foregroundStyle(
                     isHovered
                         ? Color(red: 0.25, green: 0.28, blue: 0.35)
@@ -2303,7 +2313,10 @@ private struct VideoPlayerSection: View {
 
             VStack(spacing: 0) {
                 if isFullscreen, let fullscreenTitle {
-                    VideoFullscreenTitleBar(title: fullscreenTitle)
+                    VideoFullscreenTitleBar(
+                        title: fullscreenTitle,
+                        authorName: model.displayVideo.authorName
+                    )
                         .opacity(chromeState.showsControls ? 1 : 0)
                         .allowsHitTesting(false)
                 }
@@ -2539,16 +2552,27 @@ private extension View {
 
 private struct VideoFullscreenTitleBar: View {
     let title: String
+    let authorName: String
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            Text(title.ifEmpty("视频"))
-                .font(.system(size: 30, weight: .semibold))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .shadow(color: .black.opacity(0.45), radius: 8, y: 2)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title.ifEmpty("视频"))
+                    .font(.system(size: 30, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .shadow(color: .black.opacity(0.45), radius: 8, y: 2)
+
+                if !authorName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text("@\(authorName)")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.82))
+                        .lineLimit(1)
+                        .shadow(color: .black.opacity(0.4), radius: 6, y: 1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 24)
         .padding(.top, 28)
@@ -3090,7 +3114,7 @@ private struct VideoCommentsPanel: View {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
                         Text("正在加载评论")
-                            .font(.system(size: 13))
+                            .font(.system(size: 14))
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -3163,7 +3187,7 @@ private struct VideoCommentsPanel: View {
                         Task { await model.loadMoreReplies(for: comment.id) }
                     } label: {
                         Text("查看 \(max(0, comment.replyCount - Int64(comment.loadedReplies.count))) 条回复")
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(BiliTheme.blue)
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
@@ -3181,7 +3205,7 @@ private struct VideoCommentsPanel: View {
                     ProgressView()
                         .controlSize(.small)
                     Text("正在加载更多")
-                        .font(.system(size: 13))
+                        .font(.system(size: 14))
                         .foregroundStyle(.secondary)
                 }
                 .padding(.vertical, 16)
@@ -3281,7 +3305,7 @@ private struct CommentRow: View {
                     BiliCommentText(
                         text: comment.content,
                         emoticons: comment.emoticons,
-                        fontSize: nested ? 14 : 15
+                        fontSize: nested ? 15 : 16
                     )
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -3341,7 +3365,7 @@ private struct CommentRow: View {
 
     private var authorNameLabel: some View {
         Text(comment.authorName.ifEmpty("用户"))
-            .font(.system(size: nested ? 14 : 15, weight: .semibold))
+            .font(.system(size: nested ? 15 : 16, weight: .semibold))
             .foregroundStyle(Color(red: 0.14, green: 0.14, blue: 0.16))
             .lineLimit(1)
             .contentShape(Rectangle())
@@ -3363,7 +3387,7 @@ private struct CommentRow: View {
                 Text(comment.likeCount.compactCount)
             }
         }
-        .font(.system(size: 11))
+        .font(.system(size: 12))
         .foregroundStyle(Color(red: 0.62, green: 0.64, blue: 0.68))
         .lineLimit(1)
     }

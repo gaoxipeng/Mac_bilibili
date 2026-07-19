@@ -189,10 +189,11 @@ final class AppModel: ObservableObject {
         floatingRelationChrome = nil
         relationListTabChangeHandler = nil
         profileChromeStack.removeAll()
-        profileChromeOwnerMid = nil
         if selectedSection == .mine, floatingProfileChrome != nil {
+            // Keep owner mid so subsequent chrome refreshes still match this page.
             activeFloatingChromeKind = .profile
         } else {
+            profileChromeOwnerMid = nil
             floatingProfileChrome = nil
             activeFloatingChromeKind = nil
         }
@@ -214,9 +215,13 @@ final class AppModel: ObservableObject {
     private var playbackNavigationUnlockTask: Task<Void, Never>?
     private let accountStore = AccountStore()
     private let homeFeedStore = HomeFeedStore()
+    private let profileSpaceStore = ProfileSpaceStore()
+    /// In-memory「我的」空间缓存，避免切换侧边栏时整页空白再加载。
+    private(set) var mineSpaceCache: CachedProfileSpace?
     private var didLoadInitialData = false
     private var reloadGeneration = 0
     private var didRestoreHomeFeedCache = false
+    private var didRestoreMineSpaceCache = false
     private var homePrefetchTask: Task<Void, Never>?
 
     func isSectionLoading(_ section: AppSection) -> Bool {
@@ -228,6 +233,7 @@ final class AppModel: ObservableObject {
         didLoadInitialData = true
         account = accountStore.load()
         restoreHomeFeedFromCacheIfNeeded()
+        restoreMineSpaceFromCacheIfNeeded()
         Task { await api.warmUp(credential: account?.credential) }
         if let account {
             await ensureAccessKey(for: account)
@@ -738,6 +744,36 @@ final class AppModel: ObservableObject {
         )
     }
 
+    func mineSpaceCache(for mid: Int64) -> CachedProfileSpace? {
+        guard let mineSpaceCache, mineSpaceCache.mid == mid else { return nil }
+        return mineSpaceCache
+    }
+
+    func adoptMineSpaceCache(_ space: CachedProfileSpace) {
+        mineSpaceCache = space
+        profileSpaceStore.save(space)
+    }
+
+    private func restoreMineSpaceFromCacheIfNeeded() {
+        guard !didRestoreMineSpaceCache else { return }
+        didRestoreMineSpaceCache = true
+        guard let account,
+              let mid = Int64(account.uid),
+              mid > 0 else { return }
+        mineSpaceCache = profileSpaceStore.read(mid: mid)
+    }
+
+    private func clearMineSpaceCache() {
+        if let mid = mineSpaceCache?.mid {
+            profileSpaceStore.clear(mid: mid)
+        } else if let account, let mid = Int64(account.uid), mid > 0 {
+            profileSpaceStore.clear(mid: mid)
+        } else {
+            profileSpaceStore.clear()
+        }
+        mineSpaceCache = nil
+    }
+
     private func resetHomeForLoggedOut() {
         homeVideos = []
         homeHasMore = false
@@ -843,6 +879,11 @@ final class AppModel: ObservableObject {
             )
             self.account = savedAccount
             accountStore.save(savedAccount)
+            if let mid = Int64(savedAccount.uid), mid > 0 {
+                mineSpaceCache = profileSpaceStore.read(mid: mid)
+            } else {
+                mineSpaceCache = nil
+            }
             await api.invalidateWBICache()
             await api.warmUp(credential: savedAccount.credential)
             if credential.accessKey.isEmpty {
@@ -890,6 +931,7 @@ final class AppModel: ObservableObject {
     }
 
     func logout() {
+        clearMineSpaceCache()
         account = nil
         profile = nil
         clearFloatingChrome()

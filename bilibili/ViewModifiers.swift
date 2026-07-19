@@ -16,8 +16,8 @@ enum AppLayout {
     static let sidebarNavLabelSize: CGFloat = 13
     static let sidebarBottomInset: CGFloat = 16
     static let floatingChromeInset: CGFloat = 20
-    static let floatingChromeBackOnlyHeight: CGFloat = floatingChromeInset + 32 + 8
-    static let floatingChromeButtonSize: CGFloat = 32
+    static let floatingChromeButtonSize: CGFloat = 40
+    static let floatingChromeBackOnlyHeight: CGFloat = floatingChromeInset + floatingChromeButtonSize + 8
     static let floatingChromeBottomSpacing: CGFloat = 12
     static let pageHorizontalInset: CGFloat = 20
     static let feedHorizontalInset: CGFloat = 64
@@ -243,7 +243,7 @@ extension EnvironmentValues {
 
 struct GlassCircleButton: View {
     let systemImage: String
-    var size: CGFloat = 32
+    var size: CGFloat = AppLayout.floatingChromeButtonSize
     let action: () -> Void
 
     @State private var isHovered = false
@@ -512,7 +512,7 @@ private enum BiliLiquidSegmentPhase: CaseIterable {
 
 struct GlassCircleIcon: View {
     let systemImage: String
-    var size: CGFloat = 32
+    var size: CGFloat = AppLayout.floatingChromeButtonSize
     var isHovered = false
 
     var body: some View {
@@ -580,7 +580,7 @@ struct GlassRefreshButton: View {
 }
 
 struct GlassMoreDotsIcon: View {
-    var size: CGFloat = 32
+    var size: CGFloat = AppLayout.floatingChromeButtonSize
     var isHovered = false
 
     var body: some View {
@@ -631,6 +631,148 @@ struct GlassMoreButton: View {
             }
         }
         .transition(.glassMoreButton)
+    }
+}
+
+struct GlassSettingsButton: View {
+    let onLogout: () -> Void
+
+    @State private var isHovered = false
+    @State private var isPressed = false
+
+    var body: some View {
+        ZStack {
+            GlassCircleIcon(
+                systemImage: "gearshape",
+                size: AppLayout.floatingChromeButtonSize,
+                isHovered: isHovered
+            )
+            .scaleEffect(isPressed ? 0.94 : 1)
+            .animation(.easeOut(duration: 0.14), value: isPressed)
+
+            GlassSettingsPopUpButtonRepresentable(onLogout: onLogout, isPressed: $isPressed)
+                .frame(
+                    width: AppLayout.floatingChromeButtonSize,
+                    height: AppLayout.floatingChromeButtonSize
+                )
+        }
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.18)) {
+                isHovered = hovering
+            }
+        }
+        .transition(.glassMoreButton)
+        .accessibilityLabel("设置")
+    }
+}
+
+struct GlassSettingsPopUpButtonRepresentable: NSViewRepresentable {
+    let onLogout: () -> Void
+    @Binding var isPressed: Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onLogout: onLogout)
+    }
+
+    func makeNSView(context: Context) -> GlassSettingsPopUpButtonView {
+        let view = GlassSettingsPopUpButtonView()
+        view.configure(coordinator: context.coordinator, isPressed: $isPressed)
+        return view
+    }
+
+    func updateNSView(_ nsView: GlassSettingsPopUpButtonView, context: Context) {
+        context.coordinator.onLogout = onLogout
+        nsView.configure(coordinator: context.coordinator, isPressed: $isPressed)
+    }
+
+    final class Coordinator: NSObject {
+        var onLogout: () -> Void
+
+        init(onLogout: @escaping () -> Void) {
+            self.onLogout = onLogout
+        }
+
+        @objc func logout(_ sender: NSMenuItem) {
+            Task { @MainActor in
+                onLogout()
+            }
+        }
+    }
+}
+
+final class GlassSettingsPopUpButtonView: NSView, NSMenuDelegate {
+    private let actionMenu = NSMenu()
+    private weak var coordinator: GlassSettingsPopUpButtonRepresentable.Coordinator?
+    private var isPressedBinding: Binding<Bool>?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setup()
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    private func setup() {
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: AppLayout.floatingChromeButtonSize),
+            heightAnchor.constraint(equalToConstant: AppLayout.floatingChromeButtonSize),
+        ])
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        setPressed(true)
+        guard !actionMenu.items.isEmpty else { return }
+        BiliMenuPopUpAnchor.popUp(actionMenu, in: self)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        setPressed(false)
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    func configure(
+        coordinator: GlassSettingsPopUpButtonRepresentable.Coordinator,
+        isPressed: Binding<Bool>
+    ) {
+        self.coordinator = coordinator
+        self.isPressedBinding = isPressed
+
+        actionMenu.removeAllItems()
+        actionMenu.delegate = self
+
+        let logoutItem = NSMenuItem(
+            title: "退出登录",
+            action: #selector(GlassSettingsPopUpButtonRepresentable.Coordinator.logout(_:)),
+            keyEquivalent: ""
+        )
+        logoutItem.target = coordinator
+        logoutItem.image = NSImage(
+            systemSymbolName: "rectangle.portrait.and.arrow.right",
+            accessibilityDescription: nil
+        )
+        actionMenu.addItem(logoutItem)
+
+        toolTip = "设置"
+    }
+
+    func menu(_ menu: NSMenu, willHighlight item: NSMenuItem?) {}
+
+    func menuWillOpen(_ menu: NSMenu) {}
+
+    func menuDidClose(_ menu: NSMenu) {
+        setPressed(false)
+    }
+
+    private func setPressed(_ pressed: Bool) {
+        guard let isPressedBinding else { return }
+        if isPressedBinding.wrappedValue != pressed {
+            isPressedBinding.wrappedValue = pressed
+        }
     }
 }
 

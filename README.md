@@ -14,6 +14,7 @@
 - **视频详情** — 评论、分 P、点赞/投币/收藏等互动信息
 - **用户主页** — UP 主资料、投稿、动态；关注 / 粉丝列表
 - **账号登录** — 通过内置 Web 登录同步 B 站 Cookie
+<img width="1920" height="961" alt="image" src="https://github.com/user-attachments/assets/8664057e-da04-41e9-bed3-83c5ac2e3d04" />
 <img width="1920" height="961" alt="image" src="https://github.com/user-attachments/assets/06d0a673-7b16-4262-b7bc-cbcf909df852" />
 <img width="1920" height="961" alt="image" src="https://github.com/user-attachments/assets/4db04add-ddb2-46bd-9d40-f95d96e6d6ea" />
 <img width="1920" height="961" alt="image" src="https://github.com/user-attachments/assets/90ab735c-1ee9-4587-8131-c821cccb97bd" />

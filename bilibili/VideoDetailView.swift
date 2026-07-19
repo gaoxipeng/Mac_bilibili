@@ -1328,6 +1328,9 @@ struct VideoDetailView: View {
     @StateObject private var webSession = BilibiliWebSession()
     @State private var publishesFloatingChrome = false
     @State private var commentFullscreenPicture: CommentFullscreenPicture?
+    /// Keep inline danmaku inactive across the fullscreen→inline mpv handoff.
+    /// Reactivating it in the same frame as reparenting flashes black behind Metal.
+    @State private var allowsInlineDanmaku = true
 
     private func updateFloatingChrome() {
         if publishesFloatingChrome {
@@ -1415,8 +1418,18 @@ struct VideoDetailView: View {
         .onChange(of: commentFullscreenPicture) { _, _ in
             updateImmersiveChromeSuppression()
         }
-        .onChange(of: fullscreenPresenter.isPresented) { _, _ in
+        .onChange(of: fullscreenPresenter.isPresented) { _, presented in
             updateImmersiveChromeSuppression()
+            if presented {
+                allowsInlineDanmaku = false
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .videoFullscreenDidFinishExit)) { _ in
+            Task { @MainActor in
+                // Wait past the handoff compositing frame before waking danmaku.
+                try? await Task.sleep(for: .milliseconds(80))
+                allowsInlineDanmaku = true
+            }
         }
         .onChange(of: model.player.isPictureInPicturePreparing) { _, preparing in
             if preparing {
@@ -1716,7 +1729,7 @@ struct VideoDetailView: View {
             model: model,
             maxWidth: maxWidth,
             maxHeight: maxHeight,
-            rendersDanmaku: !fullscreenPresenter.isPresented,
+            rendersDanmaku: allowsInlineDanmaku && !fullscreenPresenter.isPresented,
             acceptsKeyboardShortcuts: !fullscreenPresenter.isPresented,
             onToggleFullscreen: toggleFullscreen
         )
@@ -2279,9 +2292,12 @@ private struct VideoPlayerSection: View {
                     player: player,
                     cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius
                 )
+                // Keep the overlay mounted whenever danmaku can show, and only
+                // toggle activity/opacity. Conditionally inserting it when
+                // leaving fullscreen remounts the ZStack and flashes black
+                // behind the shared mpv surface.
                 if model.danmakuVisible,
                    !model.danmakuItems.isEmpty,
-                   rendersDanmaku,
                    !visualState.isPictureInPictureActive {
                     DanmakuOverlayView(
                         items: model.danmakuItems,
@@ -2294,6 +2310,8 @@ private struct VideoPlayerSection: View {
                         playbackEngine: player
                     )
                     .equatable()
+                    .opacity(rendersDanmaku ? 1 : 0)
+                    .allowsHitTesting(false)
                 }
                 if visualState.isPictureInPictureActive {
                     Color.black

@@ -673,6 +673,32 @@ struct GlassSettingsButton: View {
     }
 }
 
+private enum AppVersion {
+    static var display: String {
+        let marketing = nonEmptyVersion(
+            Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        )
+        let build = nonEmptyVersion(
+            Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        )
+        switch (marketing, build) {
+        case let (version?, build?) where version != build:
+            return "\(version) (\(build))"
+        case let (version?, _):
+            return version
+        case let (_, build?):
+            return build
+        default:
+            return "—"
+        }
+    }
+
+    private static func nonEmptyVersion(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return value
+    }
+}
+
 struct GlassSettingsPopUpButtonRepresentable: NSViewRepresentable {
     let feedLayoutMode: FeedLayoutMode
     let onFeedLayoutChange: (FeedLayoutMode) -> Void
@@ -808,6 +834,24 @@ final class GlassSettingsPopUpButtonView: NSView, NSMenuDelegate {
             accessibilityDescription: nil
         )
         actionMenu.addItem(layoutRoot)
+        actionMenu.addItem(.separator())
+
+        let aboutMenu = NSMenu(title: "关于")
+        let versionItem = NSMenuItem(
+            title: "版本 \(AppVersion.display)",
+            action: nil,
+            keyEquivalent: ""
+        )
+        versionItem.isEnabled = false
+        aboutMenu.addItem(versionItem)
+
+        let aboutRoot = NSMenuItem(title: "关于", action: nil, keyEquivalent: "")
+        aboutRoot.submenu = aboutMenu
+        aboutRoot.image = NSImage(
+            systemSymbolName: "info.circle",
+            accessibilityDescription: nil
+        )
+        actionMenu.addItem(aboutRoot)
         actionMenu.addItem(.separator())
 
         let logoutItem = NSMenuItem(

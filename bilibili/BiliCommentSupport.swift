@@ -155,18 +155,21 @@ struct BiliCommentText: View {
 private struct CommentRichTextView: View {
     let segments: [BiliCommentSegment]
     let fontSize: CGFloat
-    @State private var contentHeight: CGFloat = 1
     @State private var availableWidth: CGFloat = 1
+    /// Bumped when async emote images finish so `sizeThatFits` is asked again.
+    @State private var layoutTicket = 0
 
     var body: some View {
         CommentRichTextRepresentable(
             segments: segments,
             fontSize: fontSize,
-            contentHeight: $contentHeight
+            layoutTicket: layoutTicket,
+            onLayoutInvalidated: {
+                layoutTicket &+= 1
+            }
         )
         .id(widthIdentity)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: contentHeight)
         .background {
             GeometryReader { proxy in
                 Color.clear
@@ -276,61 +279,56 @@ private final class CommentEmoteOnlyImageLoader {
 private struct CommentRichTextRepresentable: NSViewRepresentable {
     let segments: [BiliCommentSegment]
     let fontSize: CGFloat
-    @Binding var contentHeight: CGFloat
+    let layoutTicket: Int
+    let onLayoutInvalidated: () -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(contentHeight: $contentHeight)
+        Coordinator(onLayoutInvalidated: onLayoutInvalidated)
     }
 
     func makeNSView(context: Context) -> CommentRichTextContainerView {
         let view = CommentRichTextContainerView()
         context.coordinator.container = view
-        view.onLayoutInvalidated = { [weak view, weak coordinator = context.coordinator] in
-            guard let view, let coordinator else { return }
-            coordinator.syncHeight(from: view)
+        view.onLayoutInvalidated = { [weak coordinator = context.coordinator] in
+            coordinator?.notifyLayoutInvalidated()
         }
         return view
     }
 
     func updateNSView(_ nsView: CommentRichTextContainerView, context: Context) {
         context.coordinator.container = nsView
+        context.coordinator.onLayoutInvalidated = onLayoutInvalidated
+        nsView.onLayoutInvalidated = { [weak coordinator = context.coordinator] in
+            coordinator?.notifyLayoutInvalidated()
+        }
         nsView.update(
             segments: segments,
             fontSize: fontSize,
             imageLoader: context.coordinator.imageLoader
         )
-        context.coordinator.syncHeight(from: nsView)
+        // Keep the ticket read so SwiftUI re-queries size after emote loads.
+        _ = layoutTicket
     }
 
-    @available(macOS 14.0, *)
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: CommentRichTextContainerView, context: Context) -> CGSize? {
         let width = max(proposal.width ?? nsView.layoutWidth, 1)
         nsView.layoutWidth = width
         let height = nsView.height(forWidth: width)
-        context.coordinator.publishHeight(height)
         return CGSize(width: width, height: height)
     }
 
     final class Coordinator {
-        @Binding var contentHeight: CGFloat
+        var onLayoutInvalidated: () -> Void
         let imageLoader = CommentEmoteImageLoader()
         weak var container: CommentRichTextContainerView?
 
-        init(contentHeight: Binding<CGFloat>) {
-            _contentHeight = contentHeight
+        init(onLayoutInvalidated: @escaping () -> Void) {
+            self.onLayoutInvalidated = onLayoutInvalidated
         }
 
-        func syncHeight(from view: CommentRichTextContainerView) {
-            let width = max(view.bounds.width, view.layoutWidth, 1)
-            view.layoutWidth = width
-            publishHeight(view.height(forWidth: width))
-        }
-
-        func publishHeight(_ height: CGFloat) {
-            let clamped = max(ceil(height), 1)
-            guard abs(contentHeight - clamped) > 0.5 else { return }
-            DispatchQueue.main.async { [self] in
-                contentHeight = clamped
+        func notifyLayoutInvalidated() {
+            DispatchQueue.main.async { [weak self] in
+                self?.onLayoutInvalidated()
             }
         }
     }
@@ -384,10 +382,18 @@ private final class CommentRichTextContainerView: NSView {
     private weak var imageLoader: CommentEmoteImageLoader?
     var layoutWidth: CGFloat = 1
     private var renderedWidth: CGFloat = 1
+    private var lastPublishedHeight: CGFloat = 0
     var onLayoutInvalidated: (() -> Void)?
+
+    /// Top-left origin so text grows downward inside the SwiftUI-assigned frame.
+    /// The previous bottom-left origin made oversized `NSTextView` frames paint
+    /// upward into neighboring LazyVStack rows.
+    override var isFlipped: Bool { true }
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.masksToBounds = true
         setContentHuggingPriority(.defaultLow, for: .horizontal)
         setContentHuggingPriority(.required, for: .vertical)
         setContentCompressionResistancePriority(.required, for: .vertical)
@@ -420,7 +426,10 @@ private final class CommentRichTextContainerView: NSView {
             renderedWidth = width
         }
         let measuredHeight = height(forWidth: width)
-        textView.frame = CGRect(x: 0, y: 0, width: width, height: measuredHeight)
+        // Prefer the SwiftUI-assigned height when available so the text view
+        // cannot spill into adjacent comment rows during LazyVStack updates.
+        let frameHeight = bounds.height > 1 ? bounds.height : measuredHeight
+        textView.frame = CGRect(x: 0, y: 0, width: width, height: frameHeight)
         invalidateIntrinsicContentSize()
     }
 
@@ -444,9 +453,10 @@ private final class CommentRichTextContainerView: NSView {
                 actualCharacterRange: nil
             )
             let measuredHeight = height(forWidth: width)
-            textView.frame = CGRect(x: 0, y: 0, width: width, height: measuredHeight)
+            let frameHeight = bounds.height > 1 ? bounds.height : measuredHeight
+            textView.frame = CGRect(x: 0, y: 0, width: width, height: frameHeight)
             invalidateIntrinsicContentSize()
-            onLayoutInvalidated?()
+            publishHeightIfNeeded(measuredHeight)
         }
     }
 
@@ -463,6 +473,13 @@ private final class CommentRichTextContainerView: NSView {
         return max(ceil(layoutManager.usedRect(for: textContainer).height), ceil(fontSize * 1.2))
     }
 
+    private func publishHeightIfNeeded(_ height: CGFloat) {
+        let clamped = max(ceil(height), 1)
+        guard abs(lastPublishedHeight - clamped) > 0.5 else { return }
+        lastPublishedHeight = clamped
+        onLayoutInvalidated?()
+    }
+
     private func applyAttributedText(width: CGFloat) {
         let safeWidth = max(width, 1)
         layoutWidth = safeWidth
@@ -472,13 +489,13 @@ private final class CommentRichTextContainerView: NSView {
             makeAttributedString { [weak self] in
                 guard let self else { return }
                 self.applyAttributedText(width: safeWidth)
-                self.onLayoutInvalidated?()
             }
         )
         let measuredHeight = height(forWidth: safeWidth)
-        textView.frame = CGRect(x: 0, y: 0, width: safeWidth, height: measuredHeight)
+        let frameHeight = bounds.height > 1 ? bounds.height : measuredHeight
+        textView.frame = CGRect(x: 0, y: 0, width: safeWidth, height: frameHeight)
         invalidateIntrinsicContentSize()
-        onLayoutInvalidated?()
+        publishHeightIfNeeded(measuredHeight)
     }
 
     private func makeAttributedString(onImageLoaded: @escaping () -> Void) -> NSAttributedString {
@@ -663,17 +680,65 @@ private struct CommentThumbnailFrameRegistryKey: PreferenceKey {
 struct CommentPictureAttachments: View {
     let pictures: [BiliCommentPicture]
     var onSelect: (CommentFullscreenPicture) -> Void
+    @State private var containerWidth: CGFloat = 0
 
     var body: some View {
         if !pictures.isEmpty {
-            FlowLayout(spacing: 8) {
-                ForEach(pictures, id: \.self) { picture in
-                    CommentPictureThumbnail(picture: picture, onTap: onSelect)
+            let rows = pictureRows(maxWidth: containerWidth > 1 ? containerWidth : 280)
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    HStack(alignment: .top, spacing: 8) {
+                        ForEach(row, id: \.self) { picture in
+                            CommentPictureThumbnail(picture: picture, onTap: onSelect)
+                        }
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, 2)
+            .background {
+                GeometryReader { proxy in
+                    Color.clear
+                        .preference(key: CommentPictureWidthKey.self, value: proxy.size.width)
+                }
+            }
+            .onPreferenceChange(CommentPictureWidthKey.self) { width in
+                let clamped = max(width, 0)
+                guard abs(containerWidth - clamped) > 0.5 else { return }
+                containerWidth = clamped
+            }
         }
+    }
+
+    private func pictureRows(maxWidth: CGFloat) -> [[BiliCommentPicture]] {
+        var rows: [[BiliCommentPicture]] = []
+        var current: [BiliCommentPicture] = []
+        var rowWidth: CGFloat = 0
+
+        for picture in pictures {
+            let size = picture.thumbnailSize()
+            let nextWidth = current.isEmpty ? size.width : rowWidth + 8 + size.width
+            if !current.isEmpty, nextWidth > maxWidth {
+                rows.append(current)
+                current = [picture]
+                rowWidth = size.width
+            } else {
+                current.append(picture)
+                rowWidth = nextWidth
+            }
+        }
+        if !current.isEmpty {
+            rows.append(current)
+        }
+        return rows
+    }
+}
+
+private struct CommentPictureWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
@@ -1016,46 +1081,3 @@ private final class CommentImageFullscreenEscapeView: NSView {
     }
 }
 
-private struct FlowLayout: Layout {
-    var spacing: CGFloat = 8
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let maxWidth = proposal.width ?? .infinity
-        var x: CGFloat = 0
-        var y: CGFloat = 0
-        var rowHeight: CGFloat = 0
-        var maxLineWidth: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x > 0, x + size.width > maxWidth {
-                x = 0
-                y += rowHeight + spacing
-                rowHeight = 0
-            }
-            rowHeight = max(rowHeight, size.height)
-            x += size.width + spacing
-            maxLineWidth = max(maxLineWidth, min(x, maxWidth))
-        }
-
-        return CGSize(width: maxLineWidth, height: y + rowHeight)
-    }
-
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var x = bounds.minX
-        var y = bounds.minY
-        var rowHeight: CGFloat = 0
-
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x > bounds.minX, x + size.width > bounds.maxX {
-                x = bounds.minX
-                y += rowHeight + spacing
-                rowHeight = 0
-            }
-            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-            x += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
-        }
-    }
-}

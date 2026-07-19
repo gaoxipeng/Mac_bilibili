@@ -210,6 +210,7 @@ final class VideoFullscreenPresenter: ObservableObject {
         cancelSystemChromeReveal()
         removeEscapeMonitor()
         Self.restoreMainWindowAppearance()
+        NotificationCenter.default.post(name: .videoFullscreenDidFinishExit, object: nil)
     }
 
     private func setFullscreenBackdropOpaque(_ opaque: Bool, for window: NSWindow) {

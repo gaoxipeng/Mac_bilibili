@@ -522,6 +522,9 @@ private final class PictureInPictureAnchorView: NSView {
 
 extension Notification.Name {
     static let videoPictureInPictureAttemptFailed = Notification.Name("videoPictureInPictureAttemptFailed")
+    /// Posted after the fullscreen overlay is ordered out and the shared mpv
+    /// view has been reattached to the inline player.
+    static let videoFullscreenDidFinishExit = Notification.Name("videoFullscreenDidFinishExit")
 }
 
 struct PictureInPictureHostInstaller: NSViewRepresentable {

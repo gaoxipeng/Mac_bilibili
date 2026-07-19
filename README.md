@@ -17,6 +17,7 @@
 <img width="1920" height="961" alt="image" src="https://github.com/user-attachments/assets/8664057e-da04-41e9-bed3-83c5ac2e3d04" />
 <img width="1920" height="961" alt="image" src="https://github.com/user-attachments/assets/06d0a673-7b16-4262-b7bc-cbcf909df852" />
 <img width="1920" height="961" alt="image" src="https://github.com/user-attachments/assets/4db04add-ddb2-46bd-9d40-f95d96e6d6ea" />
+<img width="1920" height="1080" alt="image" src="https://github.com/user-attachments/assets/12347b7e-d84a-408e-bd91-2c08f3beff60" />
 <img width="1920" height="961" alt="image" src="https://github.com/user-attachments/assets/90ab735c-1ee9-4587-8131-c821cccb97bd" />
 
 ## 系统要求

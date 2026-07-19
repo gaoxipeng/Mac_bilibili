@@ -196,6 +196,7 @@ final class VideoPlaybackEngine: ObservableObject {
         }
         guard pictureInPicturePreparationTask == nil else { return }
         isPictureInPicturePreparing = true
+        PictureInPictureHost.shared.beginPictureInPictureAttempt()
         pictureInPicturePreparationTask = Task { @MainActor [weak self] in
             guard let self else { return }
             defer {
@@ -228,12 +229,14 @@ final class VideoPlaybackEngine: ObservableObject {
                 guard !Task.isCancelled else {
                     pipPlayer.pause()
                     player = nil
+                    PictureInPictureHost.shared.endPictureInPictureAttempt()
                     return
                 }
                 pictureInPictureRequestID += 1
             } catch {
                 player = nil
                 setPictureInPictureActive(false)
+                PictureInPictureHost.shared.endPictureInPictureAttempt()
             }
         }
     }
@@ -271,7 +274,11 @@ final class VideoPlaybackEngine: ObservableObject {
 
     func pausePlayback() {
         renderView.setPaused(true)
-        player?.pause()
+        // Keep the temporary AVPlayer running while PiP is preparing/active;
+        // pausing it here is a common reason startPictureInPicture fails.
+        if !isPictureInPicturePreparing, !isPictureInPictureActive {
+            player?.pause()
+        }
         isPlaying = false
         updateNowPlayingInfo()
     }

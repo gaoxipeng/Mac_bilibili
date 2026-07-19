@@ -258,6 +258,8 @@ final class MPVRenderView: NSView {
     private var geometryObservers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
     private var lastDrawablePixelSize = CGSize.zero
+    private var seamlessResizeGeneration = 0
+    private var isDeferringDrawableResize = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -365,6 +367,48 @@ final class MPVRenderView: NSView {
     func setSpeed(_ speed: Float) { setDouble("speed", Double(speed)) }
     func seek(to seconds: Double) { command("seek", [String(max(0, seconds)), "absolute+exact"]) }
 
+    /// Re-present the current frame after the Metal view is reparented/resized.
+    /// Needed especially while paused — mpv won't push a new frame on its own,
+    /// so a handoff from fullscreen back to the inline card can leave a black layer.
+    func refreshPresentation() {
+        layoutSubtreeIfNeeded()
+        updateMetalLayerGeometry()
+        metalRenderer?.requestDraw()
+
+        if getFlag("pause") {
+            let seconds = getDouble("time-pos")
+            if seconds.isFinite, seconds >= 0 {
+                // Force libmpv to rebuild a video frame for the new drawable size.
+                seek(to: seconds)
+            }
+        }
+
+        // Seek + Metal present are both async; kick a few follow-up redraws.
+        for delay in [0.02, 0.06, 0.12] as [TimeInterval] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                self.updateMetalLayerGeometry()
+                self.metalRenderer?.requestDraw()
+            }
+        }
+    }
+
+    /// Keep the last presented CAMetalLayer drawable alive while AppKit moves
+    /// this view between the fullscreen and inline windows. Resizing the
+    /// drawable immediately discards that frame before mpv can present the
+    /// first frame at the new size, which appears as a brief black flash.
+    func beginSeamlessReparent() {
+        seamlessResizeGeneration &+= 1
+        let generation = seamlessResizeGeneration
+        isDeferringDrawableResize = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { [weak self] in
+            guard let self, self.seamlessResizeGeneration == generation else { return }
+            self.isDeferringDrawableResize = false
+            self.updateMetalLayerGeometry()
+            self.metalRenderer?.requestDraw()
+        }
+    }
+
     func shutdown() {
         let retainedContext = callbackContext
         callbackContext = nil
@@ -399,7 +443,11 @@ final class MPVRenderView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        updateMetalLayerGeometry()
+        if window != nil {
+            refreshPresentation()
+        } else {
+            updateMetalLayerGeometry()
+        }
         guard window != nil, !mpvCoreReady else { return }
         do {
             try ensureMPVCore()
@@ -497,7 +545,7 @@ final class MPVRenderView: NSView {
         metalLayer.frame = bounds
         metalLayer.contentsScale = scale
         let pixelSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
-        if pixelSize.width > 1, pixelSize.height > 1 {
+        if pixelSize.width > 1, pixelSize.height > 1, !isDeferringDrawableResize {
             metalLayer.drawableSize = pixelSize
             if pixelSize != lastDrawablePixelSize {
                 lastDrawablePixelSize = pixelSize
@@ -645,6 +693,20 @@ final class MPVRenderView: NSView {
         guard let mpv else { return }
         var raw = value
         mpv_set_property(mpv, name, MPV_FORMAT_DOUBLE, &raw)
+    }
+
+    private func getDouble(_ name: String) -> Double {
+        guard let mpv else { return .nan }
+        var value: Double = 0
+        guard mpv_get_property(mpv, name, MPV_FORMAT_DOUBLE, &value) >= 0 else { return .nan }
+        return value
+    }
+
+    private func getFlag(_ name: String) -> Bool {
+        guard let mpv else { return false }
+        var value: Int32 = 0
+        guard mpv_get_property(mpv, name, MPV_FORMAT_FLAG, &value) >= 0 else { return false }
+        return value != 0
     }
 
     private func getInt64(_ name: String) -> Int64 {

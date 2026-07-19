@@ -3,10 +3,20 @@ import SwiftUI
 
 enum VideoCardLayout {
     static let minWidth: CGFloat = 280
+    /// 信息流大卡片（原生 / 叠层）的最小宽度。
+    static let largeCardMinWidth: CGFloat = 350
     static let gridSpacing: CGFloat = 22
+    /// 原生卡片行与行之间的垂直间距（头像到底下一行封面）。
+    static let nativeCardRowSpacing: CGFloat = 12
     static let maxColumnCount = 5
     static let coverAspect: CGFloat = 16.0 / 9.0
     static let cornerRadius: CGFloat = 10
+    static let overlayCardSpacing: CGFloat = 22
+    /// 叠层卡片行与行之间的垂直间距（大于列间距）。
+    static let overlayCardRowSpacing: CGFloat = 28
+    static let overlayCardCornerRadius: CGFloat = 14
+    static let overlayCardOverlayInset: CGFloat = 10
+    static let overlayCardAvatarSize: CGFloat = 27
     static let coverHoverScale: CGFloat = 1.04
     static let coverHoverEnterAnimation = Animation.easeOut(duration: 0.09)
     static let coverHoverExitAnimation = Animation.easeOut(duration: 0.07)
@@ -16,23 +26,26 @@ enum VideoCardLayout {
     static let coverOverlayIconSize: CGFloat = 14
     static let coverOverlayFontSize: CGFloat = 12
     static let coverOverlayItemSpacing: CGFloat = 8
+    /// 原生卡片封面上的播放 / 弹幕 / 点赞 / 时长字号（比默认大一档）。
+    static let nativeCoverOverlayIconSize: CGFloat = 16
+    static let nativeCoverOverlayFontSize: CGFloat = 14
     static let feedMetadataHorizontalPadding: CGFloat = 8
     static let metadataPadding = EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
     static let feedMetadataPadding = EdgeInsets(
         top: 10,
         leading: feedMetadataHorizontalPadding,
-        bottom: 10,
+        bottom: 4,
         trailing: feedMetadataHorizontalPadding
     )
 
-    static func columnCount(for width: CGFloat) -> Int {
+    static func columnCount(for width: CGFloat, minCardWidth: CGFloat = minWidth) -> Int {
         guard width > 0 else { return 1 }
-        let natural = max(1, Int((width + gridSpacing) / (minWidth + gridSpacing)))
+        let natural = max(1, Int((width + gridSpacing) / (minCardWidth + gridSpacing)))
         return min(maxColumnCount, natural)
     }
 
-    static func columnWidth(for totalWidth: CGFloat, columnCount: Int) -> CGFloat {
-        let spacingTotal = CGFloat(max(columnCount - 1, 0)) * gridSpacing
+    static func columnWidth(for totalWidth: CGFloat, columnCount: Int, spacing: CGFloat = gridSpacing) -> CGFloat {
+        let spacingTotal = CGFloat(max(columnCount - 1, 0)) * spacing
         return max((totalWidth - spacingTotal) / CGFloat(columnCount), 1)
     }
 
@@ -47,7 +60,7 @@ enum VideoCardLayout {
         static func feed(largeTypography: Bool, showsAuthor: Bool = true, showsPublishTime: Bool = false) -> RowLayoutMetrics {
             let bottomRowHeight: CGFloat = {
                 if showsAuthor || showsPublishTime {
-                    return largeTypography ? 30 : 26
+                    return largeTypography ? 34 : 30
                 }
                 return 0
             }()
@@ -77,10 +90,10 @@ enum VideoCardLayout {
 
     static func titleNSFont(for metrics: RowLayoutMetrics) -> NSFont {
         if metrics.usesLargeTitleFont {
-            let size = NSFont.preferredFont(forTextStyle: .title2).pointSize
+            let size = NSFont.preferredFont(forTextStyle: .title1).pointSize
             return NSFont.systemFont(ofSize: size, weight: .semibold)
         }
-        let size = NSFont.preferredFont(forTextStyle: .title3).pointSize
+        let size = NSFont.preferredFont(forTextStyle: .title2).pointSize
         return NSFont.systemFont(ofSize: size, weight: .medium)
     }
 
@@ -182,6 +195,7 @@ struct FeedVideoCoverHover: View {
     var maxDecodePixelLength: Int?
     var cornerRadius: CGFloat = 0
     var placeholderSystemImage = "play.rectangle"
+    var onHoverChange: ((Bool) -> Void)? = nil
 
     @StateObject private var imageLoader = RemoteCoverImageLoader()
 
@@ -194,7 +208,8 @@ struct FeedVideoCoverHover: View {
                     image: imageLoader.image ?? cachedImage,
                     failed: imageLoader.failed,
                     cornerRadius: cornerRadius,
-                    placeholderSystemImage: placeholderSystemImage
+                    placeholderSystemImage: placeholderSystemImage,
+                    onHoverChange: onHoverChange
                 )
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -213,6 +228,7 @@ struct FeedVideoCoverHover: View {
             }
             .onDisappear {
                 imageLoader.cancel()
+                onHoverChange?(false)
             }
     }
 
@@ -335,12 +351,12 @@ private struct FeedCardAuthorLabel: View {
 
     private var nameFontSize: CGFloat {
         usesLargeFont
-            ? NSFont.preferredFont(forTextStyle: .title3).pointSize
-            : NSFont.preferredFont(forTextStyle: .body).pointSize
+            ? NSFont.preferredFont(forTextStyle: .title2).pointSize
+            : NSFont.preferredFont(forTextStyle: .title3).pointSize
     }
 
     private var resolvedTrailingFontSize: CGFloat {
-        trailingFontSize ?? NSFont.preferredFont(forTextStyle: .subheadline).pointSize
+        trailingFontSize ?? NSFont.preferredFont(forTextStyle: .body).pointSize
     }
 
     private var avatarPixelLength: Int {
@@ -472,6 +488,7 @@ struct VideoFeedGrid<Trailing: View>: View {
     var maxColumnCount: Int? = nil
     var onApproachingEnd: (() -> Void)? = nil
     @ViewBuilder var trailing: () -> Trailing
+    @EnvironmentObject private var appModel: AppModel
     @Environment(\.feedViewportWidth) private var feedViewportWidth
     @Environment(\.feedSymmetricHorizontalInsets) private var feedSymmetricHorizontalInsets
     @Environment(\.feedUsesDirectViewportWidth) private var feedUsesDirectViewportWidth
@@ -500,7 +517,67 @@ struct VideoFeedGrid<Trailing: View>: View {
 
     var body: some View {
         let layoutWidth = resolvedLayoutWidth
-        let baseColumnCount = VideoCardLayout.columnCount(for: layoutWidth)
+        if appModel.feedLayoutMode == .overlay {
+            overlayCardFeed(layoutWidth: layoutWidth)
+        } else {
+            nativeCardFeed(layoutWidth: layoutWidth)
+        }
+    }
+
+    @ViewBuilder
+    private func overlayCardFeed(layoutWidth: CGFloat) -> some View {
+        let columnSpacing = VideoCardLayout.overlayCardSpacing
+        let rowSpacing = VideoCardLayout.overlayCardRowSpacing
+        let baseColumnCount = VideoCardLayout.columnCount(
+            for: layoutWidth,
+            minCardWidth: VideoCardLayout.largeCardMinWidth
+        )
+        let columnCount = maxColumnCount.map { min($0, baseColumnCount) } ?? baseColumnCount
+        let columnWidth = VideoCardLayout.columnWidth(
+            for: layoutWidth,
+            columnCount: columnCount,
+            spacing: columnSpacing
+        )
+        let cardHeight = VideoCardLayout.coverHeight(columnWidth: columnWidth)
+        let rowStarts = VideoCardLayout.rowStartIndices(itemCount: videos.count, columnCount: columnCount)
+        let prefetchRowStart = rowStarts.count >= 2 ? rowStarts[rowStarts.count - 2] : rowStarts.first
+
+        LazyVStack(alignment: .leading, spacing: rowSpacing) {
+            ForEach(rowStarts, id: \.self) { rowStart in
+                let rowEnd = min(rowStart + columnCount, videos.count)
+
+                HStack(alignment: .top, spacing: columnSpacing) {
+                    ForEach(videos[rowStart..<rowEnd]) { video in
+                        VideoFeedOverlayCard(
+                            video: video,
+                            cardWidth: columnWidth,
+                            showsAuthor: showsAuthor,
+                            showsLikeCount: showsLikeCount,
+                            resolveWatchProgress: resolveWatchProgress
+                        )
+                        .equatable()
+                        .frame(width: columnWidth, height: cardHeight, alignment: .topLeading)
+                    }
+                }
+                .onScrollVisibilityChange(threshold: 0.01) { visible in
+                    if visible, rowStart == prefetchRowStart {
+                        onApproachingEnd?()
+                    }
+                }
+            }
+
+            trailing()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.easeOut(duration: 0.2), value: appModel.feedLayoutMode)
+    }
+
+    @ViewBuilder
+    private func nativeCardFeed(layoutWidth: CGFloat) -> some View {
+        let baseColumnCount = VideoCardLayout.columnCount(
+            for: layoutWidth,
+            minCardWidth: VideoCardLayout.largeCardMinWidth
+        )
         let columnCount = maxColumnCount.map { min($0, baseColumnCount) } ?? baseColumnCount
         let columnWidth = VideoCardLayout.columnWidth(for: layoutWidth, columnCount: columnCount)
         let showsPublishTime = !showsAuthor
@@ -525,7 +602,7 @@ struct VideoFeedGrid<Trailing: View>: View {
             showsPublishTime: showsPublishTime
         )
 
-        LazyVStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
+        LazyVStack(alignment: .leading, spacing: VideoCardLayout.nativeCardRowSpacing) {
             ForEach(rowStarts, id: \.self) { rowStart in
                 let rowEnd = min(rowStart + columnCount, videos.count)
 
@@ -556,6 +633,7 @@ struct VideoFeedGrid<Trailing: View>: View {
             trailing()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.easeOut(duration: 0.2), value: appModel.feedLayoutMode)
     }
 
     private var resolvedLayoutWidth: CGFloat {
@@ -993,17 +1071,30 @@ private struct HistorySectionView: View {
 private struct HistoryItemsGrid: View {
     let items: [BiliHistoryItem]
     let onDelete: (BiliHistoryItem) -> Void
+    @EnvironmentObject private var appModel: AppModel
     @Environment(\.feedViewportWidth) private var feedViewportWidth
 
     var body: some View {
         let layoutWidth = resolvedLayoutWidth
-        let columnCount = VideoCardLayout.columnCount(for: layoutWidth)
+        if appModel.feedLayoutMode == .overlay {
+            overlayFeed(layoutWidth: layoutWidth)
+        } else {
+            nativeFeed(layoutWidth: layoutWidth)
+        }
+    }
+
+    @ViewBuilder
+    private func nativeFeed(layoutWidth: CGFloat) -> some View {
+        let columnCount = VideoCardLayout.columnCount(
+            for: layoutWidth,
+            minCardWidth: VideoCardLayout.largeCardMinWidth
+        )
         let columnWidth = VideoCardLayout.columnWidth(for: layoutWidth, columnCount: columnCount)
         let rowStarts = VideoCardLayout.rowStartIndices(itemCount: items.count, columnCount: columnCount)
         let titleAreaHeight = HistoryCardLayout.titleAreaHeight(columnWidth: columnWidth)
         let cardHeight = HistoryCardLayout.cardHeight(columnWidth: columnWidth, titleAreaHeight: titleAreaHeight)
 
-        VStack(alignment: .leading, spacing: VideoCardLayout.gridSpacing) {
+        VStack(alignment: .leading, spacing: VideoCardLayout.nativeCardRowSpacing) {
             ForEach(rowStarts, id: \.self) { rowStart in
                 let rowEnd = min(rowStart + columnCount, items.count)
 
@@ -1023,6 +1114,46 @@ private struct HistoryItemsGrid: View {
             }
         }
         .animation(AppLayout.listRemovalAnimation, value: items.map(\.listIdentity))
+        .animation(.easeOut(duration: 0.2), value: appModel.feedLayoutMode)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func overlayFeed(layoutWidth: CGFloat) -> some View {
+        let columnSpacing = VideoCardLayout.overlayCardSpacing
+        let rowSpacing = VideoCardLayout.overlayCardRowSpacing
+        let columnCount = VideoCardLayout.columnCount(
+            for: layoutWidth,
+            minCardWidth: VideoCardLayout.largeCardMinWidth
+        )
+        let columnWidth = VideoCardLayout.columnWidth(
+            for: layoutWidth,
+            columnCount: columnCount,
+            spacing: columnSpacing
+        )
+        let cardHeight = VideoCardLayout.coverHeight(columnWidth: columnWidth)
+        let rowStarts = VideoCardLayout.rowStartIndices(itemCount: items.count, columnCount: columnCount)
+
+        VStack(alignment: .leading, spacing: rowSpacing) {
+            ForEach(rowStarts, id: \.self) { rowStart in
+                let rowEnd = min(rowStart + columnCount, items.count)
+
+                HStack(alignment: .top, spacing: columnSpacing) {
+                    ForEach(items[rowStart..<rowEnd], id: \.listIdentity) { item in
+                        HistoryOverlayVideoCard(
+                            item: item,
+                            cardWidth: columnWidth,
+                            onDelete: { onDelete(item) }
+                        )
+                        .equatable()
+                        .frame(width: columnWidth, height: cardHeight, alignment: .topLeading)
+                        .transition(HistoryCardTransition.removal)
+                    }
+                }
+            }
+        }
+        .animation(AppLayout.listRemovalAnimation, value: items.map(\.listIdentity))
+        .animation(.easeOut(duration: 0.2), value: appModel.feedLayoutMode)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -1032,7 +1163,231 @@ private struct HistoryItemsGrid: View {
         if historyWidth > 0 {
             return historyWidth
         }
-        return VideoCardLayout.minWidth * 2 + VideoCardLayout.gridSpacing
+        return VideoCardLayout.largeCardMinWidth * 2 + VideoCardLayout.gridSpacing
+    }
+}
+
+private struct HistoryOverlayVideoCard: View, Equatable {
+    let item: BiliHistoryItem
+    let cardWidth: CGFloat
+    let onDelete: () -> Void
+    @EnvironmentObject private var appModel: AppModel
+    @Environment(\.displayScale) private var displayScale
+    @State private var isDeleteHovered = false
+    @State private var isCoverHovered = false
+
+    private static let primaryMetaColor = Color.white
+    private static let secondaryMetaOpacity: Double = 0.72
+    private static let secondaryMetaColor = Color.white.opacity(secondaryMetaOpacity)
+
+    static func == (lhs: HistoryOverlayVideoCard, rhs: HistoryOverlayVideoCard) -> Bool {
+        lhs.item == rhs.item && lhs.cardWidth == rhs.cardWidth
+    }
+
+    private var video: BiliVideo { item.video }
+
+    private var coverHeight: CGFloat {
+        VideoCardLayout.coverHeight(columnWidth: cardWidth)
+    }
+
+    private var cornerRadius: CGFloat {
+        VideoCardLayout.overlayCardCornerRadius
+    }
+
+    private var coverDecodePixelLength: Int {
+        let displayMax = max(cardWidth, coverHeight)
+        return Int((displayMax * max(1, displayScale) * 1.05).rounded(.up))
+    }
+
+    private var durationBadgeText: String {
+        historyDurationBadgeText(
+            progressSeconds: item.progressSeconds,
+            durationSeconds: item.durationSeconds > 0 ? item.durationSeconds : video.duration
+        )
+    }
+
+    private var watchProgress: Double {
+        let duration = max(item.durationSeconds, video.duration)
+        guard duration > 0, item.progressSeconds > 0 else { return 0 }
+        return min(1, Double(item.progressSeconds) / Double(duration))
+    }
+
+    private var authorDisplayName: String {
+        if !video.authorName.isEmpty {
+            return video.authorName
+        }
+        if !item.badge.isEmpty {
+            return item.badge
+        }
+        if item.business == .pgc {
+            return "番剧"
+        }
+        return video.authorName
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Button {
+                appModel.openHistoryVideo(item)
+            } label: {
+                ZStack {
+                    FeedVideoCoverHover(
+                        url: video.coverURL,
+                        maxDecodePixelLength: coverDecodePixelLength,
+                        cornerRadius: cornerRadius,
+                        onHoverChange: { isCoverHovered = $0 }
+                    )
+
+                    // Scale with the cover so the bottom scrim does not lag behind.
+                    ZStack {
+                        if watchProgress > 0.001, watchProgress < 0.999 {
+                            GeometryReader { geometry in
+                                VStack(spacing: 0) {
+                                    Spacer()
+                                    ZStack(alignment: .leading) {
+                                        Rectangle()
+                                            .fill(Color.black.opacity(0.35))
+                                        Rectangle()
+                                            .fill(Color(red: 0, green: 174 / 255, blue: 236 / 255))
+                                            .frame(width: geometry.size.width * watchProgress)
+                                    }
+                                    .frame(height: 3)
+                                }
+                            }
+                            .allowsHitTesting(false)
+                        }
+
+                        bottomMetaScrim
+
+                        VStack(spacing: 0) {
+                            HStack(alignment: .top, spacing: 8) {
+                                Spacer(minLength: 0)
+                                if !durationBadgeText.isEmpty {
+                                    Text(durationBadgeText)
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(.white)
+                                        .shadow(color: .black.opacity(0.55), radius: 4, y: 1)
+                                        .padding(.horizontal, 4)
+                                        .padding(.vertical, 2)
+                                }
+                                if !item.kid.isEmpty {
+                                    Color.clear
+                                        .frame(width: 28, height: 28)
+                                }
+                            }
+
+                            Spacer(minLength: 0)
+
+                            metaContent
+                        }
+                        .padding(VideoCardLayout.overlayCardOverlayInset)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                    .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
+                    .animation(
+                        isCoverHovered
+                            ? VideoCardLayout.coverHoverEnterAnimation
+                            : VideoCardLayout.coverHoverExitAnimation,
+                        value: isCoverHovered
+                    )
+                }
+                .frame(width: cardWidth, height: coverHeight)
+                .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            }
+            .buttonStyle(.plain)
+
+            if !item.kid.isEmpty {
+                deleteButton
+                    .padding(VideoCardLayout.overlayCardOverlayInset)
+            }
+        }
+        .frame(width: cardWidth, height: coverHeight, alignment: .topLeading)
+    }
+
+    private var bottomMetaScrim: some View {
+        LinearGradient(
+            colors: [
+                Color.black.opacity(0),
+                Color.black.opacity(0.28),
+                Color.black.opacity(0.58),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .frame(height: coverHeight * 0.42)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .allowsHitTesting(false)
+    }
+
+    private var metaContent: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(video.title.ifEmpty("视频"))
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Self.primaryMetaColor)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .shadow(color: .black.opacity(0.55), radius: 4, y: 1)
+
+            HStack(alignment: .center, spacing: 8) {
+                authorRow
+                if let viewedAt = item.viewedAt {
+                    Text(historyViewTimeText(from: viewedAt))
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Self.secondaryMetaColor)
+                        .lineLimit(1)
+                        .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var authorRow: some View {
+        HStack(spacing: 6) {
+            RemoteAvatar(
+                url: video.authorFaceURL,
+                size: VideoCardLayout.overlayCardAvatarSize,
+                foreground: Self.secondaryMetaColor,
+                background: Color.white.opacity(0.16),
+                border: Color.white.opacity(0.18)
+            )
+
+            Text(authorDisplayName.ifEmpty("UP 主"))
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Self.secondaryMetaColor)
+                .lineLimit(1)
+                .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay {
+            if video.authorMid > 0 {
+                NavigationLink(value: UserProfileRequest(mid: video.authorMid)) {
+                    Color.clear
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var deleteButton: some View {
+        Button(action: onDelete) {
+            Image(systemName: "trash")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(isDeleteHovered ? Color.red : Color.white.opacity(0.9))
+                .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("删除历史")
+        .onHover { hovering in
+            withAnimation(FeedCardHoverStyle.colorAnimation) {
+                isDeleteHovered = hovering
+            }
+        }
     }
 }
 
@@ -1071,11 +1426,11 @@ private struct HistoryVideoCard: View, Equatable {
     }
 
     private var avatarSize: CGFloat {
-        30
+        34
     }
 
     private var statsFontSize: CGFloat {
-        NSFont.preferredFont(forTextStyle: .body).pointSize
+        NSFont.preferredFont(forTextStyle: .title3).pointSize
     }
 
     private var authorRowContentWidth: CGFloat {
@@ -1156,7 +1511,11 @@ private struct HistoryVideoCard: View, Equatable {
                     )
                 }
 
-                VideoCoverFeedMetaOverlay(durationText: durationBadgeText)
+                VideoCoverFeedMetaOverlay(
+                    durationText: durationBadgeText,
+                    iconSize: VideoCardLayout.nativeCoverOverlayIconSize,
+                    fontSize: VideoCardLayout.nativeCoverOverlayFontSize
+                )
                     .clipShape(
                         RoundedRectangle(
                             cornerRadius: VideoCardLayout.cornerRadius,
@@ -1330,6 +1689,180 @@ struct StateBanner: View {
     }
 }
 
+/// 原生信息流大卡片：16:9 封面，标题 / 作者 / 播放·弹幕·点赞叠加在封面上。
+struct VideoFeedOverlayCard: View, Equatable {
+    let video: BiliVideo
+    let cardWidth: CGFloat
+    var showsAuthor = true
+    var showsLikeCount = true
+    var resolveWatchProgress = true
+    @Environment(\.displayScale) private var displayScale
+    @State private var isCoverHovered = false
+
+    static func == (lhs: VideoFeedOverlayCard, rhs: VideoFeedOverlayCard) -> Bool {
+        lhs.video == rhs.video
+            && lhs.cardWidth == rhs.cardWidth
+            && lhs.showsAuthor == rhs.showsAuthor
+            && lhs.showsLikeCount == rhs.showsLikeCount
+            && lhs.resolveWatchProgress == rhs.resolveWatchProgress
+    }
+
+    private var coverHeight: CGFloat {
+        VideoCardLayout.coverHeight(columnWidth: cardWidth)
+    }
+
+    private var cornerRadius: CGFloat {
+        VideoCardLayout.overlayCardCornerRadius
+    }
+
+    private var coverDecodePixelLength: Int {
+        let displayMax = max(cardWidth, coverHeight)
+        return Int((displayMax * max(1, displayScale) * 1.05).rounded(.up))
+    }
+
+    var body: some View {
+        VideoPlaybackLink(video: video, resolveWatchProgress: resolveWatchProgress) {
+            ZStack {
+                FeedVideoCoverHover(
+                    url: video.coverURL,
+                    maxDecodePixelLength: coverDecodePixelLength,
+                    cornerRadius: cornerRadius,
+                    onHoverChange: { isCoverHovered = $0 }
+                )
+
+                // Scale with the cover so the bottom scrim does not lag behind.
+                ZStack {
+                    bottomMetaScrim
+
+                    VStack(spacing: 0) {
+                        HStack {
+                            Spacer(minLength: 0)
+                            if video.duration > 0 {
+                                durationCapsule
+                            }
+                        }
+
+                        Spacer(minLength: 0)
+
+                        metaCapsule
+                    }
+                    .padding(VideoCardLayout.overlayCardOverlayInset)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
+                .animation(
+                    isCoverHovered
+                        ? VideoCardLayout.coverHoverEnterAnimation
+                        : VideoCardLayout.coverHoverExitAnimation,
+                    value: isCoverHovered
+                )
+            }
+            .frame(width: cardWidth, height: coverHeight)
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        }
+        .frame(width: cardWidth, height: coverHeight, alignment: .topLeading)
+    }
+
+    /// 底部向上渐变阴影，提升标题 / 头像 / 数据区可读性。
+    private var bottomMetaScrim: some View {
+        LinearGradient(
+            colors: [
+                Color.black.opacity(0),
+                Color.black.opacity(0.28),
+                Color.black.opacity(0.58),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .frame(height: coverHeight * 0.42)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .allowsHitTesting(false)
+    }
+
+    private var durationCapsule: some View {
+        Text(video.durationText)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(.white)
+            .shadow(color: .black.opacity(0.55), radius: 4, y: 1)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+    }
+
+    private var metaCapsule: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(video.title.ifEmpty("视频"))
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Self.primaryMetaColor)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+                .shadow(color: .black.opacity(0.55), radius: 4, y: 1)
+
+            HStack(alignment: .center, spacing: 8) {
+                if showsAuthor {
+                    authorRow
+                } else if let publishTime = video.publishTime {
+                    Text(BiliCommentFormats.formatTime(publishTime))
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Self.secondaryMetaColor)
+                        .lineLimit(1)
+                        .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
+                    Spacer(minLength: 0)
+                } else {
+                    Spacer(minLength: 0)
+                }
+
+                FeedCardStatsRowRepresentable(
+                    playCount: video.viewCount.compactCount,
+                    danmakuCount: video.danmakuCount.compactCount,
+                    likeCount: showsLikeCount ? video.likeCount.compactCount : nil,
+                    iconSize: VideoCardLayout.coverOverlayIconSize,
+                    likeIconSize: VideoCardLayout.coverOverlayIconSize,
+                    fontSize: VideoCardLayout.coverOverlayFontSize,
+                    itemSpacing: VideoCardLayout.coverOverlayItemSpacing,
+                    displayStyle: .coverOverlay
+                )
+                .opacity(Self.secondaryMetaOpacity)
+                .fixedSize(horizontal: true, vertical: true)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var authorRow: some View {
+        HStack(spacing: 6) {
+            RemoteAvatar(
+                url: video.authorFaceURL,
+                size: VideoCardLayout.overlayCardAvatarSize,
+                foreground: Self.secondaryMetaColor,
+                background: Color.white.opacity(0.16),
+                border: Color.white.opacity(0.18)
+            )
+
+            Text(video.authorName.ifEmpty("UP 主"))
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(Self.secondaryMetaColor)
+                .lineLimit(1)
+                .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay {
+            if video.authorMid > 0 {
+                NavigationLink(value: UserProfileRequest(mid: video.authorMid)) {
+                    Color.clear
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private static let primaryMetaColor = Color.white
+    private static let secondaryMetaOpacity: Double = 0.72
+    private static let secondaryMetaColor = Color.white.opacity(secondaryMetaOpacity)
+}
+
 struct VideoCard: View, Equatable {
     let video: BiliVideo
     var largeTypography = false
@@ -1382,7 +1915,7 @@ struct VideoCard: View, Equatable {
     }
 
     private var avatarSize: CGFloat {
-        largeTypography ? 30 : 26
+        largeTypography ? 34 : 30
     }
 
     private var cornerRadius: CGFloat {
@@ -1421,7 +1954,9 @@ struct VideoCard: View, Equatable {
                     playCount: video.viewCount.compactCount,
                     danmakuCount: video.danmakuCount.compactCount,
                     likeCount: showsLikeCount ? video.likeCount.compactCount : nil,
-                    durationText: video.duration > 0 ? video.durationText : ""
+                    durationText: video.duration > 0 ? video.durationText : "",
+                    iconSize: VideoCardLayout.nativeCoverOverlayIconSize,
+                    fontSize: VideoCardLayout.nativeCoverOverlayFontSize
                 )
                 .clipShape(
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
@@ -1506,8 +2041,8 @@ struct VideoCard: View, Equatable {
 
     private var statsFontSize: CGFloat {
         largeTypography
-            ? NSFont.preferredFont(forTextStyle: .body).pointSize
-            : NSFont.preferredFont(forTextStyle: .subheadline).pointSize
+            ? NSFont.preferredFont(forTextStyle: .title3).pointSize
+            : NSFont.preferredFont(forTextStyle: .body).pointSize
     }
 }
 

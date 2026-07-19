@@ -1418,6 +1418,19 @@ struct VideoDetailView: View {
         .onChange(of: fullscreenPresenter.isPresented) { _, _ in
             updateImmersiveChromeSuppression()
         }
+        .onChange(of: model.player.isPictureInPicturePreparing) { _, preparing in
+            if preparing {
+                fullscreenPresenter.prepareForPictureInPicture()
+            }
+        }
+        .onChange(of: model.player.isPictureInPictureActive) { _, isActive in
+            if isActive {
+                fullscreenPresenter.dismissForPictureInPicture()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .videoPictureInPictureAttemptFailed)) { _ in
+            fullscreenPresenter.restoreAfterPictureInPictureFailure()
+        }
         .onChange(of: model.displayVideo.title) { _, _ in
             updateFloatingChrome()
             model.player.configureNowPlaying(

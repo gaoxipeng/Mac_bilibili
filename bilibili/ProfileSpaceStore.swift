@@ -91,7 +91,7 @@ struct ProfileSpaceStore: Sendable {
         directoryURL.appendingPathComponent("profile_\(mid).json")
     }
 
-    private static func encodeProfile(_ profile: BiliUserProfile) -> [String: Any] {
+    private nonisolated static func encodeProfile(_ profile: BiliUserProfile) -> [String: Any] {
         var payload: [String: Any] = [
             "mid": NSNumber(value: profile.mid),
             "name": profile.name,
@@ -113,7 +113,7 @@ struct ProfileSpaceStore: Sendable {
         return payload
     }
 
-    private static func decodeProfile(_ item: [String: Any]) -> BiliUserProfile? {
+    private nonisolated static func decodeProfile(_ item: [String: Any]) -> BiliUserProfile? {
         guard let mid = int64(item["mid"]), mid > 0 else { return nil }
         let faceRaw = item["face_url"] as? String ?? ""
         return BiliUserProfile(
@@ -132,7 +132,7 @@ struct ProfileSpaceStore: Sendable {
         )
     }
 
-    private static func encodeVideo(_ video: BiliVideo) -> [String: Any] {
+    private nonisolated static func encodeVideo(_ video: BiliVideo) -> [String: Any] {
         var payload: [String: Any] = [
             "bvid": video.bvid,
             "aid": NSNumber(value: video.aid),
@@ -161,7 +161,7 @@ struct ProfileSpaceStore: Sendable {
         return payload
     }
 
-    private static func decodeVideo(_ item: [String: Any]) -> BiliVideo? {
+    private nonisolated static func decodeVideo(_ item: [String: Any]) -> BiliVideo? {
         let bvid = item["bvid"] as? String ?? ""
         let id = (item["id"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? bvid
         guard !id.isEmpty || !bvid.isEmpty else { return nil }
@@ -189,7 +189,7 @@ struct ProfileSpaceStore: Sendable {
         )
     }
 
-    private static func encodeDynamic(_ item: BiliDynamicItem) -> [String: Any] {
+    private nonisolated static func encodeDynamic(_ item: BiliDynamicItem) -> [String: Any] {
         var payload: [String: Any] = [
             "id": item.id,
             "text": item.text,
@@ -224,7 +224,7 @@ struct ProfileSpaceStore: Sendable {
         return payload
     }
 
-    private static func decodeDynamic(_ item: [String: Any]) -> BiliDynamicItem? {
+    private nonisolated static func decodeDynamic(_ item: [String: Any]) -> BiliDynamicItem? {
         let id = item["id"] as? String ?? ""
         guard !id.isEmpty else { return nil }
 
@@ -255,7 +255,7 @@ struct ProfileSpaceStore: Sendable {
         )
     }
 
-    private static func encodeLink(_ link: BiliDynamicLink) -> [String: Any] {
+    private nonisolated static func encodeLink(_ link: BiliDynamicLink) -> [String: Any] {
         var payload: [String: Any] = [
             "title": link.title,
             "url": link.url,
@@ -267,7 +267,7 @@ struct ProfileSpaceStore: Sendable {
         return payload
     }
 
-    private static func decodeLink(_ item: [String: Any]) -> BiliDynamicLink? {
+    private nonisolated static func decodeLink(_ item: [String: Any]) -> BiliDynamicLink? {
         let url = item["url"] as? String ?? ""
         guard !url.isEmpty else { return nil }
         let coverRaw = item["cover_url"] as? String ?? ""
@@ -279,7 +279,7 @@ struct ProfileSpaceStore: Sendable {
         )
     }
 
-    private static func encodeOrigin(_ origin: BiliDynamicOrigin) -> [String: Any] {
+    private nonisolated static func encodeOrigin(_ origin: BiliDynamicOrigin) -> [String: Any] {
         var payload: [String: Any] = [
             "author_name": origin.authorName,
             "text": origin.text,
@@ -295,7 +295,7 @@ struct ProfileSpaceStore: Sendable {
         return payload
     }
 
-    private static func decodeOrigin(_ item: [String: Any]) -> BiliDynamicOrigin? {
+    private nonisolated static func decodeOrigin(_ item: [String: Any]) -> BiliDynamicOrigin? {
         BiliDynamicOrigin(
             authorName: item["author_name"] as? String ?? "",
             text: item["text"] as? String ?? "",
@@ -307,7 +307,7 @@ struct ProfileSpaceStore: Sendable {
     }
 }
 
-private func int64(_ value: Any?) -> Int64? {
+private nonisolated func int64(_ value: Any?) -> Int64? {
     switch value {
     case let number as Int64:
         return number

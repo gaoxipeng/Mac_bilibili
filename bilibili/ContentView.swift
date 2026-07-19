@@ -171,6 +171,9 @@ struct ContentView: View {
             case .active:
                 MediaPlaybackCoordinator.shared.handleSceneBecameActive()
             default:
+                // PiP start can briefly move the scene off `.active`; pausing the
+                // temporary AVPlayer there prevents picture-in-picture from opening.
+                if PictureInPictureHost.shared.isPictureInPictureBusy { return }
                 MediaPlaybackCoordinator.shared.suspendAll()
             }
         }
@@ -409,6 +412,8 @@ private struct DetailFloatingChrome: View {
                 onFollow: { model.profilePageHandlers?.follow() },
                 onUnfollow: { model.profilePageHandlers?.unfollow() },
                 onLogout: { model.profilePageHandlers?.logout?() },
+                feedLayoutMode: model.feedLayoutMode,
+                onFeedLayoutChange: { model.setFeedLayoutMode($0) },
                 onFollowingTap: { model.profilePageHandlers?.openRelationList(.following) },
                 onFollowersTap: { model.profilePageHandlers?.openRelationList(.followers) },
                 onReload: { performRefresh() },

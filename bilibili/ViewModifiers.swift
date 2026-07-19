@@ -635,6 +635,8 @@ struct GlassMoreButton: View {
 }
 
 struct GlassSettingsButton: View {
+    let feedLayoutMode: FeedLayoutMode
+    let onFeedLayoutChange: (FeedLayoutMode) -> Void
     let onLogout: () -> Void
 
     @State private var isHovered = false
@@ -650,7 +652,12 @@ struct GlassSettingsButton: View {
             .scaleEffect(isPressed ? 0.94 : 1)
             .animation(.easeOut(duration: 0.14), value: isPressed)
 
-            GlassSettingsPopUpButtonRepresentable(onLogout: onLogout, isPressed: $isPressed)
+            GlassSettingsPopUpButtonRepresentable(
+                feedLayoutMode: feedLayoutMode,
+                onFeedLayoutChange: onFeedLayoutChange,
+                onLogout: onLogout,
+                isPressed: $isPressed
+            )
                 .frame(
                     width: AppLayout.floatingChromeButtonSize,
                     height: AppLayout.floatingChromeButtonSize
@@ -667,11 +674,17 @@ struct GlassSettingsButton: View {
 }
 
 struct GlassSettingsPopUpButtonRepresentable: NSViewRepresentable {
+    let feedLayoutMode: FeedLayoutMode
+    let onFeedLayoutChange: (FeedLayoutMode) -> Void
     let onLogout: () -> Void
     @Binding var isPressed: Bool
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onLogout: onLogout)
+        Coordinator(
+            feedLayoutMode: feedLayoutMode,
+            onFeedLayoutChange: onFeedLayoutChange,
+            onLogout: onLogout
+        )
     }
 
     func makeNSView(context: Context) -> GlassSettingsPopUpButtonView {
@@ -681,15 +694,37 @@ struct GlassSettingsPopUpButtonRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: GlassSettingsPopUpButtonView, context: Context) {
+        context.coordinator.feedLayoutMode = feedLayoutMode
+        context.coordinator.onFeedLayoutChange = onFeedLayoutChange
         context.coordinator.onLogout = onLogout
         nsView.configure(coordinator: context.coordinator, isPressed: $isPressed)
     }
 
     final class Coordinator: NSObject {
+        var feedLayoutMode: FeedLayoutMode
+        var onFeedLayoutChange: (FeedLayoutMode) -> Void
         var onLogout: () -> Void
 
-        init(onLogout: @escaping () -> Void) {
+        init(
+            feedLayoutMode: FeedLayoutMode,
+            onFeedLayoutChange: @escaping (FeedLayoutMode) -> Void,
+            onLogout: @escaping () -> Void
+        ) {
+            self.feedLayoutMode = feedLayoutMode
+            self.onFeedLayoutChange = onFeedLayoutChange
             self.onLogout = onLogout
+        }
+
+        @objc func selectNative(_ sender: NSMenuItem) {
+            Task { @MainActor in
+                onFeedLayoutChange(.native)
+            }
+        }
+
+        @objc func selectOverlay(_ sender: NSMenuItem) {
+            Task { @MainActor in
+                onFeedLayoutChange(.overlay)
+            }
         }
 
         @objc func logout(_ sender: NSMenuItem) {
@@ -744,6 +779,36 @@ final class GlassSettingsPopUpButtonView: NSView, NSMenuDelegate {
 
         actionMenu.removeAllItems()
         actionMenu.delegate = self
+
+        let layoutMenu = NSMenu(title: "信息流布局")
+        let nativeItem = NSMenuItem(
+            title: FeedLayoutMode.native.menuTitle,
+            action: #selector(GlassSettingsPopUpButtonRepresentable.Coordinator.selectNative(_:)),
+            keyEquivalent: ""
+        )
+        nativeItem.target = coordinator
+        nativeItem.state = coordinator.feedLayoutMode == .native ? .on : .off
+        nativeItem.toolTip = FeedLayoutMode.native.menuSubtitle
+        layoutMenu.addItem(nativeItem)
+
+        let overlayItem = NSMenuItem(
+            title: FeedLayoutMode.overlay.menuTitle,
+            action: #selector(GlassSettingsPopUpButtonRepresentable.Coordinator.selectOverlay(_:)),
+            keyEquivalent: ""
+        )
+        overlayItem.target = coordinator
+        overlayItem.state = coordinator.feedLayoutMode == .overlay ? .on : .off
+        overlayItem.toolTip = FeedLayoutMode.overlay.menuSubtitle
+        layoutMenu.addItem(overlayItem)
+
+        let layoutRoot = NSMenuItem(title: "信息流布局", action: nil, keyEquivalent: "")
+        layoutRoot.submenu = layoutMenu
+        layoutRoot.image = NSImage(
+            systemSymbolName: "rectangle.split.3x1",
+            accessibilityDescription: nil
+        )
+        actionMenu.addItem(layoutRoot)
+        actionMenu.addItem(.separator())
 
         let logoutItem = NSMenuItem(
             title: "退出登录",
@@ -1331,10 +1396,11 @@ extension View {
 
 struct VideoCoverDurationBadge: View {
     let text: String
+    var fontSize: CGFloat = VideoCardLayout.coverOverlayFontSize
 
     var body: some View {
         Text(text)
-            .font(.system(size: VideoCardLayout.coverOverlayFontSize, weight: .medium).monospacedDigit())
+            .font(.system(size: fontSize, weight: .medium).monospacedDigit())
             .foregroundStyle(.white)
             .shadow(color: .black.opacity(0.55), radius: 2, x: 0, y: 1)
     }
@@ -1345,6 +1411,8 @@ struct VideoCoverFeedMetaOverlay: View {
     var danmakuCount: String? = nil
     var likeCount: String? = nil
     let durationText: String
+    var iconSize: CGFloat = VideoCardLayout.coverOverlayIconSize
+    var fontSize: CGFloat = VideoCardLayout.coverOverlayFontSize
 
     var body: some View {
         ZStack {
@@ -1356,9 +1424,9 @@ struct VideoCoverFeedMetaOverlay: View {
                             playCount: playCount,
                             danmakuCount: danmakuCount,
                             likeCount: likeCount,
-                            iconSize: VideoCardLayout.coverOverlayIconSize,
-                            likeIconSize: VideoCardLayout.coverOverlayIconSize,
-                            fontSize: VideoCardLayout.coverOverlayFontSize,
+                            iconSize: iconSize,
+                            likeIconSize: iconSize,
+                            fontSize: fontSize,
                             itemSpacing: VideoCardLayout.coverOverlayItemSpacing,
                             displayStyle: .coverOverlay
                         )
@@ -1368,7 +1436,7 @@ struct VideoCoverFeedMetaOverlay: View {
                     Spacer(minLength: 0)
 
                     if !durationText.isEmpty {
-                        VideoCoverDurationBadge(text: durationText)
+                        VideoCoverDurationBadge(text: durationText, fontSize: fontSize)
                     }
                 }
                 .padding(.horizontal, VideoCardLayout.coverOverlayPadding)
@@ -1417,6 +1485,7 @@ struct FeedVideoCoverHoverRepresentable: NSViewRepresentable {
     let failed: Bool
     let cornerRadius: CGFloat
     var placeholderSystemImage = "play.rectangle"
+    var onHoverChange: ((Bool) -> Void)?
 
     final class Coordinator {
         weak var imageView: RemoteCoverImageLayerView?
@@ -1432,6 +1501,7 @@ struct FeedVideoCoverHoverRepresentable: NSViewRepresentable {
     func makeNSView(context: Context) -> VideoCoverHoverContainerView {
         let container = VideoCoverHoverContainerView()
         container.hoverScale = VideoCardLayout.coverHoverScale
+        container.onHoverChange = onHoverChange
 
         let imageView = RemoteCoverImageLayerView()
         imageView.cornerRadius = cornerRadius
@@ -1444,6 +1514,7 @@ struct FeedVideoCoverHoverRepresentable: NSViewRepresentable {
 
     func updateNSView(_ container: VideoCoverHoverContainerView, context: Context) {
         container.hoverScale = VideoCardLayout.coverHoverScale
+        container.onHoverChange = onHoverChange
         guard let imageView = context.coordinator.imageView else { return }
 
         let coordinator = context.coordinator
@@ -1667,6 +1738,7 @@ final class VideoCoverHoverContainerView: NSView {
     private static let restingZPosition: CGFloat = 0
 
     var hoverScale: CGFloat = VideoCardLayout.coverHoverScale
+    var onHoverChange: ((Bool) -> Void)?
     weak var cachedScrollView: NSScrollView?
     private weak var hostedView: NSView?
     private var lastTrackingBoundsSize = NSSize.zero
@@ -1831,6 +1903,7 @@ final class VideoCoverHoverContainerView: NSView {
         }
         applyGPUHoverScale(hovered: hovering, animated: !suppressAnimation)
         applyHoverZPosition(hovered: hovering)
+        onHoverChange?(hovering)
     }
 
     private func applyHoverZPosition(hovered: Bool) {

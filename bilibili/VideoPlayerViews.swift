@@ -34,6 +34,8 @@ enum VideoPlayerChrome {
 
 final class PlayerClipContainerView: NSView {
     private static var permitsFullscreenToInlineHandoff = false
+    private static weak var inlineHost: PlayerClipContainerView?
+    private static weak var fullscreenHost: PlayerClipContainerView?
 
     static func beginFullscreenToInlineHandoff() {
         permitsFullscreenToInlineHandoff = true
@@ -43,10 +45,29 @@ final class PlayerClipContainerView: NSView {
         permitsFullscreenToInlineHandoff = false
     }
 
+    /// Move the shared mpv/Metal view back onto the inline card before the
+    /// fullscreen window is ordered out. Relies on `beginFullscreenToInlineHandoff()`.
+    @discardableResult
+    static func handoffRenderViewToInline() -> MPVRenderView? {
+        beginFullscreenToInlineHandoff()
+        guard let inline = inlineHost else { return nil }
+        let renderView = fullscreenHost?.mpvView ?? inline.mpvView
+        guard let renderView else { return nil }
+        inline.layoutSubtreeIfNeeded()
+        renderView.beginSeamlessReparent()
+        inline.attachMPVView(renderView)
+        inline.layoutSubtreeIfNeeded()
+        renderView.refreshPresentation()
+        return renderView
+    }
+
     let playerView = NonSeekingPlayerView()
     private weak var mpvView: MPVRenderView?
     var cornerRadius: CGFloat {
-        didSet { applyRoundedMask() }
+        didSet {
+            applyRoundedMask()
+            registerHostRole()
+        }
     }
 
     init(cornerRadius: CGFloat = VideoPlayerChrome.cornerRadius) {
@@ -55,6 +76,7 @@ final class PlayerClipContainerView: NSView {
         wantsLayer = true
         applyRoundedMask()
         addSubview(playerView)
+        registerHostRole()
     }
 
     @available(*, unavailable)
@@ -66,6 +88,7 @@ final class PlayerClipContainerView: NSView {
         super.layout()
         updatePlaybackSubviewFrames()
         applyRoundedMask()
+        registerHostRole()
         PictureInPictureHost.shared.updatePlaybackSurface(self)
     }
 
@@ -83,11 +106,28 @@ final class PlayerClipContainerView: NSView {
         playerView.frame = bounds
         mpvView?.frame = bounds
         playerView.autoresizingMask = [.width, .height]
+        mpvView?.autoresizingMask = [.width, .height]
+    }
+
+    private func registerHostRole() {
+        if cornerRadius <= 0.5 {
+            Self.fullscreenHost = self
+        } else {
+            Self.inlineHost = self
+        }
     }
 
     func attachMPVView(_ view: MPVRenderView) {
         if mpvView === view, view.superview === self {
             view.frame = bounds
+            view.refreshPresentation()
+            return
+        }
+
+        // While returning from fullscreen, only the inline card may own the
+        // shared render view — otherwise the still-live fullscreen representable
+        // steals it back on the next SwiftUI update and leaves the card black.
+        if Self.permitsFullscreenToInlineHandoff, cornerRadius <= 0.5 {
             return
         }
 
@@ -108,10 +148,13 @@ final class PlayerClipContainerView: NSView {
         addSubview(view, positioned: .above, relativeTo: playerView)
         view.frame = bounds
         view.autoresizingMask = [.width, .height]
+        registerHostRole()
+        view.refreshPresentation()
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        registerHostRole()
         if window == nil {
             PictureInPictureHost.shared.unregisterPlaybackSurface(self)
         } else {
@@ -121,6 +164,8 @@ final class PlayerClipContainerView: NSView {
 
     deinit {
         MainActor.assumeIsolated {
+            if Self.inlineHost === self { Self.inlineHost = nil }
+            if Self.fullscreenHost === self { Self.fullscreenHost = nil }
             PictureInPictureHost.shared.unregisterPlaybackSurface(self)
         }
     }
@@ -146,11 +191,44 @@ final class PictureInPictureHost: NSObject {
     private var lastHandledRequestID = 0
     private var pictureInPictureResizeBlocker: PictureInPictureWindowResizeBlocker?
     private var pictureInPictureStartTimeoutTask: Task<Void, Never>?
+    private var pictureInPictureAttemptInFlight = false
+    private var pictureInPictureAttemptGeneration = 0
+
+    /// True while PiP is active or a start attempt is in flight.
+    var isPictureInPictureBusy: Bool {
+        if pictureInPictureAttemptInFlight { return true }
+        if pictureInPictureController?.isPictureInPictureActive == true {
+            return true
+        }
+        if playbackEngine?.isPictureInPicturePreparing == true {
+            return true
+        }
+        if playbackEngine?.isPictureInPictureActive == true {
+            return true
+        }
+        return pictureInPictureStartTimeoutTask != nil
+    }
 
     private static let parkedHostFrame = NSRect(x: -20_000, y: -20_000, width: 2, height: 2)
 
     private override init() {
         super.init()
+    }
+
+    func beginPictureInPictureAttempt() {
+        pictureInPictureAttemptGeneration &+= 1
+        let generation = pictureInPictureAttemptGeneration
+        pictureInPictureAttemptInFlight = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            guard let self, self.pictureInPictureAttemptGeneration == generation else { return }
+            self.pictureInPictureAttemptInFlight = false
+        }
+    }
+
+    func endPictureInPictureAttempt() {
+        pictureInPictureAttemptGeneration &+= 1
+        pictureInPictureAttemptInFlight = false
     }
 
     func attach(to window: NSWindow?) {
@@ -197,24 +275,59 @@ final class PictureInPictureHost: NSObject {
             lastHandledRequestID = 0
         }
         playbackEngine = player
-        guard let avPlayer = player.avPlayer else { return }
+        guard let avPlayer = player.avPlayer else {
+            endPictureInPictureAttempt()
+            NotificationCenter.default.post(name: .videoPictureInPictureAttemptFailed, object: nil)
+            return
+        }
         ensureHostWindow()
         anchorView.playerLayer.player = avPlayer
 
         guard requestID > lastHandledRequestID else { return }
         lastHandledRequestID = requestID
         guard player.isReady,
-              AVPictureInPictureController.isPictureInPictureSupported() else { return }
+              AVPictureInPictureController.isPictureInPictureSupported() else {
+            endPictureInPictureAttempt()
+            NotificationCenter.default.post(name: .videoPictureInPictureAttemptFailed, object: nil)
+            return
+        }
 
-        guard let controller = pictureInPictureController(for: avPlayer) else { return }
+        guard let controller = pictureInPictureController(for: avPlayer) else {
+            endPictureInPictureAttempt()
+            NotificationCenter.default.post(name: .videoPictureInPictureAttemptFailed, object: nil)
+            return
+        }
         if controller.isPictureInPictureActive {
             alignAnchorWithPlaybackSurface()
             controller.stopPictureInPicture()
         } else {
             blockWindowResizeDuringPictureInPictureStart()
             alignAnchorWithPlaybackSurface()
+            startPictureInPictureWhenPossible(controller)
+        }
+    }
+
+    private func startPictureInPictureWhenPossible(_ controller: AVPictureInPictureController) {
+        if controller.isPictureInPicturePossible {
             controller.startPictureInPicture()
             schedulePictureInPictureStartTimeout(controller)
+            return
+        }
+
+        // Layer / item readiness can lag the temporary AVPlayer by a frame or two.
+        Task { @MainActor [weak self, weak controller] in
+            guard let self, let controller else { return }
+            for _ in 0..<20 {
+                try? await Task.sleep(for: .milliseconds(50))
+                guard !Task.isCancelled else { return }
+                if controller.isPictureInPicturePossible {
+                    self.alignAnchorWithPlaybackSurface()
+                    controller.startPictureInPicture()
+                    self.schedulePictureInPictureStartTimeout(controller)
+                    return
+                }
+            }
+            self.recoverFromPictureInPictureStartFailure()
         }
     }
 
@@ -329,12 +442,14 @@ final class PictureInPictureHost: NSObject {
     private func recoverFromPictureInPictureStartFailure() {
         pictureInPictureStartTimeoutTask?.cancel()
         pictureInPictureStartTimeoutTask = nil
+        endPictureInPictureAttempt()
         publishPictureInPictureActive(false)
         pictureInPictureController?.delegate = nil
         pictureInPictureController = nil
         anchorView.playerLayer.player = nil
         parkHostWindowOffScreen()
         releasePictureInPictureResizeBlocker(after: 0)
+        NotificationCenter.default.post(name: .videoPictureInPictureAttemptFailed, object: nil)
     }
 }
 
@@ -346,6 +461,7 @@ extension PictureInPictureHost: AVPictureInPictureControllerDelegate {
     func pictureInPictureControllerDidStartPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         pictureInPictureStartTimeoutTask?.cancel()
         pictureInPictureStartTimeoutTask = nil
+        endPictureInPictureAttempt()
         parkHostWindowOffScreen()
         releasePictureInPictureResizeBlocker()
     }
@@ -364,6 +480,7 @@ extension PictureInPictureHost: AVPictureInPictureControllerDelegate {
     func pictureInPictureControllerDidStopPictureInPicture(_ pictureInPictureController: AVPictureInPictureController) {
         pictureInPictureStartTimeoutTask?.cancel()
         pictureInPictureStartTimeoutTask = nil
+        endPictureInPictureAttempt()
         publishPictureInPictureActive(false)
         parkHostWindowOffScreen()
         anchorView.playerLayer.player = nil
@@ -401,6 +518,10 @@ private final class PictureInPictureAnchorView: NSView {
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+extension Notification.Name {
+    static let videoPictureInPictureAttemptFailed = Notification.Name("videoPictureInPictureAttemptFailed")
 }
 
 struct PictureInPictureHostInstaller: NSViewRepresentable {

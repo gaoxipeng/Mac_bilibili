@@ -452,6 +452,8 @@ struct UserProfileChromeHeaderView: View {
     var onFollow: () -> Void = {}
     var onUnfollow: () -> Void = {}
     var onLogout: () -> Void = {}
+    var feedLayoutMode: FeedLayoutMode = .native
+    var onFeedLayoutChange: (FeedLayoutMode) -> Void = { _ in }
     var onFollowingTap: (() -> Void)?
     var onFollowersTap: (() -> Void)?
     var onReload: (() -> Void)? = nil
@@ -571,7 +573,11 @@ struct UserProfileChromeHeaderView: View {
             GlassMoreButton(webURL: info.webURL)
 
             if info.showLogoutButton {
-                GlassSettingsButton(onLogout: onLogout)
+                GlassSettingsButton(
+                    feedLayoutMode: feedLayoutMode,
+                    onFeedLayoutChange: onFeedLayoutChange,
+                    onLogout: onLogout
+                )
             }
 
             if let onReload {

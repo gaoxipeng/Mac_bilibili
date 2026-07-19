@@ -5,6 +5,7 @@ import SwiftUI
 @MainActor
 final class AppModel: ObservableObject {
     @Published var selectedSection: AppSection = .home
+    @Published var feedLayoutMode: FeedLayoutMode = FeedLayoutPreferences.read()
     @Published var homeVideos: [BiliVideo] = []
     @Published var homeHasMore = false
     @Published var homeLoadingMore = false
@@ -276,6 +277,12 @@ final class AppModel: ObservableObject {
 
     func requestSearchFocus() {
         searchFocusRequest += 1
+    }
+
+    func setFeedLayoutMode(_ mode: FeedLayoutMode) {
+        guard feedLayoutMode != mode else { return }
+        feedLayoutMode = mode
+        FeedLayoutPreferences.write(mode)
     }
 
     func requestHomeScrollToTop() {

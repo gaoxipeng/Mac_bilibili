@@ -314,7 +314,7 @@ struct BiliAccount: Codable, Hashable, Sendable {
     }
 }
 
-struct BiliUserProfile: Hashable, Sendable {
+nonisolated struct BiliUserProfile: Hashable, Sendable {
     let mid: Int64
     let name: String
     let faceURL: URL?
@@ -358,7 +358,7 @@ struct BiliUserCardSnapshot: Sendable, Equatable {
     var relation: BiliAuthorRelation
 }
 
-enum BiliUserVideoSort: String, CaseIterable, Sendable {
+nonisolated enum BiliUserVideoSort: String, CaseIterable, Sendable {
     case latestPublish
     case mostPlayed
 
@@ -434,7 +434,7 @@ nonisolated struct BiliDynamicLink: Hashable, Sendable {
     let desc: String
 }
 
-struct BiliDynamicOrigin: Hashable, Sendable {
+nonisolated struct BiliDynamicOrigin: Hashable, Sendable {
     let authorName: String
     let text: String
     let emoticons: [String: String]
@@ -443,7 +443,7 @@ struct BiliDynamicOrigin: Hashable, Sendable {
     let link: BiliDynamicLink?
 }
 
-struct BiliDynamicItem: Identifiable, Hashable, Sendable {
+nonisolated struct BiliDynamicItem: Identifiable, Hashable, Sendable {
     let id: String
     let text: String
     let emoticons: [String: String]

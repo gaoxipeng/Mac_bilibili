@@ -12,7 +12,7 @@ struct DanmakuSettingsOverlay: View {
                 .ignoresSafeArea()
                 .onTapGesture(perform: onDismiss)
 
-            VStack(spacing: 16) {
+            VStack(spacing: 20) {
                 DanmakuSettingRow(
                     title: "显示区域",
                     valueLabel: DanmakuSettings.displayAreaLabel(settings.displayAreaPercent)
@@ -62,11 +62,11 @@ struct DanmakuSettingsOverlay: View {
                     )
                 }
             }
-            .padding(16)
-            .frame(maxWidth: 336)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .padding(22)
+            .frame(maxWidth: 400)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
                     .stroke(.white.opacity(0.22), lineWidth: 0.6)
             }
             .shadow(color: .black.opacity(0.12), radius: 18, x: 0, y: 10)
@@ -81,22 +81,29 @@ private struct DanmakuSettingRow<Slider: View>: View {
     @ViewBuilder let slider: () -> Slider
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(title)
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(Color(red: 0.11, green: 0.11, blue: 0.12))
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(DanmakuSettingsChrome.title)
                 Text(valueLabel)
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color(red: 0.39, green: 0.39, blue: 0.4))
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(DanmakuSettingsChrome.value)
             }
-            .frame(width: 72, alignment: .leading)
+            .frame(width: 88, alignment: .leading)
 
             slider()
                 .frame(maxWidth: .infinity)
-                .frame(height: 28)
+                .frame(height: 34)
         }
     }
+}
+
+private enum DanmakuSettingsChrome {
+    /// Primary label on the frosted card.
+    static let title = Color(red: 0.14, green: 0.15, blue: 0.16)
+    /// Secondary value — darker than the old light gray, softer than pure white.
+    static let value = Color(red: 0.30, green: 0.33, blue: 0.36)
 }
 
 private enum DanmakuSliderColors {
@@ -157,7 +164,7 @@ private final class DanmakuSliderNSView: NSView {
         super.init(frame: frameRect)
         configureAppearance()
         slider.isContinuous = true
-        slider.controlSize = .small
+        slider.controlSize = .regular
         slider.target = self
         slider.action = #selector(sliderChanged(_:))
         addSubview(slider)

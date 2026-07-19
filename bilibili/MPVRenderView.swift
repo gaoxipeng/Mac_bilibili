@@ -50,7 +50,8 @@ private final class MPVMetalBufferPool: @unchecked Sendable {
 
     func put(_ buffer: MTLBuffer) {
         lock.lock()
-        if !stopped, available.count < 3 {
+        let alreadyAvailable = available.contains { $0 === buffer }
+        if !stopped, !alreadyAvailable, available.count < 3 {
             available.append(buffer)
         }
         lock.unlock()
@@ -252,6 +253,8 @@ final class MPVRenderView: NSView {
     private var loadOptions: [String] = []
     private var currentFileLoaded = false
     private var callbackContext: Unmanaged<MPVCallbackContext>?
+    private var isEventDrainScheduled = false
+    private var eventWakePending = false
     private var geometryObservers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
     private var lastDrawablePixelSize = CGSize.zero
@@ -377,6 +380,7 @@ final class MPVRenderView: NSView {
         // another mpv_wait_event operation.
         mpv = nil
         mpvCoreReady = false
+        eventWakePending = false
         mpv_set_wakeup_callback(handle, nil, nil)
 
         metalRenderer?.stop()
@@ -457,7 +461,6 @@ final class MPVRenderView: NSView {
             return
         }
         renderer.start()
-        mpv_request_log_messages(handle, "warn")
 
         let retainedContext = Unmanaged.passRetained(MPVCallbackContext(view: self))
         callbackContext = retainedContext
@@ -471,7 +474,7 @@ final class MPVRenderView: NSView {
             guard let context else { return }
             let callback = Unmanaged<MPVCallbackContext>.fromOpaque(context).takeUnretainedValue()
             let view = callback.view
-            DispatchQueue.main.async { [weak view] in view?.readEvents() }
+            DispatchQueue.main.async { [weak view] in view?.scheduleEventDrain() }
         }, retainedContext.toOpaque())
         mpvCoreReady = true
     }
@@ -505,13 +508,35 @@ final class MPVRenderView: NSView {
         metalRenderer?.requestDraw()
     }
 
+    private func scheduleEventDrain() {
+        guard mpv != nil else { return }
+        if isEventDrainScheduled {
+            eventWakePending = true
+            return
+        }
+        isEventDrainScheduled = true
+        eventWakePending = false
+        readEvents()
+    }
+
     private func readEvents() {
-        guard let handle = mpv else { return }
+        guard let handle = mpv else {
+            isEventDrainScheduled = false
+            eventWakePending = false
+            return
+        }
         let handleAddress = UInt(bitPattern: handle)
         eventQueue.async { [weak self] in
             guard let self, let handle = OpaquePointer(bitPattern: handleAddress) else { return }
             while let event = mpv_wait_event(handle, 0), event.pointee.event_id != MPV_EVENT_NONE {
                 self.handle(event.pointee)
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.isEventDrainScheduled = false
+                if self.eventWakePending {
+                    self.scheduleEventDrain()
+                }
             }
         }
     }
@@ -569,16 +594,6 @@ final class MPVRenderView: NSView {
                 } else {
                     onEnded?()
                 }
-            }
-        case MPV_EVENT_LOG_MESSAGE:
-            guard let raw = event.data else { return }
-            let message = raw.assumingMemoryBound(to: mpv_event_log_message.self).pointee
-            let level = String(cString: message.level)
-            guard level == "warn" || level == "error" || level == "fatal" else { return }
-            let text = String(cString: message.text).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return }
-            Task { @MainActor in
-                Self.playbackLogger.error("mpv: \(text, privacy: .public)")
             }
         default: break
         }

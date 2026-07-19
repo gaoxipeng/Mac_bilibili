@@ -27,7 +27,11 @@
 前往 [Releases](https://github.com/gaoxipeng/Mac_bilibili/releases) 下载最新 `bilibili-20260719-macOS.zip`，解压后将 `bilibili.app` 拖入「应用程序」即可。
 
 > 当前安装包未签名/未公证。若 macOS 提示无法打开，请在「系统设置 → 隐私与安全性」中允许运行。
+> 由于这是未经过 Apple Developer ID 公证的个人分享版本，首次运行前请在终端执行：
 
+```bash
+xattr -dr com.apple.quarantine /Applications/bilibili.app
+```
 ### 从源码构建
 
 1. 克隆仓库：

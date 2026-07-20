@@ -1227,74 +1227,80 @@ private struct HistoryOverlayVideoCard: View, Equatable {
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
-            Button {
-                appModel.openHistoryVideo(item)
-            } label: {
-                ZStack {
-                    FeedVideoCoverHover(
-                        url: video.coverURL,
-                        maxDecodePixelLength: coverDecodePixelLength,
-                        cornerRadius: cornerRadius,
-                        onHoverChange: { isCoverHovered = $0 }
-                    )
-
-                    // Scale with the cover so the bottom scrim does not lag behind.
+            ZStack {
+                Button {
+                    appModel.openHistoryVideo(item)
+                } label: {
                     ZStack {
-                        if watchProgress > 0.001, watchProgress < 0.999 {
-                            GeometryReader { geometry in
-                                VStack(spacing: 0) {
-                                    Spacer()
-                                    ZStack(alignment: .leading) {
-                                        Rectangle()
-                                            .fill(Color.black.opacity(0.35))
-                                        Rectangle()
-                                            .fill(Color(red: 0, green: 174 / 255, blue: 236 / 255))
-                                            .frame(width: geometry.size.width * watchProgress)
+                        FeedVideoCoverHover(
+                            url: video.coverURL,
+                            maxDecodePixelLength: coverDecodePixelLength,
+                            cornerRadius: cornerRadius,
+                            onHoverChange: { isCoverHovered = $0 }
+                        )
+
+                        // Scale with the cover so the bottom scrim does not lag behind.
+                        ZStack {
+                            if watchProgress > 0.001, watchProgress < 0.999 {
+                                GeometryReader { geometry in
+                                    VStack(spacing: 0) {
+                                        Spacer()
+                                        ZStack(alignment: .leading) {
+                                            Rectangle()
+                                                .fill(Color.black.opacity(0.35))
+                                            Rectangle()
+                                                .fill(Color(red: 0, green: 174 / 255, blue: 236 / 255))
+                                                .frame(width: geometry.size.width * watchProgress)
+                                        }
+                                        .frame(height: 3)
                                     }
-                                    .frame(height: 3)
                                 }
+                                .allowsHitTesting(false)
                             }
-                            .allowsHitTesting(false)
-                        }
 
-                        bottomMetaScrim
+                            bottomMetaScrim
 
-                        VStack(spacing: 0) {
-                            HStack(alignment: .top, spacing: 8) {
+                            VStack(spacing: 0) {
+                                HStack(alignment: .top, spacing: 8) {
+                                    Spacer(minLength: 0)
+                                    if !durationBadgeText.isEmpty {
+                                        Text(durationBadgeText)
+                                            .font(.system(size: 13, weight: .medium))
+                                            .foregroundStyle(.white)
+                                            .shadow(color: .black.opacity(0.55), radius: 4, y: 1)
+                                            .padding(.horizontal, 4)
+                                            .padding(.vertical, 2)
+                                    }
+                                    if !item.kid.isEmpty {
+                                        Color.clear
+                                            .frame(width: 28, height: 28)
+                                    }
+                                }
+
                                 Spacer(minLength: 0)
-                                if !durationBadgeText.isEmpty {
-                                    Text(durationBadgeText)
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(.white)
-                                        .shadow(color: .black.opacity(0.55), radius: 4, y: 1)
-                                        .padding(.horizontal, 4)
-                                        .padding(.vertical, 2)
-                                }
-                                if !item.kid.isEmpty {
-                                    Color.clear
-                                        .frame(width: 28, height: 28)
-                                }
+
+                                metaContent
                             }
-
-                            Spacer(minLength: 0)
-
-                            metaContent
+                            .padding(VideoCardLayout.overlayCardOverlayInset)
                         }
-                        .padding(VideoCardLayout.overlayCardOverlayInset)
+                        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                        .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
+                        .animation(
+                            isCoverHovered
+                                ? VideoCardLayout.coverHoverEnterAnimation
+                                : VideoCardLayout.coverHoverExitAnimation,
+                            value: isCoverHovered
+                        )
                     }
-                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                    .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
-                    .animation(
-                        isCoverHovered
-                            ? VideoCardLayout.coverHoverEnterAnimation
-                            : VideoCardLayout.coverHoverExitAnimation,
-                        value: isCoverHovered
-                    )
+                    .frame(width: cardWidth, height: coverHeight)
+                    .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                 }
-                .frame(width: cardWidth, height: coverHeight)
-                .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .buttonStyle(.plain)
+
+                if video.authorMid > 0 {
+                    overlayAuthorHitTarget
+                }
             }
-            .buttonStyle(.plain)
 
             if !item.kid.isEmpty {
                 deleteButton
@@ -1302,6 +1308,51 @@ private struct HistoryOverlayVideoCard: View, Equatable {
             }
         }
         .frame(width: cardWidth, height: coverHeight, alignment: .topLeading)
+    }
+
+    private var overlayAuthorHitTarget: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+                .allowsHitTesting(false)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(video.title.ifEmpty("视频"))
+                    .font(.system(size: 17, weight: .semibold))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .hidden()
+                    .accessibilityHidden(true)
+                    .allowsHitTesting(false)
+
+                HStack(alignment: .center, spacing: 8) {
+                    OverlayCardAuthorChip(
+                        name: authorDisplayName,
+                        avatarURL: video.authorFaceURL,
+                        authorMid: video.authorMid,
+                        idleColor: Self.secondaryMetaColor
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    if let viewedAt = item.viewedAt {
+                        Text(historyViewTimeText(from: viewedAt))
+                            .font(.system(size: 13, weight: .medium))
+                            .lineLimit(1)
+                            .hidden()
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+        }
+        .padding(VideoCardLayout.overlayCardOverlayInset)
+        .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
+        .animation(
+            isCoverHovered
+                ? VideoCardLayout.coverHoverEnterAnimation
+                : VideoCardLayout.coverHoverExitAnimation,
+            value: isCoverHovered
+        )
     }
 
     private var bottomMetaScrim: some View {
@@ -1362,14 +1413,9 @@ private struct HistoryOverlayVideoCard: View, Equatable {
                 .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay {
-            if video.authorMid > 0 {
-                NavigationLink(value: UserProfileRequest(mid: video.authorMid)) {
-                    Color.clear
-                }
-                .buttonStyle(.plain)
-            }
-        }
+        .opacity(video.authorMid > 0 ? 0 : 1)
+        .accessibilityHidden(video.authorMid > 0)
+        .allowsHitTesting(false)
     }
 
     private var deleteButton: some View {
@@ -1721,46 +1767,106 @@ struct VideoFeedOverlayCard: View, Equatable {
     }
 
     var body: some View {
-        VideoPlaybackLink(video: video, resolveWatchProgress: resolveWatchProgress) {
-            ZStack {
-                FeedVideoCoverHover(
-                    url: video.coverURL,
-                    maxDecodePixelLength: coverDecodePixelLength,
-                    cornerRadius: cornerRadius,
-                    onHoverChange: { isCoverHovered = $0 }
-                )
-
-                // Scale with the cover so the bottom scrim does not lag behind.
+        ZStack {
+            VideoPlaybackLink(video: video, resolveWatchProgress: resolveWatchProgress) {
                 ZStack {
-                    bottomMetaScrim
+                    FeedVideoCoverHover(
+                        url: video.coverURL,
+                        maxDecodePixelLength: coverDecodePixelLength,
+                        cornerRadius: cornerRadius,
+                        onHoverChange: { isCoverHovered = $0 }
+                    )
 
-                    VStack(spacing: 0) {
-                        HStack {
-                            Spacer(minLength: 0)
-                            if video.duration > 0 {
-                                durationCapsule
+                    // Scale with the cover so the bottom scrim does not lag behind.
+                    ZStack {
+                        bottomMetaScrim
+
+                        VStack(spacing: 0) {
+                            HStack {
+                                Spacer(minLength: 0)
+                                if video.duration > 0 {
+                                    durationCapsule
+                                }
                             }
+
+                            Spacer(minLength: 0)
+
+                            metaCapsule
                         }
-
-                        Spacer(minLength: 0)
-
-                        metaCapsule
+                        .padding(VideoCardLayout.overlayCardOverlayInset)
                     }
-                    .padding(VideoCardLayout.overlayCardOverlayInset)
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                    .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
+                    .animation(
+                        isCoverHovered
+                            ? VideoCardLayout.coverHoverEnterAnimation
+                            : VideoCardLayout.coverHoverExitAnimation,
+                        value: isCoverHovered
+                    )
                 }
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
-                .animation(
-                    isCoverHovered
-                        ? VideoCardLayout.coverHoverEnterAnimation
-                        : VideoCardLayout.coverHoverExitAnimation,
-                    value: isCoverHovered
-                )
+                .frame(width: cardWidth, height: coverHeight)
+                .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             }
-            .frame(width: cardWidth, height: coverHeight)
-            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+
+            // Keep author navigation outside the video button so nested links work,
+            // and so hover can turn the name blue like native cards.
+            if showsAuthor, video.authorMid > 0 {
+                overlayAuthorHitTarget
+            }
         }
         .frame(width: cardWidth, height: coverHeight, alignment: .topLeading)
+    }
+
+    private var overlayAuthorHitTarget: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+                .allowsHitTesting(false)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(video.title.ifEmpty("视频"))
+                    .font(.system(size: 17, weight: .semibold))
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .hidden()
+                    .accessibilityHidden(true)
+                    .allowsHitTesting(false)
+
+                HStack(alignment: .center, spacing: 8) {
+                    OverlayCardAuthorChip(
+                        name: video.authorName,
+                        avatarURL: video.authorFaceURL,
+                        authorMid: video.authorMid,
+                        idleColor: Self.secondaryMetaColor
+                    )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    FeedCardStatsRowRepresentable(
+                        playCount: video.viewCount.compactCount,
+                        danmakuCount: video.danmakuCount.compactCount,
+                        likeCount: showsLikeCount ? video.likeCount.compactCount : nil,
+                        iconSize: VideoCardLayout.coverOverlayIconSize,
+                        likeIconSize: VideoCardLayout.coverOverlayIconSize,
+                        fontSize: VideoCardLayout.coverOverlayFontSize,
+                        itemSpacing: VideoCardLayout.coverOverlayItemSpacing,
+                        displayStyle: .coverOverlay
+                    )
+                    .opacity(Self.secondaryMetaOpacity)
+                    .fixedSize(horizontal: true, vertical: true)
+                    .hidden()
+                    .allowsHitTesting(false)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+        }
+        .padding(VideoCardLayout.overlayCardOverlayInset)
+        .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
+        .animation(
+            isCoverHovered
+                ? VideoCardLayout.coverHoverEnterAnimation
+                : VideoCardLayout.coverHoverExitAnimation,
+            value: isCoverHovered
+        )
     }
 
     /// 底部向上渐变阴影，提升标题 / 头像 / 数据区可读性。
@@ -1848,19 +1954,56 @@ struct VideoFeedOverlayCard: View, Equatable {
                 .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay {
-            if video.authorMid > 0 {
-                NavigationLink(value: UserProfileRequest(mid: video.authorMid)) {
-                    Color.clear
-                }
-                .buttonStyle(.plain)
-            }
-        }
+        // Interactive author chip is layered above the video button.
+        .opacity(video.authorMid > 0 ? 0 : 1)
+        .accessibilityHidden(video.authorMid > 0)
+        .allowsHitTesting(false)
     }
 
     private static let primaryMetaColor = Color.white
     private static let secondaryMetaOpacity: Double = 0.72
     private static let secondaryMetaColor = Color.white.opacity(secondaryMetaOpacity)
+}
+
+/// Overlay-card author chip: blue name on hover, navigates to the user profile.
+private struct OverlayCardAuthorChip: View {
+    let name: String
+    let avatarURL: URL?
+    let authorMid: Int64
+    var avatarSize: CGFloat = VideoCardLayout.overlayCardAvatarSize
+    var nameFontSize: CGFloat = 13
+    var idleColor: Color = Color.white.opacity(0.72)
+
+    @State private var isHovered = false
+
+    var body: some View {
+        NavigationLink(value: UserProfileRequest(mid: authorMid)) {
+            HStack(spacing: 6) {
+                RemoteAvatar(
+                    url: avatarURL,
+                    size: avatarSize,
+                    foreground: idleColor,
+                    background: Color.white.opacity(0.16),
+                    border: Color.white.opacity(0.18)
+                )
+
+                Text(name.ifEmpty("UP 主"))
+                    .font(.system(size: nameFontSize, weight: .medium))
+                    .foregroundStyle(isHovered ? BiliTheme.blue : idleColor)
+                    .lineLimit(1)
+                    .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
+
+                Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            withAnimation(FeedCardHoverStyle.colorAnimation) {
+                isHovered = hovering
+            }
+        }
+    }
 }
 
 struct VideoCard: View, Equatable {

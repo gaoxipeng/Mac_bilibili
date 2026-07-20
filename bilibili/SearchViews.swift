@@ -1197,27 +1197,28 @@ private struct SearchSuggestDropdownPanel: View {
                 SearchDropdownEmptyHint(text: "暂无联想结果")
             } else {
                 HStack(alignment: .top, spacing: 0) {
-                    MacOverlayScrollView {
+                    MacOverlayScrollView(clipsContent: true) {
                         suggestionsColumn
                     }
-                    .frame(maxWidth: .infinity, maxHeight: AppLayout.searchSuggestionPanelMaxHeight)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                     SearchDropdownVerticalDivider()
                         .padding(.vertical, 14)
 
-                    MacOverlayScrollView {
+                    MacOverlayScrollView(clipsContent: true) {
                         resultsColumn
                     }
-                    .frame(maxWidth: .infinity, maxHeight: AppLayout.searchSuggestionPanelMaxHeight)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
                 .padding(.vertical, 8)
+                .frame(maxHeight: AppLayout.searchSuggestionPanelMaxHeight, alignment: .top)
             }
         }
-        .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background {
             SearchDropdownBackground(cornerRadius: 20)
         }
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .stroke(Color.black.opacity(0.08), lineWidth: 0.8)

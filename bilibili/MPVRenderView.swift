@@ -19,7 +19,13 @@ private final class MPVMetalLayer: CAMetalLayer {
             if Thread.isMainThread {
                 super.wantsExtendedDynamicRangeContent = newValue
             } else {
-                DispatchQueue.main.sync { super.wantsExtendedDynamicRangeContent = newValue }
+                // Never sync back to the main actor from the Metal render queue.
+                // `shutdown` / display-sleep drain that queue with `queue.sync`
+                // on the main thread; a nested main.sync here deadlocks the UI
+                // and can leave libmpv mid-log (mp_msg_va EXC_BAD_ACCESS).
+                DispatchQueue.main.async {
+                    super.wantsExtendedDynamicRangeContent = newValue
+                }
             }
         }
     }
@@ -244,6 +250,8 @@ final class MPVRenderView: NSView {
 
     private var mpv: OpaquePointer?
     private let eventQueue = DispatchQueue(label: "bilibili.mpv.events", qos: .userInitiated)
+    /// Bumped on shutdown so in-flight event drains drop the handle before destroy.
+    private nonisolated(unsafe) var eventSessionID: UInt64 = 0
     private let metalLayer = MPVMetalLayer()
     private var metalRenderer: MPVSoftwareMetalRenderer?
     private var isConfigured = false
@@ -419,12 +427,17 @@ final class MPVRenderView: NSView {
             return
         }
 
+        // Invalidate before clearing the pointer so any already-queued drain
+        // exits before `mpv_terminate_destroy` runs on the same serial queue.
+        eventSessionID &+= 1
+
         // Make the handle unavailable before draining callbacks. A wakeup that
         // was already posted to the main queue will then return without queuing
         // another mpv_wait_event operation.
         mpv = nil
         mpvCoreReady = false
         eventWakePending = false
+        isEventDrainScheduled = false
         mpv_set_wakeup_callback(handle, nil, nil)
 
         metalRenderer?.stop()
@@ -432,7 +445,7 @@ final class MPVRenderView: NSView {
 
         // readEvents() consumes the handle on eventQueue. Destroying it on the
         // main actor while that queue is inside mpv_wait_event/log processing
-        // is a use-after-free (often surfacing in omp_msg_va after display
+        // is a use-after-free (often surfacing in mp_msg_va after display
         // sleep). Drain all previously submitted event work and destroy the
         // client on that same serial queue.
         eventQueue.sync {
@@ -573,14 +586,26 @@ final class MPVRenderView: NSView {
             eventWakePending = false
             return
         }
+        let session = eventSessionID
         let handleAddress = UInt(bitPattern: handle)
         eventQueue.async { [weak self] in
-            guard let self, let handle = OpaquePointer(bitPattern: handleAddress) else { return }
-            while let event = mpv_wait_event(handle, 0), event.pointee.event_id != MPV_EVENT_NONE {
+            guard let self else { return }
+            guard session == self.eventSessionID,
+                  let handle = OpaquePointer(bitPattern: handleAddress) else {
+                return
+            }
+            while session == self.eventSessionID,
+                  let event = mpv_wait_event(handle, 0),
+                  event.pointee.event_id != MPV_EVENT_NONE {
                 self.handle(event.pointee)
             }
             Task { @MainActor [weak self] in
                 guard let self else { return }
+                guard session == self.eventSessionID else {
+                    self.isEventDrainScheduled = false
+                    self.eventWakePending = false
+                    return
+                }
                 self.isEventDrainScheduled = false
                 if self.eventWakePending {
                     self.scheduleEventDrain()

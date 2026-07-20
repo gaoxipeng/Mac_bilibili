@@ -32,7 +32,7 @@ enum AppLayout {
     static let searchHeaderSpacing: CGFloat = 10
     static let searchTypeToggleWidth: CGFloat = 132
     static let searchSuggestionPanelWidth: CGFloat = 760
-    static let searchSuggestionPanelMaxHeight: CGFloat = 520
+    static let searchSuggestionPanelMaxHeight: CGFloat = 560
     static let searchDiscoveryContentWidth: CGFloat = 620
     static let searchUserResultCapsuleWidth: CGFloat = 560
     static let searchUserResultCapsuleHeight: CGFloat = 104

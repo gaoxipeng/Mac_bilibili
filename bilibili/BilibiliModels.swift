@@ -682,18 +682,25 @@ nonisolated struct BiliVideoShot: Hashable, Sendable {
     var tilesPerImage: Int { tileColumns * tileRows }
     var totalTiles: Int { images.count * tilesPerImage }
 
+    func hasSnapshotCoverage(at seconds: Double, duration: Double) -> Bool {
+        tile(at: seconds, duration: duration) != nil
+    }
+
     func tile(at seconds: Double, duration: Double) -> BiliVideoShotTile? {
         guard !images.isEmpty, totalTiles > 0 else { return nil }
+        let positionSec = max(0, Int(seconds.rounded(.down)))
         let thumbnailIndex: Int
         if !indexSeconds.isEmpty {
-            let second = max(0, Int(seconds.rounded(.down)))
-            let indexedFrame = indexSeconds.lastIndex(where: { $0 <= second }) ?? 0
-            // Some videos expose one or more trailing timestamps without a
-            // matching sprite tile. Clamp them to the last real frame so the
-            // latter half/end of the timeline still has a preview.
-            thumbnailIndex = min(totalTiles - 1, max(0, indexedFrame))
+            guard let lastCoveredSecond = indexSeconds.last, positionSec <= lastCoveredSecond else {
+                return nil
+            }
+            thumbnailIndex = indexSeconds.lastIndex(where: { $0 <= positionSec }) ?? 0
+            guard thumbnailIndex < totalTiles else { return nil }
         } else if duration > 0 {
-            thumbnailIndex = min(totalTiles - 1, max(0, Int((seconds / duration * Double(totalTiles)).rounded())))
+            thumbnailIndex = min(
+                totalTiles - 1,
+                max(0, Int((seconds / duration * Double(totalTiles)).rounded()))
+            )
         } else {
             thumbnailIndex = 0
         }
@@ -933,6 +940,16 @@ extension Int64 {
             return String(format: "%.1f万", Double(self) / 10_000)
         }
         return "\(self)"
+    }
+}
+
+extension Double {
+    nonisolated var biliCoinBalanceLabel: String {
+        if self <= 0 { return "0" }
+        if abs(truncatingRemainder(dividingBy: 1)) < 0.05 {
+            return String(Int(self.rounded()))
+        }
+        return String(format: "%.1f", self)
     }
 }
 

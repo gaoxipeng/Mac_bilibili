@@ -81,6 +81,7 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
     private var displayAvailable = true
     private var context: OpaquePointer?
     private var drawPending = false
+    private var wantsDraw = false
     private var stopped = false
 
     init?(layer: CAMetalLayer) {
@@ -94,6 +95,9 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
         layer.isOpaque = true
         layer.presentsWithTransaction = false
         layer.maximumDrawableCount = 3
+        // Upscale native-resolution SW frames on the GPU instead of rasterizing
+        // at full Retina drawable size on the CPU.
+        layer.contentsGravity = .resizeAspect
         // When the display is off, WindowServer may temporarily stop vending
         // drawables. Never let the serial mpv render queue wait forever.
         layer.allowsNextDrawableTimeout = true
@@ -147,10 +151,17 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
 
     func requestDraw() {
         queue.async { [weak self] in
-            guard let self, !self.stopped, self.isDisplayAvailable, !self.drawPending else { return }
-            self.drawPending = true
-            self.draw()
-            self.drawPending = false
+            guard let self, !self.stopped, self.isDisplayAvailable else { return }
+            if self.drawPending {
+                self.wantsDraw = true
+                return
+            }
+            repeat {
+                self.wantsDraw = false
+                self.drawPending = true
+                self.draw()
+                self.drawPending = false
+            } while self.wantsDraw && !self.stopped && self.isDisplayAvailable
         }
     }
 
@@ -184,6 +195,8 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
             inFlightFrames.signal()
             return
         }
+        // Skip full-frame memset: render targets match the video DAR and mpv
+        // fills the buffer. Zeroing multi‑MB Retina frames dominated CPU use.
 
         var size = [Int32(width), Int32(height)]
         var stride = bytesPerRow
@@ -249,9 +262,8 @@ final class MPVRenderView: NSView {
     var onError: ((String) -> Void)?
 
     private var mpv: OpaquePointer?
-    private let eventQueue = DispatchQueue(label: "bilibili.mpv.events", qos: .userInitiated)
-    /// Bumped on shutdown so in-flight event drains drop the handle before destroy.
-    private nonisolated(unsafe) var eventSessionID: UInt64 = 0
+    /// Bumped on shutdown so already-posted main-queue drains bail out before destroy.
+    private var eventSessionID: UInt64 = 0
     private let metalLayer = MPVMetalLayer()
     private var metalRenderer: MPVSoftwareMetalRenderer?
     private var isConfigured = false
@@ -266,6 +278,7 @@ final class MPVRenderView: NSView {
     private var geometryObservers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
     private var lastDrawablePixelSize = CGSize.zero
+    private var videoFramePixelSize = CGSize.zero
     private var seamlessResizeGeneration = 0
     private var isDeferringDrawableResize = false
 
@@ -281,8 +294,10 @@ final class MPVRenderView: NSView {
         metalLayer.backgroundColor = NSColor.black.cgColor
         metalLayer.frame = bounds
         metalLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        metalLayer.masksToBounds = true
         layer = metalLayer
         wantsLayer = true
+        clipsToBounds = true
         postsFrameChangedNotifications = true
         postsBoundsChangedNotifications = true
         geometryObservers = [
@@ -358,6 +373,8 @@ final class MPVRenderView: NSView {
         remainingVideoURLs = fallbackVideoURLs.filter { !$0.isEmpty && $0 != videoURL }
         loadOptions = start > 0 ? ["start=\(start)"] : []
         currentFileLoaded = false
+        videoFramePixelSize = .zero
+        lastDrawablePixelSize = .zero
         try submitLoad(videoURL: videoURL)
     }
 
@@ -427,13 +444,13 @@ final class MPVRenderView: NSView {
             return
         }
 
-        // Invalidate before clearing the pointer so any already-queued drain
-        // exits before `mpv_terminate_destroy` runs on the same serial queue.
+        // Invalidate before clearing the pointer so any already-queued main
+        // drain returns without calling into a destroyed handle.
         eventSessionID &+= 1
 
-        // Make the handle unavailable before draining callbacks. A wakeup that
-        // was already posted to the main queue will then return without queuing
-        // another mpv_wait_event operation.
+        // Make the handle unavailable before clearing callbacks. A wakeup that
+        // was already posted to the main queue will then return without calling
+        // mpv_wait_event.
         mpv = nil
         mpvCoreReady = false
         eventWakePending = false
@@ -443,14 +460,11 @@ final class MPVRenderView: NSView {
         metalRenderer?.stop()
         metalRenderer = nil
 
-        // readEvents() consumes the handle on eventQueue. Destroying it on the
-        // main actor while that queue is inside mpv_wait_event/log processing
-        // is a use-after-free (often surfacing in mp_msg_va after display
-        // sleep). Drain all previously submitted event work and destroy the
-        // client on that same serial queue.
-        eventQueue.sync {
-            mpv_terminate_destroy(handle)
-        }
+        // Event draining and all other client API calls run on the main actor.
+        // Destroy here only after the render context is freed and wakeups are
+        // cleared, so demux/vo threads cannot log through a half-torn-down
+        // client (mp_msg_va EXC_BAD_ACCESS on a null log context).
+        mpv_terminate_destroy(handle)
         retainedContext?.release()
     }
 
@@ -531,6 +545,8 @@ final class MPVRenderView: NSView {
         observe("pause", MPV_FORMAT_FLAG)
         observe("video-params/w", MPV_FORMAT_INT64)
         observe("video-params/h", MPV_FORMAT_INT64)
+        observe("video-params/dw", MPV_FORMAT_INT64)
+        observe("video-params/dh", MPV_FORMAT_INT64)
         mpv_set_wakeup_callback(handle, { context in
             guard let context else { return }
             let callback = Unmanaged<MPVCallbackContext>.fromOpaque(context).takeUnretainedValue()
@@ -550,23 +566,53 @@ final class MPVRenderView: NSView {
     }
 
     private func updateMetalLayerGeometry() {
-        // Render at logical view resolution. Scaling to Retina pixels here would
-        // make libmpv's software color conversion needlessly process 4x pixels.
-        let scale: CGFloat = 1
+        guard bounds.width > 0, bounds.height > 0 else { return }
+        let pixelScale = max(window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2, 1)
+        let viewPixelWidth = max(1, Int((bounds.width * pixelScale).rounded()))
+        let viewPixelHeight = max(1, Int((bounds.height * pixelScale).rounded()))
+        // Software rasterization at full Retina size is the main CPU cost.
+        // Cap the drawable at the video's native pixels and let CAMetalLayer
+        // upscale — no crop/zoom of the picture content.
+        let pixelSize = softwareRenderPixelSize(
+            viewPixelWidth: viewPixelWidth,
+            viewPixelHeight: viewPixelHeight
+        )
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         metalLayer.frame = bounds
-        metalLayer.contentsScale = scale
-        let pixelSize = CGSize(width: bounds.width * scale, height: bounds.height * scale)
-        if pixelSize.width > 1, pixelSize.height > 1, !isDeferringDrawableResize {
+        metalLayer.contentsScale = pixelScale
+        metalLayer.contentsGravity = .resizeAspect
+        metalLayer.cornerRadius = 0
+        metalLayer.masksToBounds = true
+        let sizeChanged = pixelSize != lastDrawablePixelSize
+        var shouldRedraw = false
+        if pixelSize.width > 1, pixelSize.height > 1, !isDeferringDrawableResize, sizeChanged {
             metalLayer.drawableSize = pixelSize
-            if pixelSize != lastDrawablePixelSize {
-                lastDrawablePixelSize = pixelSize
-                Self.playbackLogger.notice("Metal geometry view=\(Int(self.bounds.width), privacy: .public)x\(Int(self.bounds.height), privacy: .public) drawable=\(Int(pixelSize.width), privacy: .public)x\(Int(pixelSize.height), privacy: .public)")
-            }
+            lastDrawablePixelSize = pixelSize
+            shouldRedraw = true
+            Self.playbackLogger.debug("Metal geometry view=\(viewPixelWidth, privacy: .public)x\(viewPixelHeight, privacy: .public) drawable=\(Int(pixelSize.width), privacy: .public)x\(Int(pixelSize.height), privacy: .public)")
         }
         CATransaction.commit()
-        metalRenderer?.requestDraw()
+        if shouldRedraw {
+            metalRenderer?.requestDraw()
+        }
+    }
+
+    /// Prefer native video resolution; only downscale when the view is smaller.
+    private func softwareRenderPixelSize(viewPixelWidth: Int, viewPixelHeight: Int) -> CGSize {
+        let videoWidth = videoFramePixelSize.width
+        let videoHeight = videoFramePixelSize.height
+        guard videoWidth > 1, videoHeight > 1 else {
+            return CGSize(width: viewPixelWidth, height: viewPixelHeight)
+        }
+        let fitScale = min(
+            CGFloat(viewPixelWidth) / videoWidth,
+            CGFloat(viewPixelHeight) / videoHeight
+        )
+        let scale = min(1, fitScale)
+        let width = max(1, Int((videoWidth * scale).rounded()))
+        let height = max(1, Int((videoHeight * scale).rounded()))
+        return CGSize(width: width, height: height)
     }
 
     private func scheduleEventDrain() {
@@ -581,40 +627,32 @@ final class MPVRenderView: NSView {
     }
 
     private func readEvents() {
+        // Keep wait_event on the main actor with all other client API calls.
+        // Draining on a background queue while MainActor sets/gets properties
+        // races inside libmpv and commonly crashes in mp_msg_va (null log ctx).
         guard let handle = mpv else {
             isEventDrainScheduled = false
             eventWakePending = false
             return
         }
         let session = eventSessionID
-        let handleAddress = UInt(bitPattern: handle)
-        eventQueue.async { [weak self] in
-            guard let self else { return }
-            guard session == self.eventSessionID,
-                  let handle = OpaquePointer(bitPattern: handleAddress) else {
-                return
-            }
-            while session == self.eventSessionID,
-                  let event = mpv_wait_event(handle, 0),
-                  event.pointee.event_id != MPV_EVENT_NONE {
-                self.handle(event.pointee)
-            }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                guard session == self.eventSessionID else {
-                    self.isEventDrainScheduled = false
-                    self.eventWakePending = false
-                    return
-                }
-                self.isEventDrainScheduled = false
-                if self.eventWakePending {
-                    self.scheduleEventDrain()
-                }
-            }
+        while session == eventSessionID,
+              let event = mpv_wait_event(handle, 0),
+              event.pointee.event_id != MPV_EVENT_NONE {
+            handleEvent(event.pointee)
+        }
+        guard session == eventSessionID else {
+            isEventDrainScheduled = false
+            eventWakePending = false
+            return
+        }
+        isEventDrainScheduled = false
+        if eventWakePending {
+            scheduleEventDrain()
         }
     }
 
-    private nonisolated func handle(_ event: mpv_event) {
+    private func handleEvent(_ event: mpv_event) {
         switch event.event_id {
         case MPV_EVENT_PROPERTY_CHANGE:
             guard let raw = event.data else { return }
@@ -624,48 +662,59 @@ final class MPVRenderView: NSView {
             switch property.format {
             case MPV_FORMAT_DOUBLE:
                 let value = data.assumingMemoryBound(to: Double.self).pointee
-                Task { @MainActor in
-                    if name == "time-pos" { onTimeChanged?(value) }
-                    if name == "duration" { onDurationChanged?(value) }
-                }
+                if name == "time-pos" { onTimeChanged?(value) }
+                if name == "duration" { onDurationChanged?(value) }
             case MPV_FORMAT_FLAG:
                 let value = data.assumingMemoryBound(to: Int32.self).pointee != 0
-                Task { @MainActor in if name == "pause" { onPauseChanged?(value) } }
+                if name == "pause" { onPauseChanged?(value) }
+            case MPV_FORMAT_INT64:
+                if name.hasPrefix("video-params/") {
+                    // Defer property reads until after the current wait_event
+                    // drain finishes to avoid re-entering the client API mid-loop.
+                    DispatchQueue.main.async { [weak self] in
+                        self?.updateVideoSize()
+                    }
+                }
             default: break
             }
         case MPV_EVENT_FILE_LOADED:
-            Task { @MainActor in
-                currentFileLoaded = true
+            // Defer load-side commands so they run after this drain returns.
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.currentFileLoaded = true
                 let layerBound = self.layer === self.metalLayer
                 Self.playbackLogger.notice("FILE_LOADED vo=\(self.getString("current-vo") ?? "unknown", privacy: .public) metalLayer=\(layerBound, privacy: .public) drawable=\(Int(self.metalLayer.drawableSize.width), privacy: .public)x\(Int(self.metalLayer.drawableSize.height), privacy: .public)")
-                if let audioURL = pendingAudioURL {
+                if let audioURL = self.pendingAudioURL {
                     // DASH 的音轨是独立资源。audio-file 是启动选项，运行期修改并不会
                     // 稳定地附着到当前文件；必须等主视频加载完成后显式加入并选中音轨。
-                    pendingAudioURL = nil
-                    command("audio-add", [audioURL, "select"])
+                    self.pendingAudioURL = nil
+                    self.command("audio-add", [audioURL, "select"])
                 }
-                updateVideoSize()
-                onReady?()
+                self.setDouble("panscan", 0)
+                self.setDouble("video-zoom", 0)
+                self.updateVideoSize()
+                self.onReady?()
             }
         case MPV_EVENT_END_FILE:
             let reason = event.data?.assumingMemoryBound(to: mpv_event_end_file.self).pointee
-            Task { @MainActor in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
                 if reason?.reason == MPV_END_FILE_REASON_ERROR {
                     let code = reason?.error ?? Int32(MPV_ERROR_GENERIC.rawValue)
                     Self.playbackLogger.error("END_FILE error=\(code, privacy: .public) message=\(String(cString: mpv_error_string(code)), privacy: .public)")
-                    if !currentFileLoaded, !remainingVideoURLs.isEmpty {
-                        let nextURL = remainingVideoURLs.removeFirst()
+                    if !self.currentFileLoaded, !self.remainingVideoURLs.isEmpty {
+                        let nextURL = self.remainingVideoURLs.removeFirst()
                         Self.playbackLogger.notice("retrying unopened DASH candidate host=\(URL(string: nextURL)?.host ?? "invalid", privacy: .public)")
                         do {
-                            try submitLoad(videoURL: nextURL)
+                            try self.submitLoad(videoURL: nextURL)
                         } catch {
-                            onError?(error.localizedDescription)
+                            self.onError?(error.localizedDescription)
                         }
                         return
                     }
-                    onError?(String(cString: mpv_error_string(code)))
+                    self.onError?(String(cString: mpv_error_string(code)))
                 } else {
-                    onEnded?()
+                    self.onEnded?()
                 }
             }
         default: break
@@ -678,11 +727,35 @@ final class MPVRenderView: NSView {
     }
 
     private func updateVideoSize() {
+        let displayWidth = getInt64("video-params/dw")
+        let displayHeight = getInt64("video-params/dh")
+        if displayWidth > 0, displayHeight > 0 {
+            let pixels = CGSize(width: CGFloat(displayWidth), height: CGFloat(displayHeight))
+            if pixels != videoFramePixelSize {
+                videoFramePixelSize = pixels
+                Self.playbackLogger.debug("video-display-size=\(displayWidth, privacy: .public)x\(displayHeight, privacy: .public)")
+                updateMetalLayerGeometry()
+            }
+            onVideoSizeChanged?(pixels)
+            return
+        }
+
         let width = getInt64("video-params/w")
         let height = getInt64("video-params/h")
         if width > 0, height > 0 {
-            Self.playbackLogger.notice("video-size=\(width, privacy: .public)x\(height, privacy: .public)")
-            onVideoSizeChanged?(CGSize(width: CGFloat(width), height: CGFloat(height)))
+            let aspect = getDouble("video-params/aspect")
+            if aspect.isFinite, aspect > 0 {
+                Self.playbackLogger.debug("video-size=\(width, privacy: .public)x\(height, privacy: .public) aspect=\(aspect, privacy: .public)")
+                onVideoSizeChanged?(CGSize(width: aspect, height: 1))
+                return
+            }
+            let pixels = CGSize(width: CGFloat(width), height: CGFloat(height))
+            if pixels != videoFramePixelSize {
+                videoFramePixelSize = pixels
+                Self.playbackLogger.debug("video-size=\(width, privacy: .public)x\(height, privacy: .public)")
+                updateMetalLayerGeometry()
+            }
+            onVideoSizeChanged?(pixels)
         }
     }
 

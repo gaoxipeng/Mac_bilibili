@@ -28,7 +28,24 @@ enum VideoPlayerChrome {
 
     /// 播放页：在列宽与可用高度内按视频比例适配，避免 4:3 等比例溢出。
     static func detailPlayerSize(maxWidth: CGFloat, maxHeight: CGFloat, aspectRatio: CGFloat) -> CGSize {
-        fittedSize(maxWidth: maxWidth, maxHeight: maxHeight, aspectRatio: aspectRatio)
+        pixelCoverSize(
+            fittedSize(maxWidth: maxWidth, maxHeight: maxHeight, aspectRatio: aspectRatio)
+        )
+    }
+
+    /// Snap to the physical pixel grid while keeping aspect. Height uses floor so
+    /// the container is never taller than the video DAR (ceil caused a 1px
+    /// letterbox — a thin black line at the bottom).
+    static func pixelCoverSize(_ size: CGSize, scale: CGFloat? = nil) -> CGSize {
+        guard size.width > 0, size.height > 0 else { return CGSize(width: 1, height: 1) }
+        let pixelScale = max(scale ?? NSScreen.main?.backingScaleFactor ?? 2, 1)
+        let ratio = size.width / size.height
+        let pixelWidth = max(1, Int(ceil(size.width * pixelScale - 1e-4)))
+        let pixelHeight = max(1, Int(floor(CGFloat(pixelWidth) / ratio + 1e-4)))
+        return CGSize(
+            width: CGFloat(pixelWidth) / pixelScale,
+            height: CGFloat(pixelHeight) / pixelScale
+        )
     }
 }
 
@@ -75,6 +92,8 @@ final class PlayerClipContainerView: NSView {
         super.init(frame: .zero)
         wantsLayer = true
         applyRoundedMask()
+        playerView.isHidden = true
+        playerView.alphaValue = 0
         addSubview(playerView)
         registerHostRole()
     }
@@ -83,6 +102,8 @@ final class PlayerClipContainerView: NSView {
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
+
+    override var isOpaque: Bool { true }
 
     override func layout() {
         super.layout()
@@ -93,12 +114,22 @@ final class PlayerClipContainerView: NSView {
     }
 
     override func setFrameSize(_ newSize: NSSize) {
-        super.setFrameSize(newSize)
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let snapped = VideoPlayerChrome.pixelCoverSize(
+            CGSize(width: max(newSize.width, 1), height: max(newSize.height, 1)),
+            scale: scale
+        )
+        super.setFrameSize(snapped)
         updatePlaybackSubviewFrames()
     }
 
     override func setBoundsSize(_ newSize: NSSize) {
-        super.setBoundsSize(newSize)
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let snapped = VideoPlayerChrome.pixelCoverSize(
+            CGSize(width: max(newSize.width, 1), height: max(newSize.height, 1)),
+            scale: scale
+        )
+        super.setBoundsSize(snapped)
         updatePlaybackSubviewFrames()
     }
 
@@ -119,7 +150,7 @@ final class PlayerClipContainerView: NSView {
 
     func attachMPVView(_ view: MPVRenderView) {
         if mpvView === view, view.superview === self {
-            view.frame = bounds
+            updatePlaybackSubviewFrames()
             view.refreshPresentation()
             return
         }
@@ -146,8 +177,7 @@ final class PlayerClipContainerView: NSView {
         view.removeFromSuperview()
         mpvView = view
         addSubview(view, positioned: .above, relativeTo: playerView)
-        view.frame = bounds
-        view.autoresizingMask = [.width, .height]
+        updatePlaybackSubviewFrames()
         registerHostRole()
         view.refreshPresentation()
     }
@@ -172,9 +202,15 @@ final class PlayerClipContainerView: NSView {
 
     private func applyRoundedMask() {
         wantsLayer = true
-        layer?.cornerRadius = cornerRadius
-        layer?.cornerCurve = .continuous
-        layer?.masksToBounds = cornerRadius > 0
+        if cornerRadius > 0.5 {
+            layer?.cornerRadius = cornerRadius
+            layer?.cornerCurve = .continuous
+            layer?.masksToBounds = true
+        } else {
+            layer?.cornerRadius = 0
+            layer?.masksToBounds = true
+        }
+        layer?.backgroundColor = NSColor.black.cgColor
     }
 }
 
@@ -641,8 +677,9 @@ private final class PictureInPictureWindowResizeBlocker: NSObject, NSWindowDeleg
 }
 
 struct VideoPlayerSurface: NSViewRepresentable {
-    @ObservedObject var player: VideoPlaybackEngine
+    let player: VideoPlaybackEngine
     var cornerRadius: CGFloat = VideoPlayerChrome.cornerRadius
+    private var isReady: Bool { player.isReady }
 
     func makeNSView(context: Context) -> PlayerClipContainerView {
         let container = PlayerClipContainerView(cornerRadius: cornerRadius)
@@ -654,7 +691,7 @@ struct VideoPlayerSurface: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: PlayerClipContainerView, context: Context) {
-        _ = player.isReady
+        _ = isReady
         nsView.cornerRadius = cornerRadius
         nsView.attachMPVView(player.renderView)
     }

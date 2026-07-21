@@ -90,6 +90,8 @@ final class UserProfileModel: ObservableObject {
             follower: profile?.follower,
             likes: profile?.likes,
             videoCount: profile?.videoCount,
+            coinCount: isOwnProfile ? profile?.coinCount : nil,
+            bcoinBalance: isOwnProfile ? profile?.bcoinBalance : nil,
             webURL: spaceWebURL,
             showFollowButton: showFollowButton,
             isFollowing: relation.following,
@@ -112,6 +114,9 @@ final class UserProfileModel: ObservableObject {
 
         do {
             profile = try await api.userProfile(mid: mid, credential: credential)
+            if isOwnProfile, let credential, let current = profile {
+                profile = await mergeWallet(into: current, credential: credential)
+            }
             if let credential, !isOwnProfile {
                 relation = (try? await api.userRelation(mid: mid, credential: credential)) ?? BiliAuthorRelation()
             }
@@ -285,6 +290,29 @@ final class UserProfileModel: ObservableObject {
         )
     }
 
+    private func mergeWallet(
+        into profile: BiliUserProfile,
+        credential: BilibiliCredential
+    ) async -> BiliUserProfile {
+        guard let wallet = try? await api.userWallet(credential: credential) else {
+            return profile
+        }
+        return BiliUserProfile(
+            mid: profile.mid,
+            name: profile.name,
+            faceURL: profile.faceURL,
+            sign: profile.sign,
+            level: profile.level,
+            following: profile.following,
+            follower: profile.follower,
+            likes: profile.likes,
+            coinCount: wallet.coinCount,
+            bcoinBalance: wallet.bcoinBalance,
+            videoCount: profile.videoCount,
+            ipLocation: profile.ipLocation
+        )
+    }
+
     private func applyProfileIpLocation(_ ipLocation: String?) {
         guard let normalized = JSONParser.normalizeIpLocation(ipLocation) else { return }
         guard let current = profile else { return }
@@ -412,6 +440,8 @@ struct UserProfileChromeInfo: Equatable {
     let follower: Int64?
     let likes: Int64?
     let videoCount: Int64?
+    let coinCount: Int64?
+    let bcoinBalance: Double?
     let webURL: URL
     let showFollowButton: Bool
     let isFollowing: Bool
@@ -484,7 +514,13 @@ struct UserProfileChromeHeaderView: View {
                             BiliUserLevelIcon(level: info.level, width: 30, height: 19)
                         }
 
-                        if let ipLocation = info.ipLocation, !ipLocation.isEmpty {
+                        if info.showLogoutButton {
+                            ProfileWalletSummary(
+                                coinCount: info.coinCount ?? 0,
+                                bcoinBalance: info.bcoinBalance ?? 0,
+                                textColor: secondaryText
+                            )
+                        } else if let ipLocation = info.ipLocation, !ipLocation.isEmpty {
                             Text("IP属地：\(ipLocation)")
                                 .font(.callout)
                                 .foregroundStyle(secondaryText)
@@ -606,6 +642,22 @@ struct UserProfileChromeHeaderView: View {
         .overlay {
             Circle().stroke(Color.black.opacity(0.08), lineWidth: 1.5)
         }
+    }
+}
+
+private struct ProfileWalletSummary: View {
+    let coinCount: Int64
+    let bcoinBalance: Double
+    let textColor: Color
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("B币：\(bcoinBalance.biliCoinBalanceLabel)")
+            Text("硬币：\(coinCount.compactCount)")
+        }
+        .font(.callout)
+        .foregroundStyle(textColor)
+        .lineLimit(1)
     }
 }
 
@@ -972,7 +1024,11 @@ struct UserProfileView: View {
             follow: { Task { await model.followAuthor() } },
             unfollow: { Task { await model.unfollowAuthor() } },
             openRelationList: { tab in
-                let chrome = Self.resolvedChromeInfo(model: model, account: appModel.account)
+                let chrome = Self.resolvedChromeInfo(
+                    model: model,
+                    account: appModel.account,
+                    accountProfile: appModel.profile
+                )
                 appModel.requestUserRelationList(
                     UserRelationListRequest(
                         hostMid: model.mid,
@@ -990,7 +1046,11 @@ struct UserProfileView: View {
                     // update via @Published on the page model; chrome lives in AppModel
                     // and can stay stale when field-level onChange does not fire.
                     appModel.presentProfileFloatingChrome(
-                        Self.resolvedChromeInfo(model: model, account: appModel.account),
+                        Self.resolvedChromeInfo(
+                            model: model,
+                            account: appModel.account,
+                            accountProfile: appModel.profile
+                        ),
                         ownerMid: model.mid
                     )
                 }
@@ -1000,20 +1060,69 @@ struct UserProfileView: View {
     }
 
     private var profileChromePreference: UserProfileChromeInfo? {
-        Self.resolvedChromeInfo(model: model, account: appModel.account)
+        Self.resolvedChromeInfo(
+            model: model,
+            account: appModel.account,
+            accountProfile: appModel.profile
+        )
     }
 
     /// Own-profile chrome falls back to the logged-in account so avatar/ID still
     /// show when space API data has not arrived (or failed to publish).
     private static func resolvedChromeInfo(
         model: UserProfileModel,
-        account: BiliAccount?
+        account: BiliAccount?,
+        accountProfile: BiliUserProfile? = nil
     ) -> UserProfileChromeInfo {
         let base = model.chromeInfo
-        guard model.isOwnProfile, let account else { return base }
+        let walletCoinCount = base.coinCount ?? accountProfile?.coinCount
+        let walletBalance = base.bcoinBalance ?? accountProfile?.bcoinBalance
+        guard model.isOwnProfile, let account else {
+            return UserProfileChromeInfo(
+                faceURL: base.faceURL,
+                name: base.name,
+                level: base.level,
+                sign: base.sign,
+                ipLocation: base.ipLocation,
+                following: base.following,
+                follower: base.follower,
+                likes: base.likes,
+                videoCount: base.videoCount,
+                coinCount: walletCoinCount,
+                bcoinBalance: walletBalance,
+                webURL: base.webURL,
+                showFollowButton: base.showFollowButton,
+                isFollowing: base.isFollowing,
+                followerMe: base.followerMe,
+                followerCount: base.followerCount,
+                followLoading: base.followLoading,
+                showLogoutButton: base.showLogoutButton
+            )
+        }
         let name = base.name.isEmpty ? account.name : base.name
         let faceURL = base.faceURL ?? account.faceURL
-        guard name != base.name || faceURL != base.faceURL else { return base }
+        guard name != base.name || faceURL != base.faceURL else {
+            return UserProfileChromeInfo(
+                faceURL: base.faceURL,
+                name: base.name,
+                level: base.level,
+                sign: base.sign,
+                ipLocation: base.ipLocation,
+                following: base.following,
+                follower: base.follower,
+                likes: base.likes,
+                videoCount: base.videoCount,
+                coinCount: walletCoinCount,
+                bcoinBalance: walletBalance,
+                webURL: base.webURL,
+                showFollowButton: base.showFollowButton,
+                isFollowing: base.isFollowing,
+                followerMe: base.followerMe,
+                followerCount: base.followerCount,
+                followLoading: base.followLoading,
+                showLogoutButton: base.showLogoutButton
+            )
+        }
         return UserProfileChromeInfo(
             faceURL: faceURL,
             name: name,
@@ -1024,6 +1133,8 @@ struct UserProfileView: View {
             follower: base.follower,
             likes: base.likes,
             videoCount: base.videoCount,
+            coinCount: walletCoinCount,
+            bcoinBalance: walletBalance,
             webURL: base.webURL,
             showFollowButton: base.showFollowButton,
             isFollowing: base.isFollowing,

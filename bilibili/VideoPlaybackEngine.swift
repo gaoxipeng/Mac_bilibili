@@ -32,6 +32,7 @@ final class VideoPlaybackEngine: ObservableObject {
 
     @Published private(set) var isReady = false
     @Published private(set) var videoAspectRatio: CGFloat = 16.0 / 9.0
+    @Published private(set) var videoDisplaySize = CGSize(width: 16, height: 9)
     @Published private(set) var volume: Float = 1
     @Published private(set) var isMuted = false
     @Published private(set) var playbackRate: Float = 1
@@ -62,8 +63,11 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     var displayAspectRatio: CGFloat {
-        guard videoAspectRatio.isFinite, videoAspectRatio > 0 else { return 16.0 / 9.0 }
-        return videoAspectRatio
+        guard videoDisplaySize.width > 0, videoDisplaySize.height > 0 else {
+            guard videoAspectRatio.isFinite, videoAspectRatio > 0 else { return 16.0 / 9.0 }
+            return videoAspectRatio
+        }
+        return videoDisplaySize.width / videoDisplaySize.height
     }
 
     init() {
@@ -88,6 +92,7 @@ final class VideoPlaybackEngine: ObservableObject {
         }
         renderView.onVideoSizeChanged = { [weak self] size in
             guard let self, size.width > 0, size.height > 0 else { return }
+            videoDisplaySize = size
             videoAspectRatio = size.width / size.height
         }
         renderView.onReady = { [weak self] in self?.isReady = true }
@@ -146,6 +151,7 @@ final class VideoPlaybackEngine: ObservableObject {
     ) async throws {
         stop()
         videoAspectRatio = 16.0 / 9.0
+        videoDisplaySize = CGSize(width: 16, height: 9)
         let headers = BilibiliEndpoints.playbackHeaders(cookie: cookieHeader)
         self.pictureInPictureStream = pictureInPictureStream
         self.pictureInPictureStreamLoader = pictureInPictureStreamLoader
@@ -434,6 +440,7 @@ final class VideoPlaybackEngine: ObservableObject {
         isScrubbing = false
         scrubPreviewTime = nil
         videoAspectRatio = 16.0 / 9.0
+        videoDisplaySize = CGSize(width: 16, height: 9)
         playbackRate = 1
         isPictureInPictureActive = false
         updateNowPlayingInfo()

@@ -758,6 +758,8 @@ struct GlassSettingsPopUpButtonRepresentable: NSViewRepresentable {
                 onLogout()
             }
         }
+
+        @objc func ignoreMenuAction(_ sender: NSMenuItem) {}
     }
 }
 
@@ -837,12 +839,22 @@ final class GlassSettingsPopUpButtonView: NSView, NSMenuDelegate {
         actionMenu.addItem(.separator())
 
         let aboutMenu = NSMenu(title: "关于")
+        let versionTitle = "版本 \(AppVersion.display)"
         let versionItem = NSMenuItem(
-            title: "版本 \(AppVersion.display)",
-            action: nil,
+            title: versionTitle,
+            action: #selector(GlassSettingsPopUpButtonRepresentable.Coordinator.ignoreMenuAction(_:)),
             keyEquivalent: ""
         )
-        versionItem.isEnabled = false
+        versionItem.target = coordinator
+        // Keep enabled so AppKit does not render the informational version as dimmed secondary text.
+        versionItem.isEnabled = true
+        versionItem.attributedTitle = NSAttributedString(
+            string: versionTitle,
+            attributes: [
+                .font: NSFont.menuFont(ofSize: 0),
+                .foregroundColor: NSColor.labelColor,
+            ]
+        )
         aboutMenu.addItem(versionItem)
 
         let aboutRoot = NSMenuItem(title: "关于", action: nil, keyEquivalent: "")
@@ -860,10 +872,7 @@ final class GlassSettingsPopUpButtonView: NSView, NSMenuDelegate {
             keyEquivalent: ""
         )
         logoutItem.target = coordinator
-        logoutItem.image = NSImage(
-            systemSymbolName: "rectangle.portrait.and.arrow.right",
-            accessibilityDescription: nil
-        )
+        logoutItem.view = SettingsLogoutMenuItemView(title: "退出登录")
         actionMenu.addItem(logoutItem)
 
         toolTip = "设置"
@@ -882,6 +891,55 @@ final class GlassSettingsPopUpButtonView: NSView, NSMenuDelegate {
         if isPressedBinding.wrappedValue != pressed {
             isPressedBinding.wrappedValue = pressed
         }
+    }
+}
+
+/// Standard menu-row sizing, no icon; red rounded highlight only while hovered.
+private final class SettingsLogoutMenuItemView: NSView {
+    private let title: String
+
+    init(title: String) {
+        self.title = title
+        super.init(frame: NSRect(x: 0, y: 0, width: 10, height: 22))
+        autoresizingMask = [.width]
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var intrinsicContentSize: NSSize {
+        NSSize(width: NSView.noIntrinsicMetric, height: 22)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let highlighted = enclosingMenuItem?.isHighlighted == true
+        if highlighted {
+            let highlightRect = bounds.insetBy(dx: 5, dy: 1)
+            let path = NSBezierPath(roundedRect: highlightRect, xRadius: 6, yRadius: 6)
+            NSColor.systemRed.setFill()
+            path.fill()
+        }
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.menuFont(ofSize: 0),
+            .foregroundColor: highlighted ? NSColor.white : NSColor.labelColor,
+        ]
+        let text = title as NSString
+        let textSize = text.size(withAttributes: attributes)
+        let origin = NSPoint(
+            x: 14,
+            y: ((bounds.height - textSize.height) / 2).rounded(.toNearestOrAwayFromZero)
+        )
+        text.draw(at: origin, withAttributes: attributes)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard let item = enclosingMenuItem,
+              let action = item.action else { return }
+        NSApp.sendAction(action, to: item.target, from: item)
+        item.menu?.cancelTracking()
     }
 }
 

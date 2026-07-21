@@ -365,6 +365,15 @@ actor BilibiliAPI {
         return profile
     }
 
+    func userWallet(credential: BilibiliCredential) async throws -> (coinCount: Int64, bcoinBalance: Double)? {
+        let nav = try await json(
+            url: "https://api.bilibili.com/x/web-interface/nav",
+            params: [:],
+            credential: credential
+        )
+        return JSONParser.parseUserWallet(from: nav)
+    }
+
     func userSign(mid: Int64, credential: BilibiliCredential? = nil) async -> String {
         if let snapshot = await userCardSnapshot(mid: mid, credential: credential) {
             let sign = snapshot.sign.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -883,33 +892,65 @@ actor BilibiliAPI {
                 return URL(string: normalized)
             }
             guard !images.isEmpty else { continue }
-            var indices: [Int] = (data["index"] as? [Any])?.compactMap { value -> Int? in
+            let inlineIndices: [Int] = (data["index"] as? [Any])?.compactMap { value -> Int? in
                 if let value = value as? Int { return value }
                 if let value = value as? NSNumber { return value.intValue }
                 if let value = value as? String { return Int(value) }
                 return nil
             } ?? []
-            if indices.isEmpty, let rawPVData = data["pvdata"] as? String {
-                let normalized = rawPVData.hasPrefix("//") ? "https:\(rawPVData)" : rawPVData
-                if let url = URL(string: normalized) {
-                    indices = await videoShotIndexData(url: url, referer: referer)
-                }
-            }
             func intValue(_ key: String, fallback: Int) -> Int {
                 if let value = data[key] as? NSNumber { return max(1, value.intValue) }
                 if let value = data[key] as? String, let parsed = Int(value) { return max(1, parsed) }
                 return fallback
             }
+            let tileColumns = intValue("img_x_len", fallback: 10)
+            let tileRows = intValue("img_y_len", fallback: 10)
+            let snapshotCapacity = images.count * tileColumns * tileRows
+            var indices = inlineIndices
+            if let rawPVData = data["pvdata"] as? String {
+                let normalized = rawPVData.hasPrefix("//") ? "https:\(rawPVData)" : rawPVData
+                if let url = URL(string: normalized) {
+                    let pvIndices = await videoShotIndexData(url: url, referer: referer)
+                    if Self.isPlausibleVideoShotTimeline(pvIndices),
+                       pvIndices.count >= inlineIndices.count {
+                        indices = pvIndices
+                    } else if indices.isEmpty, Self.isPlausibleVideoShotTimeline(pvIndices) {
+                        indices = pvIndices
+                    }
+                }
+            }
+            indices = Self.normalizedVideoShotTimeline(indices, capacity: snapshotCapacity)
             return BiliVideoShot(
                 images: images,
                 indexSeconds: indices,
-                tileColumns: intValue("img_x_len", fallback: 10),
-                tileRows: intValue("img_y_len", fallback: 10),
+                tileColumns: tileColumns,
+                tileRows: tileRows,
                 tileWidth: intValue("img_x_size", fallback: 160),
                 tileHeight: intValue("img_y_size", fallback: 90)
             )
         }
         return nil
+    }
+
+    private static func normalizedVideoShotTimeline(_ values: [Int], capacity: Int) -> [Int] {
+        guard capacity > 0 else { return [] }
+        guard !values.isEmpty else { return [] }
+        var timeline = values.count > capacity ? Array(values.prefix(capacity)) : values
+        if timeline[0] != 0 {
+            timeline[0] = 0
+        }
+        return timeline
+    }
+
+    private static func isPlausibleVideoShotTimeline(_ values: [Int]) -> Bool {
+        guard !values.isEmpty else { return false }
+        guard values[0] == 0 || values[0] < 120 else { return false }
+        guard let last = values.last, last >= 0, last < 864_000 else { return false }
+        var regressions = 0
+        for index in 1..<values.count where values[index] < values[index - 1] {
+            regressions += 1
+        }
+        return regressions == 0
     }
 
     private func videoShotIndexData(url: URL, referer: String) async -> [Int] {
@@ -922,13 +963,28 @@ actor BilibiliAPI {
               (200..<300).contains(http.statusCode),
               payload.count >= 2 else { return [] }
 
+        let bigEndian = Self.parseVideoShotTimelineUInt16(payload, littleEndian: false)
+        if Self.isPlausibleVideoShotTimeline(bigEndian) {
+            return bigEndian
+        }
+        let littleEndian = Self.parseVideoShotTimelineUInt16(payload, littleEndian: true)
+        if Self.isPlausibleVideoShotTimeline(littleEndian) {
+            return littleEndian
+        }
+        return bigEndian
+    }
+
+    private static func parseVideoShotTimelineUInt16(_ payload: Data, littleEndian: Bool) -> [Int] {
         var values: [Int] = []
         values.reserveCapacity(payload.count / 2)
         payload.withUnsafeBytes { bytes in
             let raw = bytes.bindMemory(to: UInt8.self)
             var offset = 0
             while offset + 1 < raw.count {
-                values.append(Int(UInt16(raw[offset]) << 8 | UInt16(raw[offset + 1])))
+                let value = littleEndian
+                    ? Int(UInt16(raw[offset]) | UInt16(raw[offset + 1]) << 8)
+                    : Int(UInt16(raw[offset]) << 8 | UInt16(raw[offset + 1]))
+                values.append(value)
                 offset += 2
             }
         }

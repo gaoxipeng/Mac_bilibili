@@ -334,6 +334,17 @@ enum JSONParser {
         )
     }
 
+    nonisolated static func parseUserWallet(from object: Any) -> (coinCount: Int64, bcoinBalance: Double)? {
+        let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
+        let mid = int64(data, "mid")
+        guard boolish(data["isLogin"]) || mid > 0 else { return nil }
+        let wallet = data["wallet"] as? [String: Any]
+        return (
+            coinCount: max(0, int64(data, "money")),
+            bcoinBalance: double(wallet ?? data, "bcoin_balance")
+        )
+    }
+
     nonisolated static func parseUserAccInfo(from object: Any) -> BiliUserProfile? {
         let data = dictionary(object)["data"] as? [String: Any] ?? [:]
         let mid = int64(data, "mid")

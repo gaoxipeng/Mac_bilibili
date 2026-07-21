@@ -211,11 +211,11 @@ final class DanmakuRenderNSView: NSView {
         let targetLink = link ?? displayLink
         guard let targetLink else { return }
 
-        // Match the display that actually contains the player. Hard-coding
-        // 60 Hz makes the inline overlay update only every other refresh on a
-        // 120 Hz ProMotion display, while the fullscreen window is composited
-        // at the display's native rate.
-        let refreshRate = Float(max(window?.screen?.maximumFramesPerSecond ?? 60, 60))
+        // Cap at 60 Hz. Matching ProMotion 120 Hz rebuilt danmaku timeline work
+        // every refresh without improving scroll smoothness (CA animations run
+        // on the compositor).
+        let displayRate = Float(max(window?.screen?.maximumFramesPerSecond ?? 60, 60))
+        let refreshRate = min(displayRate, 60)
         targetLink.preferredFrameRateRange = CAFrameRateRange(
             minimum: refreshRate,
             maximum: refreshRate,

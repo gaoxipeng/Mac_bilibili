@@ -2195,6 +2195,23 @@ private final class VideoPlayerVisualState: ObservableObject {
     }
 }
 
+private struct InlinePlayerRoundedClip: ViewModifier {
+    let enabled: Bool
+
+    func body(content: Content) -> some View {
+        if enabled {
+            content.clipShape(
+                RoundedRectangle(
+                    cornerRadius: VideoPlayerChrome.cornerRadius,
+                    style: .continuous
+                )
+            )
+        } else {
+            content
+        }
+    }
+}
+
 private struct VideoPlayerSection: View {
     @ObservedObject var model: VideoDetailModel
     private let player: VideoPlaybackEngine
@@ -2240,15 +2257,13 @@ private struct VideoPlayerSection: View {
 
     var body: some View {
         ZStack {
-            RoundedRectangle(
-                cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius,
-                style: .continuous
-            )
-            .fill(.black)
-
             playerContentStack
-
             playerChromeOverlay
+        }
+        .background {
+            if isFullscreen {
+                Color.black
+            }
         }
         .background {
             VideoPlayerKeyboardMonitor(handlers: keyboardHandlers)
@@ -2264,13 +2279,7 @@ private struct VideoPlayerSection: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(width: isFullscreen ? nil : fittedSize.width, height: isFullscreen ? nil : fittedSize.height)
-        .overlay {
-            if !isFullscreen {
-                RoundedRectangle(cornerRadius: VideoPlayerChrome.cornerRadius, style: .continuous)
-                    .stroke(Color.white.opacity(0.14), lineWidth: 0.6)
-            }
-        }
-        .animation(.easeOut(duration: 0.2), value: visualState.displayAspectRatio)
+        .animation(visualState.isReady ? .easeOut(duration: 0.2) : nil, value: visualState.displayAspectRatio)
         .onChange(of: chromeState.showsControls) { _, visible in
             guard isFullscreen else { return }
             if !visible && !model.showDanmakuSettings {
@@ -2282,21 +2291,15 @@ private struct VideoPlayerSection: View {
     @ViewBuilder
     private var playerContentStack: some View {
         ZStack {
-            if let playError = model.playError {
-                ContentUnavailableView("无法播放", systemImage: "play.slash", description: Text(playError))
-                    .foregroundStyle(.white.opacity(0.86))
-            } else if !visualState.isReady {
-                Color.clear
-            } else {
+            if model.playError == nil {
                 VideoPlayerSurface(
                     player: player,
                     cornerRadius: isFullscreen ? 0 : VideoPlayerChrome.cornerRadius
                 )
-                // Keep the overlay mounted whenever danmaku can show, and only
-                // toggle activity/opacity. Conditionally inserting it when
-                // leaving fullscreen remounts the ZStack and flashes black
-                // behind the shared mpv surface.
-                if model.danmakuVisible,
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                if visualState.isReady,
+                   model.danmakuVisible,
                    !model.danmakuItems.isEmpty,
                    !visualState.isPictureInPictureActive {
                     DanmakuOverlayView(
@@ -2312,10 +2315,15 @@ private struct VideoPlayerSection: View {
                     .equatable()
                     .opacity(rendersDanmaku ? 1 : 0)
                     .allowsHitTesting(false)
+                    .modifier(InlinePlayerRoundedClip(enabled: !isFullscreen))
                 }
-                if visualState.isPictureInPictureActive {
-                    Color.black
-                }
+            }
+            if let playError = model.playError {
+                ContentUnavailableView("无法播放", systemImage: "play.slash", description: Text(playError))
+                    .foregroundStyle(.white.opacity(0.86))
+            }
+            if visualState.isPictureInPictureActive {
+                Color.black
             }
             VideoPlayerClickOverlay(
                 onSingleClick: {
@@ -2558,6 +2566,58 @@ private enum VideoControlLayout {
     static let chromeHitTestClearance: CGFloat = 80
 }
 
+private enum VideoScrubPreviewLayout {
+    static let maxLandscapeWidth: CGFloat = 280
+    static let maxPortraitHeight: CGFloat = 180
+    static let timeCapsuleStackHeight: CGFloat = 52
+
+    static func size(for aspectRatio: CGFloat) -> CGSize {
+        let ratio = aspectRatio.isFinite && aspectRatio > 0 ? aspectRatio : 16.0 / 9.0
+        if ratio < 1 {
+            let height = maxPortraitHeight
+            let width = max(72, height * ratio)
+            return CGSize(width: width, height: height)
+        }
+        let width = maxLandscapeWidth
+        return CGSize(width: width, height: width / ratio)
+    }
+
+    static func aspectRatio(videoShot: BiliVideoShot?, playerAspectRatio: CGFloat) -> CGFloat {
+        guard playerAspectRatio.isFinite, playerAspectRatio > 0 else {
+            if let videoShot, videoShot.tileWidth > 0, videoShot.tileHeight > 0 {
+                return CGFloat(videoShot.tileWidth) / CGFloat(videoShot.tileHeight)
+            }
+            return 16.0 / 9.0
+        }
+        // Videoshot metadata often stays 160×90 even for portrait videos.
+        // Size the scrub card from the real playback aspect instead.
+        if playerAspectRatio < 1 {
+            return playerAspectRatio
+        }
+        if let videoShot, videoShot.tileWidth > 0, videoShot.tileHeight > 0 {
+            return CGFloat(videoShot.tileWidth) / CGFloat(videoShot.tileHeight)
+        }
+        return playerAspectRatio
+    }
+}
+
+private enum VideoControlLabelStyle {
+    static let softShadow = Color.black.opacity(0.72)
+    static let softShadowRadius: CGFloat = 2.8
+    static let softShadowY: CGFloat = 1.0
+}
+
+private extension View {
+    func videoControlSoftShadow() -> some View {
+        shadow(
+            color: VideoControlLabelStyle.softShadow,
+            radius: VideoControlLabelStyle.softShadowRadius,
+            x: 0,
+            y: VideoControlLabelStyle.softShadowY
+        )
+    }
+}
+
 private struct VideoControlInteractiveForeground: ViewModifier {
     var isEnabled: Bool = true
     var baseOpacity: CGFloat = 1
@@ -2567,6 +2627,7 @@ private struct VideoControlInteractiveForeground: ViewModifier {
     func body(content: Content) -> some View {
         content
             .foregroundStyle(isHovered && isEnabled ? BiliTheme.pink : .white.opacity(baseOpacity))
+            .videoControlSoftShadow()
             .animation(.easeOut(duration: 0.15), value: isHovered)
             .onHover { hovering in
                 guard isEnabled else { return }
@@ -2658,6 +2719,7 @@ private struct VideoControlCapsule: View {
                 Text(formatTime(positionTime))
                     .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
                     .foregroundStyle(.white)
+                    .videoControlSoftShadow()
                     .frame(minWidth: VideoControlLayout.timeMinWidth, alignment: .leading)
                     .allowsHitTesting(false)
 
@@ -2715,6 +2777,7 @@ private struct VideoControlCapsule: View {
                     Text(formatTime(max(0, player.duration - positionTime)))
                         .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
                         .foregroundStyle(.white)
+                        .videoControlSoftShadow()
                         .frame(minWidth: VideoControlLayout.timeMinWidth, alignment: .trailing)
                         .allowsHitTesting(false)
                 }
@@ -2728,9 +2791,11 @@ private struct VideoControlCapsule: View {
         .overlay(alignment: .topLeading) {
             GeometryReader { proxy in
                 if let hoverProgress {
-                    let previewWidth: CGFloat = 340
-                    let previewAspectRatio = min(2.4, max(0.5, player.displayAspectRatio))
-                    let previewHeight = previewWidth / previewAspectRatio
+                    let previewAspectRatio = VideoScrubPreviewLayout.aspectRatio(
+                        videoShot: videoShot,
+                        playerAspectRatio: player.displayAspectRatio
+                    )
+                    let previewSize = VideoScrubPreviewLayout.size(for: previewAspectRatio)
                     VideoScrubHoverPreview(
                         videoShot: videoShot,
                         seconds: hoverProgress * max(player.duration, 0),
@@ -2740,12 +2805,10 @@ private struct VideoControlCapsule: View {
                     )
                     .offset(
                         x: min(
-                            max(0, proxy.size.width * hoverProgress - previewWidth / 2),
-                            max(0, proxy.size.width - previewWidth)
+                            max(0, proxy.size.width * hoverProgress - previewSize.width / 2),
+                            max(0, proxy.size.width - previewSize.width)
                         ),
-                        // Image + 6pt internal gap + 40pt time capsule + the
-                        // same 6pt external gap above the progress controls.
-                        y: -(previewHeight + 52)
+                        y: -(previewSize.height + VideoScrubPreviewLayout.timeCapsuleStackHeight)
                     )
                 }
             }
@@ -2879,7 +2942,7 @@ private final class VideoShotImageLoader {
         shot: BiliVideoShot,
         refererURL: URL?
     ) async -> NSImage? {
-        let key = "\(tile.imageURL.absoluteString)#\(tile.column)x\(tile.row)" as NSString
+        let key = "\(tile.imageURL.absoluteString)#\(tile.column)x\(tile.row)#td" as NSString
         if let cached = tileCache.object(forKey: key) { return cached }
 
         guard let sprite = await spriteImage(url: tile.imageURL, refererURL: refererURL) else { return nil }
@@ -2891,8 +2954,8 @@ private final class VideoShotImageLoader {
         let width = source.width / columns
         let height = source.height / rows
         guard width > 0, height > 0 else { return nil }
-        // Match Android Bitmap.createBitmap: the videoshot API indexes sprite
-        // rows from the top and CGImage.cropping uses the image pixel grid.
+        // NSImage.cgImage on macOS uses a top-down pixel grid (row 0 is the
+        // top row of the sprite sheet), matching Android's Bitmap.createBitmap.
         let cropRect = CGRect(
             x: tile.column * width,
             y: tile.row * height,
@@ -2900,7 +2963,10 @@ private final class VideoShotImageLoader {
             height: height
         )
         guard let cropped = source.cropping(to: cropRect) else { return nil }
-        let image = NSImage(cgImage: cropped, size: NSSize(width: shot.tileWidth, height: shot.tileHeight))
+        let image = NSImage(
+            cgImage: cropped,
+            size: NSSize(width: cropped.width, height: cropped.height)
+        )
         tileCache.setObject(image, forKey: key)
         return image
     }
@@ -2954,7 +3020,20 @@ private struct VideoScrubHoverPreview: View {
         videoShot?.tile(at: seconds, duration: duration)
     }
 
+    private var previewSize: CGSize {
+        let ratio: CGFloat
+        if aspectRatio < 1 {
+            ratio = aspectRatio
+        } else if let image, image.size.width > 0, image.size.height > 0 {
+            ratio = image.size.width / image.size.height
+        } else {
+            ratio = aspectRatio
+        }
+        return VideoScrubPreviewLayout.size(for: ratio)
+    }
+
     var body: some View {
+        let size = previewSize
         VStack(spacing: 6) {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -2962,13 +3041,24 @@ private struct VideoScrubHoverPreview: View {
                 if let image {
                     Image(nsImage: image)
                         .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: size.width, height: size.height)
+                        .clipped()
+                } else if tile != nil {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                } else if videoShot != nil {
+                    Text("无预览")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.72))
                 } else {
                     ProgressView()
                         .controlSize(.small)
                         .tint(.white)
                 }
             }
-            .frame(width: 340, height: 340 / min(2.4, max(0.5, aspectRatio)))
+            .frame(width: size.width, height: size.height)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -2982,7 +3072,7 @@ private struct VideoScrubHoverPreview: View {
                 .padding(.vertical, 8)
                 .background(.black.opacity(0.68), in: Capsule())
         }
-        .frame(width: 340)
+        .frame(width: size.width)
         .task(id: tile) {
             image = nil
             guard let tile, let videoShot else { return }
@@ -3049,6 +3139,7 @@ private struct DanmakuToggleButton: View {
             .foregroundStyle(
                 isHovered ? BiliTheme.pink : .white.opacity(visible ? 1 : 0.42)
             )
+                        .videoControlSoftShadow()
             .animation(.easeOut(duration: 0.15), value: isHovered)
             .frame(
                 minWidth: VideoControlLayout.danmakuButtonSize,

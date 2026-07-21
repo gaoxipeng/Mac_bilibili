@@ -33,15 +33,20 @@ enum BiliMenuPopUpAnchor {
         let font = NSFont.menuFont(ofSize: NSFont.systemFontSize)
         return menu.items.reduce(0) { width, item in
             if let itemView = item.view {
-                return max(width, ceil(itemView.fittingSize.width))
+                let fitted = itemView.fittingSize.width
+                // Ignore custom views that intentionally defer width to the menu
+                // (noIntrinsicMetric), so they cannot enlarge the popup.
+                if fitted > 1 {
+                    return max(width, ceil(fitted))
+                }
             }
             if let attributedTitle = item.attributedTitle, attributedTitle.length > 0 {
                 let textWidth = (attributedTitle.string as NSString).size(withAttributes: [.font: font]).width
-                let chrome: CGFloat = item.image == nil ? 28 : 48
+                let chrome: CGFloat = item.image == nil && item.view == nil ? 28 : 48
                 return max(width, ceil(textWidth + chrome))
             }
             let textWidth = (item.title as NSString).size(withAttributes: [.font: font]).width
-            let chrome: CGFloat = item.image == nil ? 28 : 48
+            let chrome: CGFloat = item.image == nil && item.view == nil ? 28 : 48
             return max(width, ceil(textWidth + chrome))
         }
     }

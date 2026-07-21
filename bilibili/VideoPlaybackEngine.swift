@@ -96,7 +96,15 @@ final class VideoPlaybackEngine: ObservableObject {
             videoAspectRatio = size.width / size.height
         }
         renderView.onReady = { [weak self] in self?.isReady = true }
-        renderView.onEnded = { [weak self] in self?.isPlaying = false }
+        renderView.onEnded = { [weak self] in
+            guard let self else { return }
+            isPlaying = false
+            if duration > 0 {
+                preciseMPVTime = duration
+                currentTime = duration
+            }
+            updateNowPlayingInfo()
+        }
         renderView.onError = { [weak self] message in
             self?.isPlaying = false
             self?.isReady = false
@@ -291,6 +299,9 @@ final class VideoPlaybackEngine: ObservableObject {
 
     func resumePlayback() {
         guard isReady else { return }
+        if shouldRestartFromBeginning {
+            seek(to: 0, resumeAfter: false)
+        }
         startPlayback()
     }
 
@@ -299,8 +310,18 @@ final class VideoPlaybackEngine: ObservableObject {
         if isPlaying {
             pausePlayback()
         } else {
+            if shouldRestartFromBeginning {
+                seek(to: 0, resumeAfter: false)
+            }
             startPlayback()
         }
+    }
+
+    /// With `keep-open=yes`, playback stops at the last frame. Treat near-EOF
+    /// as finished so play resumes from the start instead of staying stuck.
+    private var shouldRestartFromBeginning: Bool {
+        guard duration > 0 else { return false }
+        return preciseCurrentTime >= max(0, duration - 0.5)
     }
 
     func seek(to seconds: Double, resumeAfter: Bool = true) {

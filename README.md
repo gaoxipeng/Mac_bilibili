@@ -2,7 +2,7 @@
 
 一款面向 macOS 的哔哩哔哩第三方客户端，使用 SwiftUI 构建，注重原生桌面体验与视频播放能力。
 
-**当前版本：20260721**
+**当前版本：20260722**
 
 ## 功能概览
 
@@ -29,7 +29,7 @@
 
 ### 直接下载（推荐）
 
-前往 [Releases](https://github.com/gaoxipeng/Mac_bilibili/releases) 下载最新 `bilibili-20260721-macOS.zip`，解压后将 `bilibili.app` 拖入「应用程序」即可。
+前往 [Releases](https://github.com/gaoxipeng/Mac_bilibili/releases) 下载最新 `bilibili-20260722-macOS.zip`，解压后将 `bilibili.app` 拖入「应用程序」即可。
 
 > 当前安装包未签名/未公证。若 macOS 提示无法打开，请在「系统设置 → 隐私与安全性」中允许运行。
 > 由于这是未经过 Apple Developer ID 公证的个人分享版本，首次运行前请在终端执行：

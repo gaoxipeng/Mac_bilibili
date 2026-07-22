@@ -264,7 +264,7 @@
 				CODE_SIGN_ENTITLEMENTS = bilibili/bilibili.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20260721;
+				CURRENT_PROJECT_VERSION = 20260722;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
@@ -275,7 +275,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 20260721;
+				MARKETING_VERSION = 20260722;
 				OTHER_SWIFT_FLAGS = "$(inherited) -Xfrontend -disable-autolink-framework -Xfrontend AppIntents";
 				PRODUCT_BUNDLE_IDENTIFIER = gaoxipeng.bilibili;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -296,7 +296,7 @@
 				CODE_SIGN_ENTITLEMENTS = bilibili/bilibili.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20260721;
+				CURRENT_PROJECT_VERSION = 20260722;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
@@ -307,7 +307,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 20260721;
+				MARKETING_VERSION = 20260722;
 				OTHER_SWIFT_FLAGS = "$(inherited) -Xfrontend -disable-autolink-framework -Xfrontend AppIntents";
 				PRODUCT_BUNDLE_IDENTIFIER = gaoxipeng.bilibili;
 				PRODUCT_NAME = "$(TARGET_NAME)";

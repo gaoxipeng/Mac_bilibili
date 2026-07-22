@@ -78,8 +78,10 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
     private let inFlightFrames = DispatchSemaphore(value: 3)
     private let bufferPool = MPVMetalBufferPool()
     private let displayStateLock = NSLock()
+    private let lifecycleLock = NSLock()
     private var displayAvailable = true
     private var context: OpaquePointer?
+    private var callbackOwner: Unmanaged<MPVSoftwareMetalRenderer>?
     private var drawPending = false
     private var wantsDraw = false
     private var stopped = false
@@ -120,7 +122,7 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
 
     func suspendForDisplaySleep() {
         setDisplayAvailable(false)
-        guard !stopped, let context else { return }
+        guard !isStopped, let context else { return }
         // Removing the callback prevents mpv from submitting more draw work.
         // Drain work that passed requestDraw's availability check before the
         // screen-sleep notification so it cannot touch a withdrawn drawable.
@@ -129,29 +131,46 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
     }
 
     func resumeAfterDisplayWake() {
-        guard !stopped, let context else { return }
+        guard !isStopped, let context else { return }
+        let owner: Unmanaged<MPVSoftwareMetalRenderer>
+        if let callbackOwner {
+            owner = callbackOwner
+        } else {
+            owner = Unmanaged.passRetained(self)
+            callbackOwner = owner
+        }
         mpv_render_context_set_update_callback(context, { opaque in
             guard let opaque else { return }
             Unmanaged<MPVSoftwareMetalRenderer>.fromOpaque(opaque)
                 .takeUnretainedValue().requestDraw()
-        }, Unmanaged.passUnretained(self).toOpaque())
+        }, owner.toOpaque())
         setDisplayAvailable(true)
     }
 
     func stop() {
-        guard !stopped else { return }
+        lifecycleLock.lock()
+        guard !stopped else {
+            lifecycleLock.unlock()
+            return
+        }
         stopped = true
+        lifecycleLock.unlock()
+
         bufferPool.stop()
         if let context {
+            // Detach first, then drain every render operation that could have
+            // been submitted by an already-running callback before freeing.
             mpv_render_context_set_update_callback(context, nil, nil)
             queue.sync { mpv_render_context_free(context) }
             self.context = nil
         }
+        callbackOwner?.release()
+        callbackOwner = nil
     }
 
     func requestDraw() {
         queue.async { [weak self] in
-            guard let self, !self.stopped, self.isDisplayAvailable else { return }
+            guard let self, !self.isStopped, self.isDisplayAvailable else { return }
             if self.drawPending {
                 self.wantsDraw = true
                 return
@@ -161,7 +180,7 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
                 self.drawPending = true
                 self.draw()
                 self.drawPending = false
-            } while self.wantsDraw && !self.stopped && self.isDisplayAvailable
+            } while self.wantsDraw && !self.isStopped && self.isDisplayAvailable
         }
     }
 
@@ -179,6 +198,13 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
         let available = displayAvailable
         displayStateLock.unlock()
         return available
+    }
+
+    private var isStopped: Bool {
+        lifecycleLock.lock()
+        let value = stopped
+        lifecycleLock.unlock()
+        return value
     }
 
     private func draw() {
@@ -514,6 +540,11 @@ final class MPVRenderView: NSView {
         }
         metalRenderer = renderer
         setOption("vo", "libmpv")
+        // This app consumes structured events rather than libmpv's text log.
+        // Suppress the internal text-log path entirely: MPVKit 0.41 can leave
+        // a late worker in mp_msg_va while its log context is being torn down.
+        setOption("terminal", "no")
+        setOption("msg-level", "all=no")
         setOption("hwdec", "videotoolbox-copy")
         setOption("ytdl", "no")
         setOption("keep-open", "yes")

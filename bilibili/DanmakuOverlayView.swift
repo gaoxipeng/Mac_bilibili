@@ -59,6 +59,7 @@ struct DanmakuOverlayView: NSViewRepresentable, Equatable {
 final class DanmakuRenderNSView: NSView {
     private let timeline = DanmakuTimeline()
     private var displayLink: CADisplayLink?
+    private var screenChangeObserver: NSObjectProtocol?
     private var textLayers: [Int: DanmakuTextLayerState] = [:]
     private var lastResolvedPositionMillis: Double?
 
@@ -84,6 +85,7 @@ final class DanmakuRenderNSView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        updateScreenChangeObservation()
         reconfigureTimelineIfNeeded(force: true)
         syncCurrentFrameAndRender()
         refreshDisplayLink()
@@ -211,16 +213,32 @@ final class DanmakuRenderNSView: NSView {
         let targetLink = link ?? displayLink
         guard let targetLink else { return }
 
-        // Cap at 60 Hz. Matching ProMotion 120 Hz rebuilt danmaku timeline work
-        // every refresh without improving scroll smoothness (CA animations run
-        // on the compositor).
-        let displayRate = Float(max(window?.screen?.maximumFramesPerSecond ?? 60, 60))
-        let refreshRate = min(displayRate, 60)
+        // Follow the active display instead of capping the danmaku clock at
+        // 60 Hz. ProMotion displays therefore request 120 Hz, while ordinary
+        // displays keep their native 60/75 Hz cadence.
+        let refreshRate = Float(max(window?.screen?.maximumFramesPerSecond ?? 60, 60))
         targetLink.preferredFrameRateRange = CAFrameRateRange(
-            minimum: refreshRate,
+            minimum: min(60, refreshRate),
             maximum: refreshRate,
             preferred: refreshRate
         )
+    }
+
+    private func updateScreenChangeObservation() {
+        if let screenChangeObserver {
+            NotificationCenter.default.removeObserver(screenChangeObserver)
+            self.screenChangeObserver = nil
+        }
+        guard let window else { return }
+        screenChangeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeScreenNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.updateDisplayLinkFrameRate()
+            }
+        }
     }
 
     @objc private func displayLinkFired(_ link: CADisplayLink) {
@@ -407,6 +425,9 @@ final class DanmakuRenderNSView: NSView {
 
     deinit {
         MainActor.assumeIsolated {
+            if let screenChangeObserver {
+                NotificationCenter.default.removeObserver(screenChangeObserver)
+            }
             stopDisplayLink()
             removeStaleTextLayers(keeping: [])
         }

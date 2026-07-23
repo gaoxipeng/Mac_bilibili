@@ -19,6 +19,8 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				Vendor/MPVCoreAudioPatched.o,
+				Vendor/README.md,
 			);
 			target = 444A5EDF2FF42E0C00C6D4C5 /* bilibili */;
 		};
@@ -276,6 +278,10 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 20260723;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"$(SRCROOT)/bilibili/Vendor/MPVCoreAudioPatched.o",
+				);
 				OTHER_SWIFT_FLAGS = "$(inherited) -Xfrontend -disable-autolink-framework -Xfrontend AppIntents";
 				PRODUCT_BUNDLE_IDENTIFIER = gaoxipeng.bilibili;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -308,6 +314,10 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 20260723;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"$(SRCROOT)/bilibili/Vendor/MPVCoreAudioPatched.o",
+				);
 				OTHER_SWIFT_FLAGS = "$(inherited) -Xfrontend -disable-autolink-framework -Xfrontend AppIntents";
 				PRODUCT_BUNDLE_IDENTIFIER = gaoxipeng.bilibili;
 				PRODUCT_NAME = "$(TARGET_NAME)";

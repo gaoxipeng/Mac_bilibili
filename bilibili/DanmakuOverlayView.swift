@@ -94,6 +94,7 @@ final class DanmakuRenderNSView: NSView {
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         updateDisplayLinkFrameRate()
+        updateTextLayerContentsScale()
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -294,28 +295,35 @@ final class DanmakuRenderNSView: NSView {
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
         var visibleIDs = Set<Int>()
         visibleIDs.reserveCapacity(frames.count)
+        var newFrames: [DanmakuDrawFrame] = []
 
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
         for frame in frames {
             visibleIDs.insert(frame.id)
-            render(frame: frame, contentsScale: scale)
+            if textLayers[frame.id] == nil {
+                newFrames.append(frame)
+            }
+        }
+
+        let staleIDs = textLayers.keys.filter { !visibleIDs.contains($0) }
+        guard !newFrames.isEmpty || !staleIDs.isEmpty else { return }
+
+        // Existing scrolling layers move entirely on Core Animation's
+        // compositor. Re-submitting every visible CATextLayer at 120 Hz made
+        // the much denser fullscreen layout compete with video presentation on
+        // the main thread. Only mutate the layer tree when comments enter/exit.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for frame in newFrames {
+            renderNewLayer(frame: frame, contentsScale: scale)
+        }
+        for id in staleIDs {
+            textLayers[id]?.layer.removeFromSuperlayer()
+            textLayers.removeValue(forKey: id)
         }
         CATransaction.commit()
-
-        removeStaleTextLayers(keeping: visibleIDs)
-        CATransaction.flush()
     }
 
-    private func render(frame: DanmakuDrawFrame, contentsScale: CGFloat) {
-        if let existing = textLayers[frame.id] {
-            existing.layer.contentsScale = contentsScale
-            if !existing.isAnimated {
-                existing.layer.frame = layerFrame(for: frame)
-            }
-            return
-        }
-
+    private func renderNewLayer(frame: DanmakuDrawFrame, contentsScale: CGFloat) {
         let created = CATextLayer()
         created.string = frame.mainText
         created.contentsScale = contentsScale
@@ -333,8 +341,10 @@ final class DanmakuRenderNSView: NSView {
         ]
         created.frame = layerFrame(for: frame)
         layer?.addSublayer(created)
-        let animated = frame.isScrolling && addScrollAnimation(to: created, frame: frame)
-        textLayers[frame.id] = DanmakuTextLayerState(layer: created, isAnimated: animated)
+        if frame.isScrolling {
+            _ = addScrollAnimation(to: created, frame: frame)
+        }
+        textLayers[frame.id] = DanmakuTextLayerState(layer: created)
     }
 
     private func layerFrame(for frame: DanmakuDrawFrame) -> CGRect {
@@ -377,7 +387,18 @@ final class DanmakuRenderNSView: NSView {
             textLayers.removeValue(forKey: id)
         }
         CATransaction.commit()
-        CATransaction.flush()
+    }
+
+    private func updateTextLayerContentsScale() {
+        guard !textLayers.isEmpty else { return }
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for state in textLayers.values {
+            state.layer.contentsScale = scale
+            state.layer.rasterizationScale = scale
+        }
+        CATransaction.commit()
     }
 
     private func resetRenderedLayersIfPositionJumped(_ positionMillis: Double) {
@@ -436,7 +457,6 @@ final class DanmakuRenderNSView: NSView {
 
 private struct DanmakuTextLayerState {
     let layer: CATextLayer
-    let isAnimated: Bool
 }
 
 private nonisolated func danmakuSizeChanged(_ lhs: CGSize, _ rhs: CGSize) -> Bool {

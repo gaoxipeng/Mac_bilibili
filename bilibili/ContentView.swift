@@ -412,8 +412,6 @@ private struct DetailFloatingChrome: View {
                 onFollow: { model.profilePageHandlers?.follow() },
                 onUnfollow: { model.profilePageHandlers?.unfollow() },
                 onLogout: { model.profilePageHandlers?.logout?() },
-                feedLayoutMode: model.feedLayoutMode,
-                onFeedLayoutChange: { model.setFeedLayoutMode($0) },
                 onFollowingTap: { model.profilePageHandlers?.openRelationList(.following) },
                 onFollowersTap: { model.profilePageHandlers?.openRelationList(.followers) },
                 onReload: { performRefresh() },

@@ -747,9 +747,29 @@ enum FeedCardHoverScrollCenter {
         let id = ObjectIdentifier(scrollView)
         guard scrollBoundsObservers[id] == nil else { return }
 
+        let clipView = scrollView.contentView
+        clipView.postsBoundsChangedNotifications = true
         let scrollViewBox = WeakScrollViewBox(scrollView)
 
         var observers: [NSObjectProtocol] = []
+        // Mark scrolling from bounds changes without hover hit-testing.
+        // Live-scroll notifications alone miss some SwiftUI/trackpad paths and
+        // can leave cover-hover scale animations running mid-scroll.
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clipView,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                guard let scrollView = scrollViewBox.value else { return }
+                let isBeginningScroll = activeScrollDeadlines[ObjectIdentifier(scrollView)] == nil
+                FeedScrollActivity.setScrolling(true)
+                if isBeginningScroll {
+                    syncHover(in: scrollView, force: true, allowsHover: false)
+                }
+                scheduleScrollEnd(in: scrollView)
+            }
+        })
         observers.append(NotificationCenter.default.addObserver(
             forName: NSScrollView.willStartLiveScrollNotification,
             object: scrollView,
@@ -835,7 +855,6 @@ private final class WeakScrollViewBox: @unchecked Sendable {
 struct FeedCardStatsRowRepresentable: NSViewRepresentable, Equatable {
     enum DisplayStyle: Equatable {
         case metadata
-        case coverOverlay
         case nativeCoverOverlay
     }
 
@@ -879,7 +898,7 @@ struct FeedCardStatsRowRepresentable: NSViewRepresentable, Equatable {
             itemSpacing: itemSpacing,
             iconColor: colors.0,
             textColor: colors.1,
-            usesShadow: displayStyle == .nativeCoverOverlay
+            usesShadow: false
         )
     }
 }

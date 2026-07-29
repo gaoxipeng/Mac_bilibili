@@ -635,8 +635,6 @@ struct GlassMoreButton: View {
 }
 
 struct GlassSettingsButton: View {
-    let feedLayoutMode: FeedLayoutMode
-    let onFeedLayoutChange: (FeedLayoutMode) -> Void
     let onLogout: () -> Void
 
     @State private var isHovered = false
@@ -653,8 +651,6 @@ struct GlassSettingsButton: View {
             .animation(.easeOut(duration: 0.14), value: isPressed)
 
             GlassSettingsPopUpButtonRepresentable(
-                feedLayoutMode: feedLayoutMode,
-                onFeedLayoutChange: onFeedLayoutChange,
                 onLogout: onLogout,
                 isPressed: $isPressed
             )
@@ -704,17 +700,11 @@ private enum AppVersion {
 }
 
 struct GlassSettingsPopUpButtonRepresentable: NSViewRepresentable {
-    let feedLayoutMode: FeedLayoutMode
-    let onFeedLayoutChange: (FeedLayoutMode) -> Void
     let onLogout: () -> Void
     @Binding var isPressed: Bool
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(
-            feedLayoutMode: feedLayoutMode,
-            onFeedLayoutChange: onFeedLayoutChange,
-            onLogout: onLogout
-        )
+        Coordinator(onLogout: onLogout)
     }
 
     func makeNSView(context: Context) -> GlassSettingsPopUpButtonView {
@@ -724,37 +714,15 @@ struct GlassSettingsPopUpButtonRepresentable: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: GlassSettingsPopUpButtonView, context: Context) {
-        context.coordinator.feedLayoutMode = feedLayoutMode
-        context.coordinator.onFeedLayoutChange = onFeedLayoutChange
         context.coordinator.onLogout = onLogout
         nsView.configure(coordinator: context.coordinator, isPressed: $isPressed)
     }
 
     final class Coordinator: NSObject {
-        var feedLayoutMode: FeedLayoutMode
-        var onFeedLayoutChange: (FeedLayoutMode) -> Void
         var onLogout: () -> Void
 
-        init(
-            feedLayoutMode: FeedLayoutMode,
-            onFeedLayoutChange: @escaping (FeedLayoutMode) -> Void,
-            onLogout: @escaping () -> Void
-        ) {
-            self.feedLayoutMode = feedLayoutMode
-            self.onFeedLayoutChange = onFeedLayoutChange
+        init(onLogout: @escaping () -> Void) {
             self.onLogout = onLogout
-        }
-
-        @objc func selectNative(_ sender: NSMenuItem) {
-            Task { @MainActor in
-                onFeedLayoutChange(.native)
-            }
-        }
-
-        @objc func selectOverlay(_ sender: NSMenuItem) {
-            Task { @MainActor in
-                onFeedLayoutChange(.overlay)
-            }
         }
 
         @objc func logout(_ sender: NSMenuItem) {
@@ -811,36 +779,6 @@ final class GlassSettingsPopUpButtonView: NSView, NSMenuDelegate {
 
         actionMenu.removeAllItems()
         actionMenu.delegate = self
-
-        let layoutMenu = NSMenu(title: "信息流布局")
-        let nativeItem = NSMenuItem(
-            title: FeedLayoutMode.native.menuTitle,
-            action: #selector(GlassSettingsPopUpButtonRepresentable.Coordinator.selectNative(_:)),
-            keyEquivalent: ""
-        )
-        nativeItem.target = coordinator
-        nativeItem.state = coordinator.feedLayoutMode == .native ? .on : .off
-        nativeItem.toolTip = FeedLayoutMode.native.menuSubtitle
-        layoutMenu.addItem(nativeItem)
-
-        let overlayItem = NSMenuItem(
-            title: FeedLayoutMode.overlay.menuTitle,
-            action: #selector(GlassSettingsPopUpButtonRepresentable.Coordinator.selectOverlay(_:)),
-            keyEquivalent: ""
-        )
-        overlayItem.target = coordinator
-        overlayItem.state = coordinator.feedLayoutMode == .overlay ? .on : .off
-        overlayItem.toolTip = FeedLayoutMode.overlay.menuSubtitle
-        layoutMenu.addItem(overlayItem)
-
-        let layoutRoot = NSMenuItem(title: "信息流布局", action: nil, keyEquivalent: "")
-        layoutRoot.submenu = layoutMenu
-        layoutRoot.image = NSImage(
-            systemSymbolName: "rectangle.split.3x1",
-            accessibilityDescription: nil
-        )
-        actionMenu.addItem(layoutRoot)
-        actionMenu.addItem(.separator())
 
         let aboutMenu = NSMenu(title: "关于")
         let versionTitle = "版本 \(AppVersion.display)"
@@ -1700,9 +1638,24 @@ private enum VideoCoverHoverScrollCenter {
         let id = ObjectIdentifier(scrollView)
         guard scrollBoundsObservers[id] == nil else { return }
 
+        let clipView = scrollView.contentView
+        clipView.postsBoundsChangedNotifications = true
         let scrollViewBox = WeakScrollViewBox(scrollView)
 
         var observers: [NSObjectProtocol] = []
+        // Only mark scrolling / settle. Avoid per-frame hover hit-testing that
+        // 2568a30 paid for on every bounds tick.
+        observers.append(NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clipView,
+            queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                guard let scrollView = scrollViewBox.value else { return }
+                FeedScrollActivity.setScrolling(true)
+                scheduleScrollEnd(in: scrollView)
+            }
+        })
         observers.append(NotificationCenter.default.addObserver(
             forName: NSScrollView.willStartLiveScrollNotification,
             object: scrollView,

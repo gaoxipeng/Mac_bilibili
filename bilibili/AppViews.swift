@@ -2,23 +2,14 @@ import AppKit
 import SwiftUI
 
 enum VideoCardLayout {
-    static let minWidth: CGFloat = 230
-    /// 信息流大卡片（原生 / 叠层）的最小宽度。
-    static let largeCardMinWidth: CGFloat = 250
+    /// 原生卡片最小宽度（布局回退估算用）；信息流固定为 maxColumnCount 列。
+    static let minWidth: CGFloat = 200
     static let gridSpacing: CGFloat = 16
     /// 原生卡片行与行之间的垂直间距（头像到底下一行封面）。
     static let nativeCardRowSpacing: CGFloat = 12
     static let maxColumnCount = 5
     static let coverAspect: CGFloat = 16.0 / 9.0
     static let cornerRadius: CGFloat = 10
-    static let overlayCardSpacing: CGFloat = 16
-    /// 叠层卡片行与行之间的垂直间距（大于列间距）。
-    static let overlayCardRowSpacing: CGFloat = 28
-    static let overlayCardCornerRadius: CGFloat = 14
-    static let overlayCardOverlayInset: CGFloat = 10
-    static let overlayCardAvatarSize: CGFloat = 24
-    static let overlayCardTitleFontSize: CGFloat = 15
-    static let overlayCardAuthorFontSize: CGFloat = 12
     static let nativeCardLargeTitleFontSize: CGFloat = 16
     static let nativeCardTitleFontSize: CGFloat = 15
     static let nativeCardLargeAuthorFontSize: CGFloat = 13
@@ -44,10 +35,9 @@ enum VideoCardLayout {
         trailing: feedMetadataHorizontalPadding
     )
 
-    static func columnCount(for width: CGFloat, minCardWidth: CGFloat = minWidth) -> Int {
+    static func columnCount(for width: CGFloat) -> Int {
         guard width > 0 else { return 1 }
-        let natural = max(1, Int((width + gridSpacing) / (minCardWidth + gridSpacing)))
-        return min(maxColumnCount, natural)
+        return maxColumnCount
     }
 
     static func columnWidth(for totalWidth: CGFloat, columnCount: Int, spacing: CGFloat = gridSpacing) -> CGFloat {
@@ -66,7 +56,7 @@ enum VideoCardLayout {
         static func feed(largeTypography: Bool, showsAuthor: Bool = true, showsPublishTime: Bool = false) -> RowLayoutMetrics {
             let bottomRowHeight: CGFloat = {
                 if showsAuthor || showsPublishTime {
-                    return largeTypography ? 28 : 26
+                    return largeTypography ? 34 : 30
                 }
                 return 0
             }()
@@ -496,7 +486,6 @@ struct VideoFeedGrid<Trailing: View>: View {
     var maxColumnCount: Int? = nil
     var onApproachingEnd: (() -> Void)? = nil
     @ViewBuilder var trailing: () -> Trailing
-    @EnvironmentObject private var appModel: AppModel
     @Environment(\.feedViewportWidth) private var feedViewportWidth
     @Environment(\.feedSymmetricHorizontalInsets) private var feedSymmetricHorizontalInsets
     @Environment(\.feedUsesDirectViewportWidth) private var feedUsesDirectViewportWidth
@@ -524,68 +513,12 @@ struct VideoFeedGrid<Trailing: View>: View {
     }
 
     var body: some View {
-        let layoutWidth = resolvedLayoutWidth
-        if appModel.feedLayoutMode == .overlay {
-            overlayCardFeed(layoutWidth: layoutWidth)
-        } else {
-            nativeCardFeed(layoutWidth: layoutWidth)
-        }
-    }
-
-    @ViewBuilder
-    private func overlayCardFeed(layoutWidth: CGFloat) -> some View {
-        let columnSpacing = VideoCardLayout.overlayCardSpacing
-        let rowSpacing = VideoCardLayout.overlayCardRowSpacing
-        let baseColumnCount = VideoCardLayout.columnCount(
-            for: layoutWidth,
-            minCardWidth: VideoCardLayout.largeCardMinWidth
-        )
-        let columnCount = maxColumnCount.map { min($0, baseColumnCount) } ?? baseColumnCount
-        let columnWidth = VideoCardLayout.columnWidth(
-            for: layoutWidth,
-            columnCount: columnCount,
-            spacing: columnSpacing
-        )
-        let cardHeight = VideoCardLayout.coverHeight(columnWidth: columnWidth)
-        let rowStarts = VideoCardLayout.rowStartIndices(itemCount: videos.count, columnCount: columnCount)
-        let prefetchRowStart = rowStarts.count >= 2 ? rowStarts[rowStarts.count - 2] : rowStarts.first
-
-        LazyVStack(alignment: .leading, spacing: rowSpacing) {
-            ForEach(rowStarts, id: \.self) { rowStart in
-                let rowEnd = min(rowStart + columnCount, videos.count)
-
-                HStack(alignment: .top, spacing: columnSpacing) {
-                    ForEach(videos[rowStart..<rowEnd]) { video in
-                        VideoFeedOverlayCard(
-                            video: video,
-                            cardWidth: columnWidth,
-                            showsAuthor: showsAuthor,
-                            showsLikeCount: showsLikeCount,
-                            resolveWatchProgress: resolveWatchProgress
-                        )
-                        .equatable()
-                        .frame(width: columnWidth, height: cardHeight, alignment: .topLeading)
-                    }
-                }
-                .onScrollVisibilityChange(threshold: 0.01) { visible in
-                    if visible, rowStart == prefetchRowStart {
-                        onApproachingEnd?()
-                    }
-                }
-            }
-
-            trailing()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(.easeOut(duration: 0.2), value: appModel.feedLayoutMode)
+        nativeCardFeed(layoutWidth: resolvedLayoutWidth)
     }
 
     @ViewBuilder
     private func nativeCardFeed(layoutWidth: CGFloat) -> some View {
-        let baseColumnCount = VideoCardLayout.columnCount(
-            for: layoutWidth,
-            minCardWidth: VideoCardLayout.largeCardMinWidth
-        )
+        let baseColumnCount = VideoCardLayout.columnCount(for: layoutWidth)
         let columnCount = maxColumnCount.map { min($0, baseColumnCount) } ?? baseColumnCount
         let columnWidth = VideoCardLayout.columnWidth(for: layoutWidth, columnCount: columnCount)
         let showsPublishTime = !showsAuthor
@@ -641,7 +574,6 @@ struct VideoFeedGrid<Trailing: View>: View {
             trailing()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(.easeOut(duration: 0.2), value: appModel.feedLayoutMode)
     }
 
     private var resolvedLayoutWidth: CGFloat {
@@ -1079,24 +1011,15 @@ private struct HistorySectionView: View {
 private struct HistoryItemsGrid: View {
     let items: [BiliHistoryItem]
     let onDelete: (BiliHistoryItem) -> Void
-    @EnvironmentObject private var appModel: AppModel
     @Environment(\.feedViewportWidth) private var feedViewportWidth
 
     var body: some View {
-        let layoutWidth = resolvedLayoutWidth
-        if appModel.feedLayoutMode == .overlay {
-            overlayFeed(layoutWidth: layoutWidth)
-        } else {
-            nativeFeed(layoutWidth: layoutWidth)
-        }
+        nativeFeed(layoutWidth: resolvedLayoutWidth)
     }
 
     @ViewBuilder
     private func nativeFeed(layoutWidth: CGFloat) -> some View {
-        let columnCount = VideoCardLayout.columnCount(
-            for: layoutWidth,
-            minCardWidth: VideoCardLayout.largeCardMinWidth
-        )
+        let columnCount = VideoCardLayout.columnCount(for: layoutWidth)
         let columnWidth = VideoCardLayout.columnWidth(for: layoutWidth, columnCount: columnCount)
         let rowStarts = VideoCardLayout.rowStartIndices(itemCount: items.count, columnCount: columnCount)
         let titleAreaHeight = HistoryCardLayout.titleAreaHeight(columnWidth: columnWidth)
@@ -1122,46 +1045,6 @@ private struct HistoryItemsGrid: View {
             }
         }
         .animation(AppLayout.listRemovalAnimation, value: items.map(\.listIdentity))
-        .animation(.easeOut(duration: 0.2), value: appModel.feedLayoutMode)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    @ViewBuilder
-    private func overlayFeed(layoutWidth: CGFloat) -> some View {
-        let columnSpacing = VideoCardLayout.overlayCardSpacing
-        let rowSpacing = VideoCardLayout.overlayCardRowSpacing
-        let columnCount = VideoCardLayout.columnCount(
-            for: layoutWidth,
-            minCardWidth: VideoCardLayout.largeCardMinWidth
-        )
-        let columnWidth = VideoCardLayout.columnWidth(
-            for: layoutWidth,
-            columnCount: columnCount,
-            spacing: columnSpacing
-        )
-        let cardHeight = VideoCardLayout.coverHeight(columnWidth: columnWidth)
-        let rowStarts = VideoCardLayout.rowStartIndices(itemCount: items.count, columnCount: columnCount)
-
-        VStack(alignment: .leading, spacing: rowSpacing) {
-            ForEach(rowStarts, id: \.self) { rowStart in
-                let rowEnd = min(rowStart + columnCount, items.count)
-
-                HStack(alignment: .top, spacing: columnSpacing) {
-                    ForEach(items[rowStart..<rowEnd], id: \.listIdentity) { item in
-                        HistoryOverlayVideoCard(
-                            item: item,
-                            cardWidth: columnWidth,
-                            onDelete: { onDelete(item) }
-                        )
-                        .equatable()
-                        .frame(width: columnWidth, height: cardHeight, alignment: .topLeading)
-                        .transition(HistoryCardTransition.removal)
-                    }
-                }
-            }
-        }
-        .animation(AppLayout.listRemovalAnimation, value: items.map(\.listIdentity))
-        .animation(.easeOut(duration: 0.2), value: appModel.feedLayoutMode)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -1171,277 +1054,7 @@ private struct HistoryItemsGrid: View {
         if historyWidth > 0 {
             return historyWidth
         }
-        return VideoCardLayout.largeCardMinWidth * 2 + VideoCardLayout.gridSpacing
-    }
-}
-
-private struct HistoryOverlayVideoCard: View, Equatable {
-    let item: BiliHistoryItem
-    let cardWidth: CGFloat
-    let onDelete: () -> Void
-    @EnvironmentObject private var appModel: AppModel
-    @Environment(\.displayScale) private var displayScale
-    @State private var isDeleteHovered = false
-    @State private var isCoverHovered = false
-
-    private static let primaryMetaColor = Color.white
-    private static let secondaryMetaOpacity: Double = 0.72
-    private static let secondaryMetaColor = Color.white.opacity(secondaryMetaOpacity)
-
-    static func == (lhs: HistoryOverlayVideoCard, rhs: HistoryOverlayVideoCard) -> Bool {
-        lhs.item == rhs.item && lhs.cardWidth == rhs.cardWidth
-    }
-
-    private var video: BiliVideo { item.video }
-
-    private var coverHeight: CGFloat {
-        VideoCardLayout.coverHeight(columnWidth: cardWidth)
-    }
-
-    private var cornerRadius: CGFloat {
-        VideoCardLayout.overlayCardCornerRadius
-    }
-
-    private var coverDecodePixelLength: Int {
-        let displayMax = max(cardWidth, coverHeight)
-        return Int((displayMax * max(1, displayScale) * 1.05).rounded(.up))
-    }
-
-    private var durationBadgeText: String {
-        historyDurationBadgeText(
-            progressSeconds: item.progressSeconds,
-            durationSeconds: item.durationSeconds > 0 ? item.durationSeconds : video.duration
-        )
-    }
-
-    private var watchProgress: Double {
-        let duration = max(item.durationSeconds, video.duration)
-        guard duration > 0, item.progressSeconds > 0 else { return 0 }
-        return min(1, Double(item.progressSeconds) / Double(duration))
-    }
-
-    private var authorDisplayName: String {
-        if !video.authorName.isEmpty {
-            return video.authorName
-        }
-        if !item.badge.isEmpty {
-            return item.badge
-        }
-        if item.business == .pgc {
-            return "番剧"
-        }
-        return video.authorName
-    }
-
-    var body: some View {
-        ZStack(alignment: .topTrailing) {
-            ZStack {
-                Button {
-                    appModel.openHistoryVideo(item)
-                } label: {
-                    ZStack {
-                        FeedVideoCoverHover(
-                            url: video.coverURL,
-                            maxDecodePixelLength: coverDecodePixelLength,
-                            cornerRadius: cornerRadius,
-                            onHoverChange: { isCoverHovered = $0 }
-                        )
-
-                        // Scale with the cover so the bottom scrim does not lag behind.
-                        ZStack {
-                            if watchProgress > 0.001, watchProgress < 0.999 {
-                                GeometryReader { geometry in
-                                    VStack(spacing: 0) {
-                                        Spacer()
-                                        ZStack(alignment: .leading) {
-                                            Rectangle()
-                                                .fill(Color.black.opacity(0.35))
-                                            Rectangle()
-                                                .fill(Color(red: 0, green: 174 / 255, blue: 236 / 255))
-                                                .frame(width: geometry.size.width * watchProgress)
-                                        }
-                                        .frame(height: 3)
-                                    }
-                                }
-                                .allowsHitTesting(false)
-                            }
-
-                            bottomMetaScrim
-
-                            VStack(spacing: 0) {
-                                HStack(alignment: .top, spacing: 8) {
-                                    Spacer(minLength: 0)
-                                    if !durationBadgeText.isEmpty {
-                                        Text(durationBadgeText)
-                                            .font(.system(size: 13, weight: .medium))
-                                            .foregroundStyle(.white)
-                                            .shadow(color: .black.opacity(0.55), radius: 4, y: 1)
-                                            .padding(.horizontal, 4)
-                                            .padding(.vertical, 2)
-                                    }
-                                    if !item.kid.isEmpty {
-                                        Color.clear
-                                            .frame(width: 28, height: 28)
-                                    }
-                                }
-
-                                Spacer(minLength: 0)
-
-                                metaContent
-                            }
-                            .padding(VideoCardLayout.overlayCardOverlayInset)
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                        .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
-                        .animation(
-                            isCoverHovered
-                                ? VideoCardLayout.coverHoverEnterAnimation
-                                : VideoCardLayout.coverHoverExitAnimation,
-                            value: isCoverHovered
-                        )
-                    }
-                    .frame(width: cardWidth, height: coverHeight)
-                    .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                }
-                .buttonStyle(.plain)
-
-                if video.authorMid > 0 {
-                    overlayAuthorHitTarget
-                }
-            }
-
-            if !item.kid.isEmpty {
-                deleteButton
-                    .padding(VideoCardLayout.overlayCardOverlayInset)
-            }
-        }
-        .frame(width: cardWidth, height: coverHeight, alignment: .topLeading)
-    }
-
-    private var overlayAuthorHitTarget: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 0)
-                .allowsHitTesting(false)
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text(video.title.ifEmpty("视频"))
-                    .font(.system(size: VideoCardLayout.overlayCardTitleFontSize, weight: .semibold))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .hidden()
-                    .accessibilityHidden(true)
-                    .allowsHitTesting(false)
-
-                HStack(alignment: .center, spacing: 8) {
-                    OverlayCardAuthorChip(
-                        name: authorDisplayName,
-                        avatarURL: video.authorFaceURL,
-                        authorMid: video.authorMid,
-                        idleColor: Self.secondaryMetaColor
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    if let viewedAt = item.viewedAt {
-                        Text(historyViewTimeText(from: viewedAt))
-                            .font(.system(size: 13, weight: .medium))
-                            .lineLimit(1)
-                            .hidden()
-                            .allowsHitTesting(false)
-                    }
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-        }
-        .padding(VideoCardLayout.overlayCardOverlayInset)
-        .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
-        .animation(
-            isCoverHovered
-                ? VideoCardLayout.coverHoverEnterAnimation
-                : VideoCardLayout.coverHoverExitAnimation,
-            value: isCoverHovered
-        )
-    }
-
-    private var bottomMetaScrim: some View {
-        LinearGradient(
-            colors: [
-                Color.black.opacity(0),
-                Color.black.opacity(0.28),
-                Color.black.opacity(0.58),
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        .frame(height: coverHeight * 0.42)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .allowsHitTesting(false)
-    }
-
-    private var metaContent: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(video.title.ifEmpty("视频"))
-                .font(.system(size: VideoCardLayout.overlayCardTitleFontSize, weight: .semibold))
-                .foregroundStyle(Self.primaryMetaColor)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .shadow(color: .black.opacity(0.55), radius: 4, y: 1)
-
-            HStack(alignment: .center, spacing: 8) {
-                authorRow
-                if let viewedAt = item.viewedAt {
-                    Text(historyViewTimeText(from: viewedAt))
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Self.secondaryMetaColor)
-                        .lineLimit(1)
-                        .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
-                }
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    @ViewBuilder
-    private var authorRow: some View {
-        HStack(spacing: 6) {
-            RemoteAvatar(
-                url: video.authorFaceURL,
-                size: VideoCardLayout.overlayCardAvatarSize,
-                foreground: Self.secondaryMetaColor,
-                background: Color.white.opacity(0.16),
-                border: Color.white.opacity(0.18)
-            )
-
-            Text(authorDisplayName.ifEmpty("UP 主"))
-                .font(.system(size: VideoCardLayout.overlayCardAuthorFontSize, weight: .medium))
-                .foregroundStyle(Self.secondaryMetaColor)
-                .lineLimit(1)
-                .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .opacity(video.authorMid > 0 ? 0 : 1)
-        .accessibilityHidden(video.authorMid > 0)
-        .allowsHitTesting(false)
-    }
-
-    private var deleteButton: some View {
-        Button(action: onDelete) {
-            Image(systemName: "trash")
-                .font(.system(size: 14, weight: .medium))
-                .foregroundStyle(isDeleteHovered ? Color.red : Color.white.opacity(0.9))
-                .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
-                .frame(width: 28, height: 28)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help("删除历史")
-        .onHover { hovering in
-            withAnimation(FeedCardHoverStyle.colorAnimation) {
-                isDeleteHovered = hovering
-            }
-        }
+        return VideoCardLayout.minWidth * 2 + VideoCardLayout.gridSpacing
     }
 }
 
@@ -1743,277 +1356,6 @@ struct StateBanner: View {
     }
 }
 
-/// 原生信息流大卡片：16:9 封面，标题 / 作者 / 播放·弹幕·点赞叠加在封面上。
-struct VideoFeedOverlayCard: View, Equatable {
-    let video: BiliVideo
-    let cardWidth: CGFloat
-    var showsAuthor = true
-    var showsLikeCount = true
-    var resolveWatchProgress = true
-    @Environment(\.displayScale) private var displayScale
-    @State private var isCoverHovered = false
-
-    static func == (lhs: VideoFeedOverlayCard, rhs: VideoFeedOverlayCard) -> Bool {
-        lhs.video == rhs.video
-            && lhs.cardWidth == rhs.cardWidth
-            && lhs.showsAuthor == rhs.showsAuthor
-            && lhs.showsLikeCount == rhs.showsLikeCount
-            && lhs.resolveWatchProgress == rhs.resolveWatchProgress
-    }
-
-    private var coverHeight: CGFloat {
-        VideoCardLayout.coverHeight(columnWidth: cardWidth)
-    }
-
-    private var cornerRadius: CGFloat {
-        VideoCardLayout.overlayCardCornerRadius
-    }
-
-    private var coverDecodePixelLength: Int {
-        let displayMax = max(cardWidth, coverHeight)
-        return Int((displayMax * max(1, displayScale) * 1.05).rounded(.up))
-    }
-
-    var body: some View {
-        ZStack {
-            VideoPlaybackLink(video: video, resolveWatchProgress: resolveWatchProgress) {
-                ZStack {
-                    FeedVideoCoverHover(
-                        url: video.coverURL,
-                        maxDecodePixelLength: coverDecodePixelLength,
-                        cornerRadius: cornerRadius,
-                        onHoverChange: { isCoverHovered = $0 }
-                    )
-
-                    // Scale with the cover so the bottom scrim does not lag behind.
-                    ZStack {
-                        bottomMetaScrim
-
-                        VStack(spacing: 0) {
-                            HStack {
-                                Spacer(minLength: 0)
-                                if video.duration > 0 {
-                                    durationCapsule
-                                }
-                            }
-
-                            Spacer(minLength: 0)
-
-                            metaCapsule
-                        }
-                        .padding(VideoCardLayout.overlayCardOverlayInset)
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                    .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
-                    .animation(
-                        isCoverHovered
-                            ? VideoCardLayout.coverHoverEnterAnimation
-                            : VideoCardLayout.coverHoverExitAnimation,
-                        value: isCoverHovered
-                    )
-                }
-                .frame(width: cardWidth, height: coverHeight)
-                .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            }
-
-            // Keep author navigation outside the video button so nested links work,
-            // and so hover can turn the name blue like native cards.
-            if showsAuthor, video.authorMid > 0 {
-                overlayAuthorHitTarget
-            }
-        }
-        .frame(width: cardWidth, height: coverHeight, alignment: .topLeading)
-    }
-
-    private var overlayAuthorHitTarget: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 0)
-                .allowsHitTesting(false)
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text(video.title.ifEmpty("视频"))
-                    .font(.system(size: VideoCardLayout.overlayCardTitleFontSize, weight: .semibold))
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .hidden()
-                    .accessibilityHidden(true)
-                    .allowsHitTesting(false)
-
-                HStack(alignment: .center, spacing: 8) {
-                    OverlayCardAuthorChip(
-                        name: video.authorName,
-                        avatarURL: video.authorFaceURL,
-                        authorMid: video.authorMid,
-                        idleColor: Self.secondaryMetaColor
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                    FeedCardStatsRowRepresentable(
-                        playCount: video.viewCount.compactCount,
-                        danmakuCount: video.danmakuCount.compactCount,
-                        likeCount: showsLikeCount ? video.likeCount.compactCount : nil,
-                        iconSize: VideoCardLayout.coverOverlayIconSize,
-                        likeIconSize: VideoCardLayout.coverOverlayIconSize,
-                        fontSize: VideoCardLayout.coverOverlayFontSize,
-                        itemSpacing: VideoCardLayout.coverOverlayItemSpacing,
-                        displayStyle: .coverOverlay
-                    )
-                    .opacity(Self.secondaryMetaOpacity)
-                    .fixedSize(horizontal: true, vertical: true)
-                    .hidden()
-                    .allowsHitTesting(false)
-                }
-            }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-        }
-        .padding(VideoCardLayout.overlayCardOverlayInset)
-        .scaleEffect(isCoverHovered ? VideoCardLayout.coverHoverScale : 1)
-        .animation(
-            isCoverHovered
-                ? VideoCardLayout.coverHoverEnterAnimation
-                : VideoCardLayout.coverHoverExitAnimation,
-            value: isCoverHovered
-        )
-    }
-
-    /// 底部向上渐变阴影，提升标题 / 头像 / 数据区可读性。
-    private var bottomMetaScrim: some View {
-        LinearGradient(
-            colors: [
-                Color.black.opacity(0),
-                Color.black.opacity(0.28),
-                Color.black.opacity(0.58),
-            ],
-            startPoint: .top,
-            endPoint: .bottom
-        )
-        .frame(height: coverHeight * 0.42)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .allowsHitTesting(false)
-    }
-
-    private var durationCapsule: some View {
-        Text(video.durationText)
-            .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(.white)
-            .shadow(color: .black.opacity(0.55), radius: 4, y: 1)
-            .padding(.horizontal, 4)
-            .padding(.vertical, 2)
-    }
-
-    private var metaCapsule: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(video.title.ifEmpty("视频"))
-                .font(.system(size: VideoCardLayout.overlayCardTitleFontSize, weight: .semibold))
-                .foregroundStyle(Self.primaryMetaColor)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .shadow(color: .black.opacity(0.55), radius: 4, y: 1)
-
-            HStack(alignment: .center, spacing: 8) {
-                if showsAuthor {
-                    authorRow
-                } else if let publishTime = video.publishTime {
-                    Text(BiliCommentFormats.formatTime(publishTime))
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(Self.secondaryMetaColor)
-                        .lineLimit(1)
-                        .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
-                    Spacer(minLength: 0)
-                } else {
-                    Spacer(minLength: 0)
-                }
-
-                FeedCardStatsRowRepresentable(
-                    playCount: video.viewCount.compactCount,
-                    danmakuCount: video.danmakuCount.compactCount,
-                    likeCount: showsLikeCount ? video.likeCount.compactCount : nil,
-                    iconSize: VideoCardLayout.coverOverlayIconSize,
-                    likeIconSize: VideoCardLayout.coverOverlayIconSize,
-                    fontSize: VideoCardLayout.coverOverlayFontSize,
-                    itemSpacing: VideoCardLayout.coverOverlayItemSpacing,
-                    displayStyle: .coverOverlay
-                )
-                .opacity(Self.secondaryMetaOpacity)
-                .fixedSize(horizontal: true, vertical: true)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    @ViewBuilder
-    private var authorRow: some View {
-        HStack(spacing: 6) {
-            RemoteAvatar(
-                url: video.authorFaceURL,
-                size: VideoCardLayout.overlayCardAvatarSize,
-                foreground: Self.secondaryMetaColor,
-                background: Color.white.opacity(0.16),
-                border: Color.white.opacity(0.18)
-            )
-
-            Text(video.authorName.ifEmpty("UP 主"))
-                .font(.system(size: VideoCardLayout.overlayCardAuthorFontSize, weight: .medium))
-                .foregroundStyle(Self.secondaryMetaColor)
-                .lineLimit(1)
-                .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        // Interactive author chip is layered above the video button.
-        .opacity(video.authorMid > 0 ? 0 : 1)
-        .accessibilityHidden(video.authorMid > 0)
-        .allowsHitTesting(false)
-    }
-
-    private static let primaryMetaColor = Color.white
-    private static let secondaryMetaOpacity: Double = 0.72
-    private static let secondaryMetaColor = Color.white.opacity(secondaryMetaOpacity)
-}
-
-/// Overlay-card author chip: blue name on hover, navigates to the user profile.
-private struct OverlayCardAuthorChip: View {
-    let name: String
-    let avatarURL: URL?
-    let authorMid: Int64
-    var avatarSize: CGFloat = VideoCardLayout.overlayCardAvatarSize
-    var nameFontSize: CGFloat = VideoCardLayout.overlayCardAuthorFontSize
-    var idleColor: Color = Color.white.opacity(0.72)
-
-    @State private var isHovered = false
-
-    var body: some View {
-        NavigationLink(value: UserProfileRequest(mid: authorMid)) {
-            HStack(spacing: 6) {
-                RemoteAvatar(
-                    url: avatarURL,
-                    size: avatarSize,
-                    foreground: idleColor,
-                    background: Color.white.opacity(0.16),
-                    border: Color.white.opacity(0.18)
-                )
-
-                Text(name.ifEmpty("UP 主"))
-                    .font(.system(size: nameFontSize, weight: .medium))
-                    .foregroundStyle(isHovered ? BiliTheme.blue : idleColor)
-                    .lineLimit(1)
-                    .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
-
-                Spacer(minLength: 0)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering in
-            withAnimation(FeedCardHoverStyle.colorAnimation) {
-                isHovered = hovering
-            }
-        }
-    }
-}
-
 struct VideoCard: View, Equatable {
     let video: BiliVideo
     var largeTypography = false
@@ -2066,7 +1408,7 @@ struct VideoCard: View, Equatable {
     }
 
     private var avatarSize: CGFloat {
-        largeTypography ? 28 : 26
+        largeTypography ? 34 : 30
     }
 
     private var cornerRadius: CGFloat {

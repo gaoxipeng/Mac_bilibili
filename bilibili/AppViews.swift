@@ -329,10 +329,14 @@ struct VideoPlaybackLink<Label: View>: View {
 struct VideoCardOpenButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.985 : 1)
-            .opacity(configuration.isPressed ? 0.86 : 1)
+            // Do not scale the card itself while opening playback. SwiftUI can
+            // preserve `isPressed` while the source page is off-screen, leaving
+            // a shrunken card (and its backing layer visible) after navigating
+            // back. Opacity still provides immediate click feedback without
+            // changing the card's outer geometry.
+            .opacity(configuration.isPressed ? 0.78 : 1)
             .animation(
-                .spring(response: 0.20, dampingFraction: 0.72, blendDuration: 0.02),
+                .easeOut(duration: configuration.isPressed ? 0.06 : 0.12),
                 value: configuration.isPressed
             )
     }

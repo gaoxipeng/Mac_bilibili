@@ -10,7 +10,10 @@ Only two undefined symbol names differ from the upstream object:
 - `_AudioObjectRemovePropertyListener` → `_BiliAudioGuardRemovePropListenerX`
 
 The replacement names have exactly the same byte lengths as the originals.
-Their implementations live in `MPVCoreAudioListenerGuard.c`.
+Their implementations live in `MPVCoreAudioListenerGuard.c`. They deliberately
+return success without installing MPV 0.41's unsafe raw-`struct ao *` hotplug
+callback. Output selection after system/display wake is performed through the
+live mpv client on the main actor.
 
 The object is linked before the static `Libmpv.framework`, so its private
 `audio_out_coreaudio` definition satisfies mpv's driver table and prevents the

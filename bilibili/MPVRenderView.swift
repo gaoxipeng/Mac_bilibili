@@ -307,6 +307,7 @@ final class MPVRenderView: NSView {
     private var videoFramePixelSize = CGSize.zero
     private var seamlessResizeGeneration = 0
     private var isDeferringDrawableResize = false
+    private var lastAudioWakeRecoveryUptime: TimeInterval = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -358,6 +359,13 @@ final class MPVRenderView: NSView {
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.screenDidWake() }
             },
+            workspaceCenter.addObserver(
+                forName: NSWorkspace.didWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.screenDidWake() }
+            },
         ]
         updateMetalLayerGeometry()
     }
@@ -388,6 +396,14 @@ final class MPVRenderView: NSView {
 
     private func screenDidWake() {
         updateMetalLayerGeometry()
+        // MPVKit 0.41's native CoreAudio hotplug callback is disabled because
+        // it can retain an already-torn-down AO. Reselect the output through
+        // the live client on the main actor after system/display wake instead.
+        let now = ProcessInfo.processInfo.systemUptime
+        if mpvCoreReady, now - lastAudioWakeRecoveryUptime > 0.5 {
+            lastAudioWakeRecoveryUptime = now
+            setString("audio-device", "auto")
+        }
         metalRenderer?.resumeAfterDisplayWake()
     }
 

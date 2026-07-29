@@ -747,20 +747,9 @@ enum FeedCardHoverScrollCenter {
         let id = ObjectIdentifier(scrollView)
         guard scrollBoundsObservers[id] == nil else { return }
 
-        let clipView = scrollView.contentView
-        clipView.postsBoundsChangedNotifications = true
         let scrollViewBox = WeakScrollViewBox(scrollView)
 
         var observers: [NSObjectProtocol] = []
-        observers.append(NotificationCenter.default.addObserver(
-            forName: NSView.boundsDidChangeNotification,
-            object: clipView,
-            queue: .main
-        ) { _ in
-            MainActor.assumeIsolated {
-                handleScrollBoundsChanged(in: scrollViewBox.value)
-            }
-        })
         observers.append(NotificationCenter.default.addObserver(
             forName: NSScrollView.willStartLiveScrollNotification,
             object: scrollView,
@@ -782,20 +771,6 @@ enum FeedCardHoverScrollCenter {
             }
         })
         scrollBoundsObservers[id] = observers
-    }
-
-    private static func handleScrollBoundsChanged(in scrollView: NSScrollView?) {
-        guard let scrollView else { return }
-        let isBeginningScroll = activeScrollDeadlines[ObjectIdentifier(scrollView)] == nil
-        FeedScrollActivity.setScrolling(true)
-        // A bounds notification is delivered for every scroll step. Rechecking
-        // every tracked title/author view here puts card hit-testing directly on
-        // the scrolling hot path. Clear hover once when scrolling begins, then
-        // restore it after the scroll settles.
-        if isBeginningScroll {
-            syncHover(in: scrollView, force: true, allowsHover: false)
-        }
-        scheduleScrollEnd(in: scrollView)
     }
 
     private static func scheduleScrollEnd(in scrollView: NSScrollView?) {
@@ -1112,9 +1087,14 @@ private final class FeedStatLayerItemView: NSView {
             iconHost.layer?.shadowOpacity = 0.55
             iconHost.layer?.shadowRadius = 2
             iconHost.layer?.shadowOffset = CGSize(width: 0, height: -1)
+            iconHost.layer?.shouldRasterize = true
+            iconHost.layer?.rasterizationScale = window?.backingScaleFactor
+                ?? NSScreen.main?.backingScaleFactor
+                ?? 2
         } else {
             textField.shadow = nil
             iconHost.layer?.shadowOpacity = 0
+            iconHost.layer?.shouldRasterize = false
         }
     }
 

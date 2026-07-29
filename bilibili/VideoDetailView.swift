@@ -1352,7 +1352,10 @@ struct VideoDetailView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let columnWidths = AppLayout.videoDetailColumnWidths(in: geometry.size.width)
+            let columnWidths = AppLayout.videoDetailColumnWidths(
+                in: geometry.size.width,
+                prefersWideSidebar: true
+            )
             let sidebarWidth = columnWidths.sidebar
             let playerWidth = columnWidths.player
             let keepsSidebarLayoutForPortraitVideo = model.player.displayAspectRatio < 1
@@ -1360,24 +1363,40 @@ struct VideoDetailView: View {
             let pageBottomInset = AppLayout.videoDetailBottomInset
             let playerTopInset = chromeHeight > 0 ? chromeHeight : AppLayout.videoDetailPlayerTopInset
             let contentHeight = max(0, geometry.size.height - playerTopInset - pageBottomInset)
+            let pageContentWidth = max(
+                0,
+                geometry.size.width
+                    - AppLayout.videoDetailLeadingInset
+                    - AppLayout.videoDetailTrailingInset
+            )
 
-            HStack(alignment: .top, spacing: AppLayout.videoDetailSectionSpacing) {
-                leftColumn(
-                    playerWidth: playerWidth,
-                    contentHeight: contentHeight,
-                    showCommentsBelowIntro: !showCommentsInSidebar
-                )
-                .frame(width: playerWidth, alignment: .leading)
+            Group {
+                if showCommentsInSidebar {
+                    HStack(alignment: .top, spacing: AppLayout.videoDetailSectionSpacing) {
+                        leftColumn(
+                            playerWidth: playerWidth,
+                            contentHeight: contentHeight,
+                            showCommentsBelowIntro: false
+                        )
+                        .frame(width: playerWidth, alignment: .leading)
 
-                rightSidebar(
-                    sidebarWidth: sidebarWidth,
-                    contentHeight: contentHeight,
-                    showCommentsInSidebar: showCommentsInSidebar
-                )
+                        rightSidebar(
+                            sidebarWidth: sidebarWidth,
+                            contentHeight: contentHeight,
+                            showCommentsInSidebar: true
+                        )
+                    }
+                } else {
+                    compactFullWidthBottomLayout(
+                        playerWidth: playerWidth,
+                        sidebarWidth: sidebarWidth,
+                        contentHeight: contentHeight
+                    )
+                }
             }
-            .frame(width: geometry.size.width, alignment: .topLeading)
+            .frame(width: pageContentWidth, alignment: .topLeading)
             .padding(.leading, AppLayout.videoDetailLeadingInset)
-            .padding(.trailing, showCommentsInSidebar ? AppLayout.videoDetailTrailingInset : 0)
+            .padding(.trailing, AppLayout.videoDetailTrailingInset)
             .padding(.top, playerTopInset)
             .padding(.bottom, pageBottomInset)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -1585,6 +1604,52 @@ struct VideoDetailView: View {
         )
     }
 
+    private func compactFullWidthBottomLayout(
+        playerWidth: CGFloat,
+        sidebarWidth: CGFloat,
+        contentHeight: CGFloat
+    ) -> some View {
+        let playerHeight = fittedPlayerSize(
+            playerWidth: playerWidth,
+            contentHeight: contentHeight
+        ).height
+        let introHeight = compactIntroHeight(
+            playerWidth: playerWidth,
+            contentHeight: contentHeight
+        )
+
+        return VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
+            HStack(alignment: .top, spacing: AppLayout.videoDetailSectionSpacing) {
+                playerSection(maxWidth: playerWidth, maxHeight: playerHeight)
+                    .frame(width: playerWidth, height: playerHeight, alignment: .topLeading)
+                    .opacity(fullscreenPresenter.isPresented ? 0 : 1)
+                    .allowsHitTesting(!fullscreenPresenter.isPresented)
+
+                rightSidebar(
+                    sidebarWidth: sidebarWidth,
+                    contentHeight: playerHeight,
+                    showCommentsInSidebar: false
+                )
+                .frame(height: playerHeight, alignment: .topLeading)
+            }
+            .frame(height: playerHeight, alignment: .topLeading)
+
+            VideoIntroCard(
+                model: model,
+                maxHeight: introHeight,
+                onTagTap: { appModel.openSearch(for: $0, returningTo: model.makePlaybackRequest()) }
+            )
+            .frame(maxWidth: .infinity)
+            .fixedSize(horizontal: false, vertical: true)
+
+            commentsCard
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .layoutPriority(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: contentHeight, alignment: .topLeading)
+    }
+
     private func compactIntroHeight(playerWidth: CGFloat, contentHeight: CGFloat) -> CGFloat {
         let playerHeight = fittedPlayerSize(playerWidth: playerWidth, contentHeight: contentHeight).height
         let remainingHeight = contentHeight
@@ -1612,6 +1677,7 @@ struct VideoDetailView: View {
         )
     }
 
+    @ViewBuilder
     private func rightSidebar(
         sidebarWidth: CGFloat,
         contentHeight: CGFloat,
@@ -1619,19 +1685,35 @@ struct VideoDetailView: View {
     ) -> some View {
         let isCompact = sidebarWidth < 360
 
-        return VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
+        if showCommentsInSidebar {
+            VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
+                rightSidebarControls(sidebarWidth: sidebarWidth, isCompact: isCompact)
+                commentsCard
+                    .layoutPriority(1)
+            }
+            .frame(width: sidebarWidth, alignment: .leading)
+            .frame(height: contentHeight, alignment: .topLeading)
+        } else {
+            MacOverlayScrollView(usesOverlayScrollers: true, clipsContent: true) {
+                rightSidebarControls(sidebarWidth: sidebarWidth, isCompact: isCompact)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(width: sidebarWidth, height: contentHeight, alignment: .topLeading)
+        }
+    }
+
+    private func rightSidebarControls(
+        sidebarWidth: CGFloat,
+        isCompact: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: AppLayout.videoDetailSectionSpacing) {
             authorCard(isCompact: isCompact)
             if (model.detail?.pages.count ?? 0) > 1 {
                 VideoEpisodeSection(model: model)
             }
             actionCard(sidebarWidth: sidebarWidth)
-            if showCommentsInSidebar {
-                commentsCard
-                    .layoutPriority(1)
-            }
         }
-        .frame(width: sidebarWidth, alignment: .leading)
-        .frame(height: contentHeight, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func authorCard(isCompact: Bool) -> some View {

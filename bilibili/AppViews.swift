@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 enum VideoCardLayout {
-    /// 原生卡片最小宽度（布局回退估算用）；信息流固定为 maxColumnCount 列。
-    static let minWidth: CGFloat = 200
+    /// 视频封面的最小宽度；窗口变窄时优先减少列数，避免卡片被无限压缩。
+    static let minWidth: CGFloat = 250
     static let gridSpacing: CGFloat = 16
     /// 原生卡片行与行之间的垂直间距（头像到底下一行封面）。
     static let nativeCardRowSpacing: CGFloat = 12
@@ -37,7 +37,11 @@ enum VideoCardLayout {
 
     static func columnCount(for width: CGFloat) -> Int {
         guard width > 0 else { return 1 }
-        return maxColumnCount
+        let naturalCount = max(
+            1,
+            Int((width + gridSpacing) / (minWidth + gridSpacing))
+        )
+        return min(maxColumnCount, naturalCount)
     }
 
     static func columnWidth(for totalWidth: CGFloat, columnCount: Int, spacing: CGFloat = gridSpacing) -> CGFloat {

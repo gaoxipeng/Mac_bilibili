@@ -109,13 +109,16 @@ enum AppLayout {
     static let videoDetailTrailingInset: CGFloat = 12
     static let videoDetailBottomInset: CGFloat = 0
     static let videoDetailSectionSpacing: CGFloat = 8
-    static let videoDetailCompactIntroMinHeight: CGFloat = 112
-    static let videoDetailCompactIntroMaxHeight: CGFloat = 240
+    static let videoDetailCompactIntroMinHeight: CGFloat = 148
+    static let videoDetailCompactIntroMaxHeight: CGFloat = 300
     static let videoDetailCompactCommentsMinHeight: CGFloat = 180
     static let videoDetailSidebarMinWidth: CGFloat = 224
     static let videoDetailSidebarMinContentWidth: CGFloat = 200
     static let videoDetailSidebarWidthRatio: CGFloat = 0.22
     static let videoDetailSidebarMaxWidthRatio: CGFloat = 0.30
+    /// Wide detail sidebar leaves more room for author/actions/comments.
+    static let videoDetailWideSidebarWidthRatio: CGFloat = 0.30
+    static let videoDetailWideSidebarMaxWidthRatio: CGFloat = 0.36
     static let videoDetailChromeBottomSpacing: CGFloat = 4
     static let userProfileFallbackChromeHeight: CGFloat = 152
     static let userProfileChromeShadowOverflow: CGFloat = 8
@@ -147,16 +150,28 @@ enum AppLayout {
         feedHorizontalInset + searchUserResultsHorizontalInset - floatingChromeInset
     }
 
-    static func videoDetailSidebarWidth(in availableWidth: CGFloat) -> CGFloat {
+    static func videoDetailSidebarWidth(
+        in availableWidth: CGFloat,
+        prefersWideSidebar: Bool = false
+    ) -> CGFloat {
         guard availableWidth > 0 else { return 0 }
         let adaptiveMin = min(videoDetailSidebarMinWidth, availableWidth * 0.42)
-        let target = availableWidth * videoDetailSidebarWidthRatio
+        let targetRatio = prefersWideSidebar
+            ? videoDetailWideSidebarWidthRatio
+            : videoDetailSidebarWidthRatio
+        let maximumRatio = prefersWideSidebar
+            ? videoDetailWideSidebarMaxWidthRatio
+            : videoDetailSidebarMaxWidthRatio
+        let target = availableWidth * targetRatio
         let preferred = max(target, adaptiveMin)
-        let maxWidth = max(availableWidth * videoDetailSidebarMaxWidthRatio, preferred)
+        let maxWidth = max(availableWidth * maximumRatio, preferred)
         return min(preferred, maxWidth, availableWidth)
     }
 
-    static func videoDetailColumnWidths(in totalWidth: CGFloat) -> (player: CGFloat, sidebar: CGFloat) {
+    static func videoDetailColumnWidths(
+        in totalWidth: CGFloat,
+        prefersWideSidebar: Bool = false
+    ) -> (player: CGFloat, sidebar: CGFloat) {
         let horizontalPadding = videoDetailLeadingInset + videoDetailTrailingInset
         let contentWidth = max(totalWidth - horizontalPadding, 0)
         guard contentWidth > videoDetailSectionSpacing else { return (0, 0) }
@@ -165,7 +180,13 @@ enum AppLayout {
         guard columnsWidth > 0 else { return (0, 0) }
 
         let minPlayerWidth: CGFloat = 180
-        var sidebar = min(videoDetailSidebarWidth(in: columnsWidth), columnsWidth)
+        var sidebar = min(
+            videoDetailSidebarWidth(
+                in: columnsWidth,
+                prefersWideSidebar: prefersWideSidebar
+            ),
+            columnsWidth
+        )
         var player = columnsWidth - sidebar
 
         let contentMin = min(videoDetailSidebarMinContentWidth, columnsWidth)

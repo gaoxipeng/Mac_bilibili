@@ -1346,7 +1346,7 @@ struct VideoDetailView: View {
 
     private func updateImmersiveChromeSuppression() {
         appModel.setFloatingChromeSuppressed(
-            commentFullscreenPicture != nil || fullscreenPresenter.isPresented
+            commentFullscreenPicture != nil || fullscreenPresenter.suppressesInlineChrome
         )
     }
 
@@ -1419,10 +1419,12 @@ struct VideoDetailView: View {
             updateImmersiveChromeSuppression()
         }
         .onChange(of: fullscreenPresenter.isPresented) { _, presented in
-            updateImmersiveChromeSuppression()
             if presented {
                 allowsInlineDanmaku = false
             }
+        }
+        .onChange(of: fullscreenPresenter.suppressesInlineChrome) { _, _ in
+            updateImmersiveChromeSuppression()
         }
         .onReceive(NotificationCenter.default.publisher(for: .videoFullscreenDidFinishExit)) { _ in
             Task { @MainActor in

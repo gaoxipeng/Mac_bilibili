@@ -786,8 +786,15 @@ enum FeedCardHoverScrollCenter {
 
     private static func handleScrollBoundsChanged(in scrollView: NSScrollView?) {
         guard let scrollView else { return }
+        let isBeginningScroll = activeScrollDeadlines[ObjectIdentifier(scrollView)] == nil
         FeedScrollActivity.setScrolling(true)
-        syncHover(in: scrollView, force: true, allowsHover: false)
+        // A bounds notification is delivered for every scroll step. Rechecking
+        // every tracked title/author view here puts card hit-testing directly on
+        // the scrolling hot path. Clear hover once when scrolling begins, then
+        // restore it after the scroll settles.
+        if isBeginningScroll {
+            syncHover(in: scrollView, force: true, allowsHover: false)
+        }
         scheduleScrollEnd(in: scrollView)
     }
 
@@ -854,6 +861,7 @@ struct FeedCardStatsRowRepresentable: NSViewRepresentable, Equatable {
     enum DisplayStyle: Equatable {
         case metadata
         case coverOverlay
+        case nativeCoverOverlay
     }
 
     let playCount: String
@@ -882,7 +890,8 @@ struct FeedCardStatsRowRepresentable: NSViewRepresentable, Equatable {
     }
 
     private func apply(to view: FeedCardStatsRowView) {
-        let colors = displayStyle == .coverOverlay
+        let isCoverOverlay = displayStyle != .metadata
+        let colors = isCoverOverlay
             ? (NSColor.white, NSColor.white)
             : (NSColor.secondaryLabelColor, NSColor.secondaryLabelColor)
         view.apply(
@@ -894,7 +903,8 @@ struct FeedCardStatsRowRepresentable: NSViewRepresentable, Equatable {
             fontSize: fontSize,
             itemSpacing: itemSpacing,
             iconColor: colors.0,
-            textColor: colors.1
+            textColor: colors.1,
+            usesShadow: displayStyle == .nativeCoverOverlay
         )
     }
 }
@@ -931,7 +941,8 @@ final class FeedCardStatsRowView: NSView {
         fontSize: CGFloat,
         itemSpacing: CGFloat,
         iconColor: NSColor = .secondaryLabelColor,
-        textColor: NSColor = .secondaryLabelColor
+        textColor: NSColor = .secondaryLabelColor,
+        usesShadow: Bool = false
     ) {
         configuredItemSpacing = itemSpacing
         showsLike = likeCount != nil
@@ -943,7 +954,8 @@ final class FeedCardStatsRowView: NSView {
             iconColor: iconColor,
             textColor: textColor,
             fontSize: fontSize,
-            symbolScale: 1
+            symbolScale: 1,
+            usesShadow: usesShadow
         )
         danmakuItem.apply(
             icon: .danmaku,
@@ -952,7 +964,8 @@ final class FeedCardStatsRowView: NSView {
             iconColor: iconColor,
             textColor: textColor,
             fontSize: fontSize,
-            symbolScale: 1
+            symbolScale: 1,
+            usesShadow: usesShadow
         )
         if let likeCount {
             likeItem.isHidden = false
@@ -963,7 +976,8 @@ final class FeedCardStatsRowView: NSView {
                 iconColor: iconColor,
                 textColor: textColor,
                 fontSize: fontSize,
-                symbolScale: 1.04
+                symbolScale: 1.04,
+                usesShadow: usesShadow
             )
         } else {
             likeItem.isHidden = true
@@ -1053,7 +1067,8 @@ private final class FeedStatLayerItemView: NSView {
         iconColor: NSColor,
         textColor: NSColor,
         fontSize: CGFloat,
-        symbolScale: CGFloat
+        symbolScale: CGFloat,
+        usesShadow: Bool
     ) {
         let image = BiliRasterIconCache.image(
             icon: icon,
@@ -1072,6 +1087,7 @@ private final class FeedStatLayerItemView: NSView {
         let font = NSFont.systemFont(ofSize: fontSize)
         textField.font = font
         textField.textColor = textColor
+        configureShadow(usesShadow)
 
         let fittingWidth = textField.sizeThatFits(
             NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -1082,6 +1098,24 @@ private final class FeedStatLayerItemView: NSView {
         itemSpacing = 4
         needsLayout = true
         invalidateIntrinsicContentSize()
+    }
+
+    private func configureShadow(_ enabled: Bool) {
+        if enabled {
+            let textShadow = NSShadow()
+            textShadow.shadowColor = NSColor.black.withAlphaComponent(0.55)
+            textShadow.shadowBlurRadius = 2
+            textShadow.shadowOffset = NSSize(width: 0, height: -1)
+            textField.shadow = textShadow
+
+            iconHost.layer?.shadowColor = NSColor.black.cgColor
+            iconHost.layer?.shadowOpacity = 0.55
+            iconHost.layer?.shadowRadius = 2
+            iconHost.layer?.shadowOffset = CGSize(width: 0, height: -1)
+        } else {
+            textField.shadow = nil
+            iconHost.layer?.shadowOpacity = 0
+        }
     }
 
     override func layout() {

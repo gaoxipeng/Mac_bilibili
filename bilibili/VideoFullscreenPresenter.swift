@@ -6,6 +6,10 @@ import SwiftUI
 @MainActor
 final class VideoFullscreenPresenter: ObservableObject {
     @Published private(set) var isPresented = false
+    /// The fullscreen window remains presented throughout its exit animation,
+    /// but inline chrome should already be available underneath it so the title
+    /// fades back with the rest of the main window.
+    @Published private(set) var suppressesInlineChrome = false
 
     private var window: NSWindow?
     private var sourceFrameProvider: (() -> NSRect)?
@@ -88,6 +92,7 @@ final class VideoFullscreenPresenter: ObservableObject {
         window.makeKeyAndOrderFront(nil)
 
         self.window = window
+        suppressesInlineChrome = true
         isPresented = true
         enterSystemFullscreenChrome()
         installEdgeMouseMonitors()
@@ -119,6 +124,7 @@ final class VideoFullscreenPresenter: ObservableObject {
         }
 
         let targetFrame = sourceFrameProvider?() ?? window.frame
+        suppressesInlineChrome = false
         removeEscapeMonitor()
         prepareForSystemChromeRestoration(window: window, activateMainWindow: true)
         setFullscreenBackdropOpaque(false, for: window)
@@ -159,6 +165,7 @@ final class VideoFullscreenPresenter: ObservableObject {
     func dismissImmediately() {
         cancelTransition()
         PlayerClipContainerView.beginFullscreenToInlineHandoff()
+        suppressesInlineChrome = false
         isPresented = false
         if let window {
             prepareForSystemChromeRestoration(window: window, activateMainWindow: true)
@@ -180,6 +187,7 @@ final class VideoFullscreenPresenter: ObservableObject {
     private func dismissForApplicationSwitch() {
         cancelTransition()
         PlayerClipContainerView.beginFullscreenToInlineHandoff()
+        suppressesInlineChrome = false
         isPresented = false
         if let window {
             prepareForSystemChromeRestoration(window: window, activateMainWindow: false)
@@ -205,6 +213,7 @@ final class VideoFullscreenPresenter: ObservableObject {
         exitSystemFullscreenChrome()
         window = nil
         sourceFrameProvider = nil
+        suppressesInlineChrome = false
         isPresented = false
         isRestoringSystemChrome = false
         cancelSystemChromeReveal()

@@ -2,21 +2,27 @@ import AppKit
 import SwiftUI
 
 enum VideoCardLayout {
-    static let minWidth: CGFloat = 280
+    static let minWidth: CGFloat = 230
     /// 信息流大卡片（原生 / 叠层）的最小宽度。
-    static let largeCardMinWidth: CGFloat = 350
-    static let gridSpacing: CGFloat = 22
+    static let largeCardMinWidth: CGFloat = 250
+    static let gridSpacing: CGFloat = 16
     /// 原生卡片行与行之间的垂直间距（头像到底下一行封面）。
     static let nativeCardRowSpacing: CGFloat = 12
     static let maxColumnCount = 5
     static let coverAspect: CGFloat = 16.0 / 9.0
     static let cornerRadius: CGFloat = 10
-    static let overlayCardSpacing: CGFloat = 22
+    static let overlayCardSpacing: CGFloat = 16
     /// 叠层卡片行与行之间的垂直间距（大于列间距）。
     static let overlayCardRowSpacing: CGFloat = 28
     static let overlayCardCornerRadius: CGFloat = 14
     static let overlayCardOverlayInset: CGFloat = 10
-    static let overlayCardAvatarSize: CGFloat = 27
+    static let overlayCardAvatarSize: CGFloat = 24
+    static let overlayCardTitleFontSize: CGFloat = 15
+    static let overlayCardAuthorFontSize: CGFloat = 12
+    static let nativeCardLargeTitleFontSize: CGFloat = 16
+    static let nativeCardTitleFontSize: CGFloat = 15
+    static let nativeCardLargeAuthorFontSize: CGFloat = 13
+    static let nativeCardAuthorFontSize: CGFloat = 12
     static let coverHoverScale: CGFloat = 1.04
     static let coverHoverEnterAnimation = Animation.easeOut(duration: 0.09)
     static let coverHoverExitAnimation = Animation.easeOut(duration: 0.07)
@@ -60,7 +66,7 @@ enum VideoCardLayout {
         static func feed(largeTypography: Bool, showsAuthor: Bool = true, showsPublishTime: Bool = false) -> RowLayoutMetrics {
             let bottomRowHeight: CGFloat = {
                 if showsAuthor || showsPublishTime {
-                    return largeTypography ? 34 : 30
+                    return largeTypography ? 28 : 26
                 }
                 return 0
             }()
@@ -90,11 +96,9 @@ enum VideoCardLayout {
 
     static func titleNSFont(for metrics: RowLayoutMetrics) -> NSFont {
         if metrics.usesLargeTitleFont {
-            let size = NSFont.preferredFont(forTextStyle: .title1).pointSize
-            return NSFont.systemFont(ofSize: size, weight: .semibold)
+            return NSFont.systemFont(ofSize: nativeCardLargeTitleFontSize, weight: .semibold)
         }
-        let size = NSFont.preferredFont(forTextStyle: .title2).pointSize
-        return NSFont.systemFont(ofSize: size, weight: .medium)
+        return NSFont.systemFont(ofSize: nativeCardTitleFontSize, weight: .medium)
     }
 
     /// SwiftUI `Text` 实际行高略高于 AppKit `NSLayoutManager` 测量值。
@@ -355,8 +359,8 @@ private struct FeedCardAuthorLabel: View {
 
     private var nameFontSize: CGFloat {
         usesLargeFont
-            ? NSFont.preferredFont(forTextStyle: .title2).pointSize
-            : NSFont.preferredFont(forTextStyle: .title3).pointSize
+            ? VideoCardLayout.nativeCardLargeAuthorFontSize
+            : VideoCardLayout.nativeCardAuthorFontSize
     }
 
     private var resolvedTrailingFontSize: CGFloat {
@@ -1321,7 +1325,7 @@ private struct HistoryOverlayVideoCard: View, Equatable {
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(video.title.ifEmpty("视频"))
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: VideoCardLayout.overlayCardTitleFontSize, weight: .semibold))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                     .hidden()
@@ -1377,7 +1381,7 @@ private struct HistoryOverlayVideoCard: View, Equatable {
     private var metaContent: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(video.title.ifEmpty("视频"))
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: VideoCardLayout.overlayCardTitleFontSize, weight: .semibold))
                 .foregroundStyle(Self.primaryMetaColor)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
@@ -1411,7 +1415,7 @@ private struct HistoryOverlayVideoCard: View, Equatable {
             )
 
             Text(authorDisplayName.ifEmpty("UP 主"))
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: VideoCardLayout.overlayCardAuthorFontSize, weight: .medium))
                 .foregroundStyle(Self.secondaryMetaColor)
                 .lineLimit(1)
                 .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
@@ -1828,7 +1832,7 @@ struct VideoFeedOverlayCard: View, Equatable {
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(video.title.ifEmpty("视频"))
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: VideoCardLayout.overlayCardTitleFontSize, weight: .semibold))
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                     .hidden()
@@ -1901,7 +1905,7 @@ struct VideoFeedOverlayCard: View, Equatable {
     private var metaCapsule: some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(video.title.ifEmpty("视频"))
-                .font(.system(size: 17, weight: .semibold))
+                .font(.system(size: VideoCardLayout.overlayCardTitleFontSize, weight: .semibold))
                 .foregroundStyle(Self.primaryMetaColor)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
@@ -1952,7 +1956,7 @@ struct VideoFeedOverlayCard: View, Equatable {
             )
 
             Text(video.authorName.ifEmpty("UP 主"))
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: VideoCardLayout.overlayCardAuthorFontSize, weight: .medium))
                 .foregroundStyle(Self.secondaryMetaColor)
                 .lineLimit(1)
                 .shadow(color: .black.opacity(0.45), radius: 3, y: 1)
@@ -1975,7 +1979,7 @@ private struct OverlayCardAuthorChip: View {
     let avatarURL: URL?
     let authorMid: Int64
     var avatarSize: CGFloat = VideoCardLayout.overlayCardAvatarSize
-    var nameFontSize: CGFloat = 13
+    var nameFontSize: CGFloat = VideoCardLayout.overlayCardAuthorFontSize
     var idleColor: Color = Color.white.opacity(0.72)
 
     @State private var isHovered = false
@@ -2062,7 +2066,7 @@ struct VideoCard: View, Equatable {
     }
 
     private var avatarSize: CGFloat {
-        largeTypography ? 34 : 30
+        largeTypography ? 28 : 26
     }
 
     private var cornerRadius: CGFloat {
@@ -2188,8 +2192,8 @@ struct VideoCard: View, Equatable {
 
     private var statsFontSize: CGFloat {
         largeTypography
-            ? NSFont.preferredFont(forTextStyle: .title3).pointSize
-            : NSFont.preferredFont(forTextStyle: .body).pointSize
+            ? VideoCardLayout.nativeCardLargeAuthorFontSize
+            : VideoCardLayout.nativeCardAuthorFontSize
     }
 }
 

@@ -1233,15 +1233,31 @@ struct MacOverlayScrollConfigurator: NSViewRepresentable {
         nsView.usesOverlayScrollers = usesOverlayScrollers
         nsView.applyOverlayStyle()
     }
+
+    static func dismantleNSView(_ nsView: MacOverlayScrollFinderView, coordinator: ()) {
+        nsView.tearDownHighRefreshDriver()
+    }
 }
 
+@MainActor
 final class MacOverlayScrollFinderView: NSView {
     private weak var configuredScrollView: NSScrollView?
+    private var scrollBoundsObserver: NSObjectProtocol?
+    private var screenChangeObserver: NSObjectProtocol?
+    private var highRefreshDisplayLink: CADisplayLink?
+    private var displayLinkScreen: NSScreen?
+    private var pauseDisplayLinkWorkItem: DispatchWorkItem?
     var usesOverlayScrollers = true
+    private static let highRefreshSettleDelay: TimeInterval = 0.12
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        applyOverlayStyle()
+        if window != nil {
+            applyOverlayStyle()
+        } else {
+            tearDownHighRefreshDriver()
+            configuredScrollView = nil
+        }
     }
 
     override func layout() {
@@ -1269,6 +1285,8 @@ final class MacOverlayScrollFinderView: NSView {
     }
 
     private func configure(_ scrollView: NSScrollView) {
+        installHighRefreshDriverIfNeeded(for: scrollView)
+
         if usesOverlayScrollers {
             guard scrollView.scrollerStyle != .overlay
                 || !scrollView.autohidesScrollers
@@ -1288,6 +1306,100 @@ final class MacOverlayScrollFinderView: NSView {
             scrollView.drawsBackground = false
             scrollView.borderType = .noBorder
             scrollView.verticalScrollElasticity = .automatic
+        }
+    }
+
+    private func installHighRefreshDriverIfNeeded(for scrollView: NSScrollView) {
+        guard scrollBoundsObserver == nil else { return }
+
+        let clipView = scrollView.contentView
+        clipView.postsBoundsChangedNotifications = true
+        scrollBoundsObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: clipView,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.driveHighRefreshWhileScrolling()
+            }
+        }
+
+        if let window = scrollView.window {
+            screenChangeObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeScreenNotification,
+                object: window,
+                queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    self?.rebuildHighRefreshDisplayLink()
+                }
+            }
+        }
+    }
+
+    private func driveHighRefreshWhileScrolling() {
+        guard let scrollView = configuredScrollView, let screen = scrollView.window?.screen else { return }
+        if highRefreshDisplayLink == nil || displayLinkScreen !== screen {
+            rebuildHighRefreshDisplayLink()
+        }
+        highRefreshDisplayLink?.isPaused = false
+
+        pauseDisplayLinkWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.highRefreshDisplayLink?.isPaused = true
+        }
+        pauseDisplayLinkWorkItem = work
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.highRefreshSettleDelay,
+            execute: work
+        )
+    }
+
+    private func rebuildHighRefreshDisplayLink() {
+        highRefreshDisplayLink?.invalidate()
+        highRefreshDisplayLink = nil
+        displayLinkScreen = nil
+
+        guard let screen = configuredScrollView?.window?.screen else { return }
+        let maximumFPS = Float(max(screen.maximumFramesPerSecond, 60))
+        let link = screen.displayLink(target: self, selector: #selector(highRefreshDisplayLinkFired(_:)))
+        link.preferredFrameRateRange = CAFrameRateRange(
+            minimum: min(60, maximumFPS),
+            maximum: maximumFPS,
+            preferred: maximumFPS
+        )
+        link.add(to: .main, forMode: .common)
+        link.isPaused = true
+        highRefreshDisplayLink = link
+        displayLinkScreen = screen
+    }
+
+    @objc private func highRefreshDisplayLinkFired(_ link: CADisplayLink) {
+        // Scroll-wheel events can arrive between AppKit's regular display
+        // passes. Commit any pending scroll position at the physical display's
+        // cadence (120 Hz on ProMotion) without forcing a clean view to redraw.
+        configuredScrollView?.window?.displayIfNeeded()
+    }
+
+    func tearDownHighRefreshDriver() {
+        pauseDisplayLinkWorkItem?.cancel()
+        pauseDisplayLinkWorkItem = nil
+        highRefreshDisplayLink?.invalidate()
+        highRefreshDisplayLink = nil
+        displayLinkScreen = nil
+        if let scrollBoundsObserver {
+            NotificationCenter.default.removeObserver(scrollBoundsObserver)
+            self.scrollBoundsObserver = nil
+        }
+        if let screenChangeObserver {
+            NotificationCenter.default.removeObserver(screenChangeObserver)
+            self.screenChangeObserver = nil
+        }
+    }
+
+    deinit {
+        MainActor.assumeIsolated {
+            tearDownHighRefreshDriver()
         }
     }
 }
@@ -1534,7 +1646,7 @@ struct VideoCoverFeedMetaOverlay: View {
                             likeIconSize: iconSize,
                             fontSize: fontSize,
                             itemSpacing: VideoCardLayout.coverOverlayItemSpacing,
-                            displayStyle: .coverOverlay
+                            displayStyle: .nativeCoverOverlay
                         )
                         .fixedSize(horizontal: true, vertical: true)
                     }
@@ -1748,8 +1860,14 @@ private enum VideoCoverHoverScrollCenter {
 
     private static func handleScrollBoundsChanged(in scrollView: NSScrollView?) {
         guard let scrollView else { return }
+        let isBeginningScroll = activeScrollDeadlines[ObjectIdentifier(scrollView)] == nil
         FeedScrollActivity.setScrolling(true)
-        syncHoverToMouse(in: scrollView)
+        // Bounds changes arrive at display cadence. Scanning all cover views on
+        // each notification competes with NSScrollView for the main thread and
+        // is unnecessary while hover tracking is suspended.
+        if isBeginningScroll {
+            syncHoverToMouse(in: scrollView)
+        }
         scheduleScrollEnd(in: scrollView)
     }
 

@@ -2051,7 +2051,7 @@ private struct VideoIntroCard: View {
     private var overviewContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text(descriptionText)
-                .font(.system(size: 15))
+                .font(.system(size: 16))
                 .foregroundStyle(hasDescription ? .primary : .secondary)
                 .lineSpacing(5)
                 .fixedSize(horizontal: false, vertical: true)
@@ -2184,7 +2184,7 @@ private struct VideoTagChip: View {
     var body: some View {
         Button(action: onTap) {
             Text(title)
-                .font(.system(size: 13))
+                .font(.system(size: 16))
                 .foregroundStyle(
                     isHovered
                         ? Color(red: 0.25, green: 0.28, blue: 0.35)

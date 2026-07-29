@@ -681,6 +681,8 @@ private enum AppVersion {
         let build = nonEmptyVersion(
             Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
         )
+        // Prefer a single marketing version. Only show build in parentheses when
+        // it intentionally differs (e.g. hotfix builds).
         switch (marketing, build) {
         case let (version?, build?) where version != build:
             return "\(version) (\(build))"
@@ -694,7 +696,9 @@ private enum AppVersion {
     }
 
     private static func nonEmptyVersion(_ value: String?) -> String? {
-        guard let value, !value.isEmpty else { return nil }
+        guard let value, !value.isEmpty, value != "$(MARKETING_VERSION)", value != "$(CURRENT_PROJECT_VERSION)" else {
+            return nil
+        }
         return value
     }
 }

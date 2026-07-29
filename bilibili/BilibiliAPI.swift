@@ -1221,16 +1221,13 @@ actor BilibiliAPI {
         base: BiliVideo
     ) -> BiliVideo {
         let title = context.seasonTitle.ifEmpty(base.title)
-        let metadata = [context.styles, context.areas]
-            .filter { !$0.isEmpty }
-            .joined(separator: " · ")
         return BiliVideo(
             id: "pgc:\(context.epid)",
             bvid: context.bvid,
             aid: context.aid,
             title: title,
             coverURL: context.coverURL ?? base.coverURL,
-            authorName: metadata.ifEmpty(base.authorName),
+            authorName: base.authorName,
             authorFaceURL: base.authorFaceURL,
             authorMid: base.authorMid,
             viewCount: base.viewCount,

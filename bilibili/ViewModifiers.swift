@@ -1659,24 +1659,9 @@ private enum VideoCoverHoverScrollCenter {
         let id = ObjectIdentifier(scrollView)
         guard scrollBoundsObservers[id] == nil else { return }
 
-        let clipView = scrollView.contentView
-        clipView.postsBoundsChangedNotifications = true
         let scrollViewBox = WeakScrollViewBox(scrollView)
 
         var observers: [NSObjectProtocol] = []
-        // Only mark scrolling / settle. Avoid per-frame hover hit-testing that
-        // 2568a30 paid for on every bounds tick.
-        observers.append(NotificationCenter.default.addObserver(
-            forName: NSView.boundsDidChangeNotification,
-            object: clipView,
-            queue: .main
-        ) { _ in
-            MainActor.assumeIsolated {
-                guard let scrollView = scrollViewBox.value else { return }
-                FeedScrollActivity.setScrolling(true)
-                scheduleScrollEnd(in: scrollView)
-            }
-        })
         observers.append(NotificationCenter.default.addObserver(
             forName: NSScrollView.willStartLiveScrollNotification,
             object: scrollView,

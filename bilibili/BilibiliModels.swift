@@ -875,11 +875,13 @@ nonisolated enum DanmakuSpeedLevel: Int, CaseIterable, Sendable {
 
     var durationMultiplier: Float {
         switch self {
-        case .verySlow: 1.85
-        case .slow: 1.35
-        case .medium: 1
-        case .fast: 0.72
-        case .veryFast: 0.5
+        // The previous "slow" timing is now the center point. Keep the faster
+        // presets one step apart and extend the slower end by the same cadence.
+        case .verySlow: 2.5
+        case .slow: 1.85
+        case .medium: 1.35
+        case .fast: 1
+        case .veryFast: 0.72
         }
     }
 

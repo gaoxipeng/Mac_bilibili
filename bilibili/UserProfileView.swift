@@ -1199,7 +1199,7 @@ struct UserProfileView: View {
             loadingPlaceholder(title: "正在加载投稿")
         } else if model.videos.isEmpty {
             ContentUnavailableView("暂无投稿", systemImage: "video.slash")
-                .padding(.vertical, 40)
+                .frame(maxWidth: .infinity, minHeight: 420, alignment: .center)
         } else {
             VStack(alignment: .leading, spacing: 0) {
                 VideoFeedGrid(

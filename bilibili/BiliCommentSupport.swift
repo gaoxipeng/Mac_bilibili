@@ -806,7 +806,10 @@ struct CommentPictureAttachments: View {
         for picture in pictures {
             let size = picture.thumbnailSize()
             let nextWidth = current.isEmpty ? size.width : rowWidth + 8 + size.width
-            if !current.isEmpty, nextWidth > maxWidth {
+            // Allow a modest overflow and fit the completed row back to the
+            // viewport proportionally. This avoids wrapping a second image
+            // merely because the natural sizes miss by a small amount.
+            if !current.isEmpty, nextWidth > maxWidth * 1.25 {
                 rows.append(current)
                 current = [picture]
                 rowWidth = size.width
@@ -820,7 +823,15 @@ struct CommentPictureAttachments: View {
         }
         return rows.map { row in
             guard row.count == 1, let picture = row.first else {
-                return row.map { CommentPictureLayoutItem(picture: $0, size: $0.thumbnailSize()) }
+                let desired = row.map { $0.thumbnailSize() }
+                let naturalWidth = desired.reduce(0) { $0 + $1.width } + CGFloat(max(0, row.count - 1)) * 10
+                let scale = min(1.08, maxWidth / max(naturalWidth, 1))
+                return zip(row, desired).map { picture, size in
+                    CommentPictureLayoutItem(
+                        picture: picture,
+                        size: CGSize(width: size.width * scale, height: size.height * scale)
+                    )
+                }
             }
 
             let originalSize = picture.thumbnailSize()

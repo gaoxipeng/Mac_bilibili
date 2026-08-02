@@ -743,6 +743,8 @@ struct CommentFullscreenPicture: Equatable {
     let url: URL
     let sourceFrame: CGRect
     let aspectRatio: CGFloat
+    let gallery: [BiliCommentPicture]
+    let galleryIndex: Int
 }
 
 private enum CommentPictureCoordinateSpace {
@@ -769,7 +771,12 @@ struct CommentPictureAttachments: View {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                     HStack(alignment: .top, spacing: 8) {
                         ForEach(row, id: \.self) { picture in
-                            CommentPictureThumbnail(picture: picture, onTap: onSelect)
+                            CommentPictureThumbnail(
+                                picture: picture,
+                                gallery: pictures,
+                                galleryIndex: pictures.firstIndex(of: picture) ?? 0,
+                                onTap: onSelect
+                            )
                         }
                     }
                 }
@@ -824,6 +831,8 @@ private struct CommentPictureWidthKey: PreferenceKey {
 
 private struct CommentPictureThumbnail: View {
     let picture: BiliCommentPicture
+    let gallery: [BiliCommentPicture]
+    let galleryIndex: Int
     let onTap: (CommentFullscreenPicture) -> Void
 
     @State private var isHovered = false
@@ -877,7 +886,9 @@ private struct CommentPictureThumbnail: View {
                 sourceFrame: sourceFrame == .zero
                     ? CGRect(origin: .zero, size: size)
                     : sourceFrame,
-                aspectRatio: picture.aspectRatio
+                aspectRatio: picture.aspectRatio,
+                gallery: gallery,
+                galleryIndex: galleryIndex
             )
         )
     }
@@ -887,7 +898,13 @@ private extension CommentFullscreenPicture {
     func resolvedSourceFrame(using registry: [URL: CGRect]) -> CommentFullscreenPicture {
         let latest = registry[url] ?? sourceFrame
         guard latest != .zero else { return self }
-        return CommentFullscreenPicture(url: url, sourceFrame: latest, aspectRatio: aspectRatio)
+        return CommentFullscreenPicture(
+            url: url,
+            sourceFrame: latest,
+            aspectRatio: aspectRatio,
+            gallery: gallery,
+            galleryIndex: galleryIndex
+        )
     }
 }
 
@@ -959,6 +976,34 @@ private struct CommentImageZoomPresenter: View {
                             .position(x: frame.midX, y: frame.midY)
                             .contentShape(Rectangle())
                             .onTapGesture(perform: dismiss)
+
+                        if displayed.gallery.count > 1 {
+                            HStack {
+                                galleryButton(
+                                    systemName: "chevron.left",
+                                    enabled: displayed.galleryIndex > 0,
+                                    action: { navigateGallery(by: -1) }
+                                )
+                                Spacer()
+                                galleryButton(
+                                    systemName: "chevron.right",
+                                    enabled: displayed.galleryIndex < displayed.gallery.count - 1,
+                                    action: { navigateGallery(by: 1) }
+                                )
+                            }
+                            .padding(.horizontal, 18)
+
+                            VStack {
+                                Text("\(displayed.galleryIndex + 1) / \(displayed.gallery.count)")
+                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(.black.opacity(0.58), in: Capsule())
+                                Spacer()
+                            }
+                            .padding(.top, 24)
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -988,7 +1033,46 @@ private struct CommentImageZoomPresenter: View {
             }
             return
         }
-        present(new.resolvedSourceFrame(using: thumbnailFrames))
+        let resolved = new.resolvedSourceFrame(using: thumbnailFrames)
+        if let displayed,
+           displayed.gallery == resolved.gallery,
+           displayed.galleryIndex != resolved.galleryIndex {
+            self.displayed = resolved
+            progress = 1
+        } else {
+            present(resolved)
+        }
+    }
+
+    @ViewBuilder
+    private func galleryButton(
+        systemName: String,
+        enabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(.white.opacity(enabled ? 0.92 : 0.28))
+                .frame(width: 46, height: 72)
+                .background(.black.opacity(enabled ? 0.48 : 0.16), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+    }
+
+    private func navigateGallery(by offset: Int) {
+        guard let displayed, displayed.gallery.count > 1 else { return }
+        let nextIndex = displayed.galleryIndex + offset
+        guard displayed.gallery.indices.contains(nextIndex) else { return }
+        let picture = displayed.gallery[nextIndex]
+        selection = CommentFullscreenPicture(
+            url: picture.url,
+            sourceFrame: thumbnailFrames[picture.url] ?? displayed.sourceFrame,
+            aspectRatio: picture.aspectRatio,
+            gallery: displayed.gallery,
+            galleryIndex: nextIndex
+        )
     }
 
     private func present(_ picture: CommentFullscreenPicture) {

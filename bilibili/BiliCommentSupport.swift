@@ -1086,15 +1086,11 @@ private struct CommentImageZoomPresenter: View {
         enabled: Bool,
         action: @escaping () -> Void
     ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 22, weight: .bold))
-                .foregroundStyle(.white.opacity(enabled ? 0.92 : 0.28))
-                .frame(width: 48, height: 48)
-                .background(.black.opacity(enabled ? 0.48 : 0.16), in: Circle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
+        CommentGalleryButton(
+            systemName: systemName,
+            enabled: enabled,
+            action: action
+        )
     }
 
     private func navigateGallery(by offset: Int) {
@@ -1187,6 +1183,46 @@ private struct CommentImageZoomPresenter: View {
 
     private func lerp(_ start: CGFloat, _ end: CGFloat, _ progress: CGFloat) -> CGFloat {
         start + (end - start) * progress
+    }
+}
+
+private struct CommentGalleryButton: View {
+    let systemName: String
+    let enabled: Bool
+    let action: () -> Void
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(.white.opacity(enabled ? (isHovered ? 1 : 0.92) : 0.28))
+                .frame(width: 48, height: 48)
+                .background(
+                    Circle()
+                        .fill(.black.opacity(enabled ? (isHovered ? 0.68 : 0.48) : 0.16))
+                )
+                .overlay {
+                    Circle()
+                        .stroke(.white.opacity(enabled && isHovered ? 0.32 : 0), lineWidth: 1)
+                }
+                .shadow(
+                    color: .black.opacity(enabled && isHovered ? 0.32 : 0.16),
+                    radius: enabled && isHovered ? 12 : 6,
+                    y: 3
+                )
+        }
+        .buttonStyle(.plain)
+        .contentShape(Circle())
+        .scaleEffect(enabled && isHovered ? 1.08 : 1)
+        .onHover { hovering in
+            guard enabled else { return }
+            withAnimation(.easeOut(duration: 0.16)) {
+                isHovered = hovering
+            }
+        }
+        .disabled(!enabled)
+        .animation(.easeOut(duration: 0.16), value: isHovered)
     }
 }
 

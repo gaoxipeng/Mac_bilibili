@@ -68,7 +68,7 @@ struct DanmakuSettingsOverlay: View {
                 )
             }
             .padding(22)
-            .frame(maxWidth: 400)
+            .frame(minWidth: 470, maxWidth: 470)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 26, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 26, style: .continuous)
@@ -95,11 +95,12 @@ private struct DanmakuSettingToggleRow: View {
                     .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(DanmakuSettingsChrome.value)
             }
-            .frame(width: 88, alignment: .leading)
+            .frame(width: 116, alignment: .leading)
 
             Toggle("", isOn: Binding(get: { isOn }, set: onChange))
                 .labelsHidden()
                 .toggleStyle(.switch)
+                .tint(Color(red: 0, green: 174 / 255, blue: 236 / 255))
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -120,7 +121,7 @@ private struct DanmakuSettingRow<Slider: View>: View {
                     .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(DanmakuSettingsChrome.value)
             }
-            .frame(width: 88, alignment: .leading)
+            .frame(width: 116, alignment: .leading)
 
             slider()
                 .frame(maxWidth: .infinity)

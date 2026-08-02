@@ -318,9 +318,14 @@ private struct DetailFloatingChrome: View {
     }
 
     var body: some View {
-        if !model.suppressesFloatingChrome {
-            chromeBody
+        Group {
+            if !model.suppressesFloatingChrome {
+                chromeBody
+            }
         }
+        // Image fullscreen dismissal should restore the title immediately;
+        // other chrome interactions keep their own hover/visibility motion.
+        .animation(nil, value: model.suppressesFloatingChrome)
     }
 
     private var chromeBody: some View {

@@ -325,6 +325,9 @@ private struct DetailFloatingChrome: View {
             .opacity(model.suppressesFloatingChrome ? 0 : 1)
             .allowsHitTesting(!model.suppressesFloatingChrome)
         .animation(nil, value: model.suppressesFloatingChrome)
+        .opacity(model.hidesVideoChromeActions ? 0 : 1)
+        .allowsHitTesting(!model.hidesVideoChromeActions)
+        .animation(nil, value: model.hidesVideoChromeActions)
     }
 
     private var chromeBody: some View {

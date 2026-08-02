@@ -1353,11 +1353,10 @@ struct VideoDetailView: View {
 
     private func updateImmersiveChromeSuppression() {
         appModel.setVideoChromeActionsHidden(commentFullscreenPicture != nil)
-        // A comment image viewer is an immersive layer: cover the entire
-        // floating chrome while it is open, then restore it without animation.
-        appModel.setFloatingChromeSuppressed(
-            commentFullscreenPicture != nil || fullscreenPresenter.suppressesInlineChrome
-        )
+        // Image viewing hides the chrome visually but must not change the
+        // page's measured top inset. Only the actual video fullscreen window
+        // suppresses the layout chrome.
+        appModel.setFloatingChromeSuppressed(fullscreenPresenter.suppressesInlineChrome)
     }
 
     var body: some View {

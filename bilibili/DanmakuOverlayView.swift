@@ -405,8 +405,12 @@ final class DanmakuRenderNSView: NSView {
         _ face: DanmakuFaceMaskAnalyzer.Face,
         to path: CGMutablePath
     ) {
+        let contentRect = videoContentRect()
         let points = face.contour.map { point in
-            CGPoint(x: point.x * bounds.width, y: point.y * bounds.height)
+            CGPoint(
+                x: contentRect.minX + point.x * contentRect.width,
+                y: contentRect.minY + point.y * contentRect.height
+            )
         }
         guard points.count >= 3 else { return }
         let center = CGPoint(
@@ -427,10 +431,10 @@ final class DanmakuRenderNSView: NSView {
         // rounded forehead cap from the detected face bounds so comments do
         // not slip through the upper part of the face.
         let boundsRect = CGRect(
-            x: face.boundingBox.minX * bounds.width,
-            y: face.boundingBox.minY * bounds.height,
-            width: face.boundingBox.width * bounds.width,
-            height: face.boundingBox.height * bounds.height
+            x: contentRect.minX + face.boundingBox.minX * contentRect.width,
+            y: contentRect.minY + face.boundingBox.minY * contentRect.height,
+            width: face.boundingBox.width * contentRect.width,
+            height: face.boundingBox.height * contentRect.height
         )
         let topY = min(
             bounds.height,
@@ -455,6 +459,24 @@ final class DanmakuRenderNSView: NSView {
             path.addLine(to: point)
         }
         path.closeSubpath()
+    }
+
+    /// The mpv layer uses resize-aspect. In fullscreen a 4:3 video therefore
+    /// occupies a centered rectangle with side bars, while the danmaku view
+    /// spans the entire window. Face coordinates must be projected into that
+    /// displayed video rectangle or the mask will drift horizontally.
+    private func videoContentRect() -> CGRect {
+        let aspectRatio = playbackEngine?.displayAspectRatio ?? 0
+        guard aspectRatio.isFinite, aspectRatio > 0 else { return bounds }
+        let fittedWidth = min(bounds.width, bounds.height * aspectRatio)
+        let fittedHeight = min(bounds.height, bounds.width / aspectRatio)
+        let size = CGSize(width: fittedWidth, height: fittedHeight)
+        return CGRect(
+            x: (bounds.width - size.width) / 2,
+            y: (bounds.height - size.height) / 2,
+            width: size.width,
+            height: size.height
+        )
     }
 
     private func convexHull(_ points: [CGPoint]) -> [CGPoint] {

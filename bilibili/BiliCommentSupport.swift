@@ -973,10 +973,12 @@ private struct CommentImageZoomPresenter: View {
     @State private var progress: CGFloat = 0
     @State private var galleryOffset: CGFloat = 0
     @State private var dismissTask: Task<Void, Never>?
+    @State private var galleryAnimationTask: Task<Void, Never>?
 
     private let padding: CGFloat = 32
     private let presentAnimation = Animation.spring(response: 0.38, dampingFraction: 0.86)
     private let dismissAnimation = Animation.spring(response: 0.34, dampingFraction: 0.9)
+    private let galleryAnimation = Animation.easeInOut(duration: 0.24)
 
     var body: some View {
         ZStack {
@@ -1071,9 +1073,34 @@ private struct CommentImageZoomPresenter: View {
         }
         let resolved = new.resolvedSourceFrame(using: thumbnailFrames)
         if let displayed, displayed.gallery == resolved.gallery {
-            self.displayed = resolved
-            if displayed.galleryIndex != resolved.galleryIndex {
+            guard displayed.galleryIndex != resolved.galleryIndex else {
+                self.displayed = resolved
+                return
+            }
+
+            // Set the incoming image just outside the viewport without an
+            // animation, then animate it into place. Keeping this sequence in
+            // the selection handler (rather than splitting it between the
+            // button action and the binding callback) prevents SwiftUI from
+            // coalescing the index and offset updates and skipping the slide.
+            let direction: CGFloat = resolved.galleryIndex > displayed.galleryIndex ? 1 : -1
+            galleryAnimationTask?.cancel()
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                self.displayed = resolved
                 progress = 1
+                galleryOffset = direction * 42
+            }
+            galleryAnimationTask = Task { @MainActor in
+                // Let SwiftUI commit the off-screen starting position before
+                // animating back to the center. Without this separate turn,
+                // rapid binding updates can collapse both positions into one.
+                try? await Task.sleep(for: .milliseconds(16))
+                guard !Task.isCancelled else { return }
+                withAnimation(galleryAnimation) {
+                    galleryOffset = 0
+                }
             }
         } else {
             present(resolved)
@@ -1098,7 +1125,6 @@ private struct CommentImageZoomPresenter: View {
         let nextIndex = displayed.galleryIndex + offset
         guard displayed.gallery.indices.contains(nextIndex) else { return }
         let picture = displayed.gallery[nextIndex]
-        galleryOffset = offset > 0 ? 42 : -42
         selection = CommentFullscreenPicture(
             url: picture.url,
             sourceFrame: thumbnailFrames[picture.url] ?? displayed.sourceFrame,
@@ -1106,12 +1132,10 @@ private struct CommentImageZoomPresenter: View {
             gallery: displayed.gallery,
             galleryIndex: nextIndex
         )
-        withAnimation(.easeOut(duration: 0.24)) {
-            galleryOffset = 0
-        }
     }
 
     private func present(_ picture: CommentFullscreenPicture) {
+        galleryAnimationTask?.cancel()
         displayed = picture
         progress = 0
         galleryOffset = 0
@@ -1127,6 +1151,7 @@ private struct CommentImageZoomPresenter: View {
         }
         guard progress > 0.01 else { return }
 
+        galleryAnimationTask?.cancel()
         current = current.resolvedSourceFrame(using: thumbnailFrames)
         displayed = current
 

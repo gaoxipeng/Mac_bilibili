@@ -1353,9 +1353,11 @@ struct VideoDetailView: View {
 
     private func updateImmersiveChromeSuppression() {
         appModel.setVideoChromeActionsHidden(commentFullscreenPicture != nil)
-        // Opening a comment image should not hide the video's floating title;
-        // only the actual video fullscreen window owns this suppression.
-        appModel.setFloatingChromeSuppressed(fullscreenPresenter.suppressesInlineChrome)
+        // A comment image viewer is an immersive layer: cover the entire
+        // floating chrome while it is open, then restore it without animation.
+        appModel.setFloatingChromeSuppressed(
+            commentFullscreenPicture != nil || fullscreenPresenter.suppressesInlineChrome
+        )
     }
 
     var body: some View {

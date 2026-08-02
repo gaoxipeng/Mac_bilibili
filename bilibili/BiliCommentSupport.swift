@@ -766,10 +766,10 @@ struct CommentPictureAttachments: View {
 
     var body: some View {
         if !pictures.isEmpty {
-            let rows = pictureRows(maxWidth: containerWidth > 1 ? containerWidth : 280)
-            VStack(alignment: .leading, spacing: 8) {
+            let rows = pictureRows(maxWidth: containerWidth > 1 ? containerWidth : 360)
+            VStack(alignment: .leading, spacing: 10) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    HStack(alignment: .top, spacing: 8) {
+                    HStack(alignment: .top, spacing: 10) {
                         ForEach(row, id: \.self) { picture in
                             CommentPictureThumbnail(
                                 picture: picture,

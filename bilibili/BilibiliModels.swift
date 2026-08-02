@@ -750,7 +750,7 @@ struct BiliCommentPicture: Hashable, Sendable {
         return CGFloat(width) / CGFloat(height)
     }
 
-    func thumbnailSize(maxWidth: CGFloat = 168, maxHeight: CGFloat = 126) -> CGSize {
+    func thumbnailSize(maxWidth: CGFloat = 210, maxHeight: CGFloat = 168) -> CGSize {
         guard width > 0, height > 0 else {
             return CGSize(width: min(maxWidth, 120), height: min(maxWidth, 120))
         }

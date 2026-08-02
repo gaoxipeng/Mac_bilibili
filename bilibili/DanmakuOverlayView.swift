@@ -58,7 +58,7 @@ struct DanmakuOverlayView: NSViewRepresentable, Equatable {
 
 final class DanmakuRenderNSView: NSView {
     private let timeline = DanmakuTimeline()
-    private var displayLink: CADisplayLink?
+    private var displayLink: DispatchSourceTimer?
     private var screenChangeObserver: NSObjectProtocol?
     private var textLayers: [Int: DanmakuTextLayerState] = [:]
     private var lastResolvedPositionMillis: Double?
@@ -135,6 +135,14 @@ final class DanmakuRenderNSView: NSView {
 
         let timelineChanged = reconfigureTimelineIfNeeded(force: false)
 
+        if timelineChanged, isPlaying, enabled, isActive {
+            // A part switch can pause the existing layer tree and publish the
+            // stop/start states in one SwiftUI transaction. Start the new
+            // timeline from a clean Core Animation clock instead of waiting
+            // for a later mouse event to wake the paused tree.
+            resetLayerTreeClockForNewTimeline()
+        }
+
         if timelineChanged || playStateChanged || !isPlaying || !enabled || !isActive {
             syncCurrentFrameAndRender(positionMillis: currentPositionMillis)
         }
@@ -145,6 +153,15 @@ final class DanmakuRenderNSView: NSView {
             refreshDisplayLinkIfNeeded()
         }
         updateLayerTreePlayback()
+
+        if timelineChanged, isPlaying, enabled, isActive {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.window != nil else { return }
+                self.refreshDisplayLink()
+                self.syncCurrentFrameAndRender()
+                self.commitNewTimelineToWindow()
+            }
+        }
     }
 
     @discardableResult
@@ -185,14 +202,25 @@ final class DanmakuRenderNSView: NSView {
         guard isActive, isPlaying, enabled, !items.isEmpty, window != nil else { return }
         guard displayLink == nil else { return }
 
-        let link = displayLink(target: self, selector: #selector(displayLinkFired(_:)))
-        updateDisplayLinkFrameRate(link)
-        link.add(to: .main, forMode: .common)
-        displayLink = link
+        // CADisplayLink may remain in an idle/throttled state after mpv replaces
+        // a file and only return to the display cadence after the next mouse
+        // event. A main-queue dispatch timer is independent of AppKit's event
+        // tracking state, so switching videos cannot reduce danmaku updates to
+        // one frame every few seconds.
+        let refreshRate = max(window?.screen?.maximumFramesPerSecond ?? 60, 60)
+        let interval = DispatchTimeInterval.nanoseconds(1_000_000_000 / refreshRate)
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(1))
+        timer.setEventHandler { [weak self] in
+            self?.displayLinkFired()
+        }
+        displayLink = timer
+        timer.resume()
     }
 
     func stopDisplayLink() {
-        displayLink?.invalidate()
+        displayLink?.setEventHandler {}
+        displayLink?.cancel()
         displayLink = nil
     }
 
@@ -210,19 +238,9 @@ final class DanmakuRenderNSView: NSView {
         startDisplayLinkIfNeeded()
     }
 
-    private func updateDisplayLinkFrameRate(_ link: CADisplayLink? = nil) {
-        let targetLink = link ?? displayLink
-        guard let targetLink else { return }
-
-        // Follow the active display instead of capping the danmaku clock at
-        // 60 Hz. ProMotion displays therefore request 120 Hz, while ordinary
-        // displays keep their native 60/75 Hz cadence.
-        let refreshRate = Float(max(window?.screen?.maximumFramesPerSecond ?? 60, 60))
-        targetLink.preferredFrameRateRange = CAFrameRateRange(
-            minimum: min(60, refreshRate),
-            maximum: refreshRate,
-            preferred: refreshRate
-        )
+    private func updateDisplayLinkFrameRate(_ link: DispatchSourceTimer? = nil) {
+        guard link != nil || displayLink != nil else { return }
+        refreshDisplayLink()
     }
 
     private func updateScreenChangeObservation() {
@@ -242,14 +260,14 @@ final class DanmakuRenderNSView: NSView {
         }
     }
 
-    @objc private func displayLinkFired(_ link: CADisplayLink) {
+    private func displayLinkFired() {
         guard isActive, enabled, isPlaying, !items.isEmpty else { return }
         let positionMillis = resolvedPositionMillis()
         resetRenderedLayersIfPositionJumped(positionMillis)
         timeline.sync(
             positionMillis: positionMillis,
             isPlaying: true,
-            realtimeMillis: displayLinkTimeMillis(link)
+            realtimeMillis: currentDisplayLinkMillis()
         )
         renderCurrentFrame()
     }
@@ -296,31 +314,47 @@ final class DanmakuRenderNSView: NSView {
         var visibleIDs = Set<Int>()
         visibleIDs.reserveCapacity(frames.count)
         var newFrames: [DanmakuDrawFrame] = []
+        var movingFrames: [DanmakuDrawFrame] = []
 
         for frame in frames {
             visibleIDs.insert(frame.id)
             if textLayers[frame.id] == nil {
                 newFrames.append(frame)
+            } else if frame.isScrolling {
+                movingFrames.append(frame)
             }
         }
 
         let staleIDs = textLayers.keys.filter { !visibleIDs.contains($0) }
-        guard !newFrames.isEmpty || !staleIDs.isEmpty else { return }
+        guard !newFrames.isEmpty || !movingFrames.isEmpty || !staleIDs.isEmpty else { return }
 
-        // Existing scrolling layers move entirely on Core Animation's
-        // compositor. Re-submitting every visible CATextLayer at 120 Hz made
-        // the much denser fullscreen layout compete with video presentation on
-        // the main thread. Only mutate the layer tree when comments enter/exit.
+        // Drive scrolling positions from the display link itself. A part
+        // switch can leave an ancestor Core Animation clock paused until the
+        // next AppKit input event; compositor-only CABasicAnimations would
+        // therefore appear frozen and jump only when the user clicks. Direct
+        // position updates keep danmaku tied to the playback/display clocks and
+        // do not depend on an event waking an inherited layer clock.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for frame in newFrames {
             renderNewLayer(frame: frame, contentsScale: scale)
+        }
+        for frame in movingFrames {
+            guard let textLayer = textLayers[frame.id]?.layer else { continue }
+            textLayer.position = CGPoint(
+                x: frame.x + textLayer.bounds.width / 2,
+                y: bounds.height - frame.y - textLayer.bounds.height / 2
+            )
         }
         for id in staleIDs {
             textLayers[id]?.layer.removeFromSuperlayer()
             textLayers.removeValue(forKey: id)
         }
         CATransaction.commit()
+        // CADisplayLink callbacks can sit outside the usual AppKit event
+        // transaction. Submit newly added scrolling animations immediately;
+        // otherwise they may remain frozen until the next mouse event.
+        CATransaction.flush()
     }
 
     private func renderNewLayer(frame: DanmakuDrawFrame, contentsScale: CGFloat) {
@@ -341,9 +375,6 @@ final class DanmakuRenderNSView: NSView {
         ]
         created.frame = layerFrame(for: frame)
         layer?.addSublayer(created)
-        if frame.isScrolling {
-            _ = addScrollAnimation(to: created, frame: frame)
-        }
         textLayers[frame.id] = DanmakuTextLayerState(layer: created)
     }
 
@@ -354,26 +385,6 @@ final class DanmakuRenderNSView: NSView {
             width: frame.textWidth + 4,
             height: frame.textHeight + 3
         )
-    }
-
-    private func addScrollAnimation(to textLayer: CATextLayer, frame: DanmakuDrawFrame) -> Bool {
-        let remainingMillis = frame.durationMillis - frame.elapsedMillis
-        guard remainingMillis > 16 else { return false }
-
-        let startX = frame.x + (frame.textWidth + 4) / 2
-        let endX = frame.endX + (frame.textWidth + 4) / 2
-        let currentY = textLayer.position.y
-        textLayer.position = CGPoint(x: endX, y: currentY)
-
-        let animation = CABasicAnimation(keyPath: "position.x")
-        animation.fromValue = startX
-        animation.toValue = endX
-        animation.duration = remainingMillis / 1000
-        animation.timingFunction = CAMediaTimingFunction(name: .linear)
-        animation.isRemovedOnCompletion = false
-        animation.fillMode = .forwards
-        textLayer.add(animation, forKey: "danmaku-scroll-x")
-        return true
     }
 
     private func removeStaleTextLayers(keeping visibleIDs: Set<Int>) {
@@ -387,6 +398,7 @@ final class DanmakuRenderNSView: NSView {
             textLayers.removeValue(forKey: id)
         }
         CATransaction.commit()
+        CATransaction.flush()
     }
 
     private func updateTextLayerContentsScale() {
@@ -429,15 +441,25 @@ final class DanmakuRenderNSView: NSView {
         }
     }
 
-    private func currentDisplayLinkMillis() -> Double {
-        if let displayLink {
-            return displayLinkTimeMillis(displayLink)
-        }
-        return CACurrentMediaTime() * 1000
+    private func resetLayerTreeClockForNewTimeline() {
+        guard let layer else { return }
+        layer.speed = 1
+        layer.timeOffset = 0
+        layer.beginTime = 0
+        commitNewTimelineToWindow()
     }
 
-    private func displayLinkTimeMillis(_ link: CADisplayLink) -> Double {
-        link.timestamp * 1000
+    private func commitNewTimelineToWindow() {
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+        layer?.setNeedsLayout()
+        layer?.layoutIfNeeded()
+        CATransaction.flush()
+        window?.displayIfNeeded()
+    }
+
+    private func currentDisplayLinkMillis() -> Double {
+        return CACurrentMediaTime() * 1000
     }
 
     private func normalizedRenderSize() -> CGSize {

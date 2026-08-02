@@ -639,6 +639,11 @@ final class VideoDetailModel: ObservableObject {
             }
         }
 
+        // Do not keep the previous part's renderer alive while the new stream
+        // and danmaku list are loading. The renderer is recreated for the new
+        // CID below, so its display link starts with the new playback session.
+        danmakuItems = []
+
         isLoadingPlayback = true
         playError = nil
         defer { isLoadingPlayback = false }
@@ -2050,13 +2055,9 @@ private struct VideoIntroCard: View {
 
     private var overviewContent: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(descriptionText)
-                .font(.system(size: 16))
+            BiliCommentText(text: descriptionText, emoticons: [:], fontSize: 16)
                 .foregroundStyle(hasDescription ? .primary : .secondary)
-                .lineSpacing(5)
-                .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
 
             if !model.videoTags.isEmpty {
                 VideoTagChipFlow(tags: model.videoTags, onTagTap: onTagTap)
@@ -2184,7 +2185,7 @@ private struct VideoTagChip: View {
     var body: some View {
         Button(action: onTap) {
             Text(title)
-                .font(.system(size: 16))
+                .font(.system(size: 14))
                 .foregroundStyle(
                     isHovered
                         ? Color(red: 0.25, green: 0.28, blue: 0.35)

@@ -71,6 +71,9 @@ struct ContentView: View {
             NavigationStack(path: $navigationPath) {
                 content
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .environment(\.biliLinkHandler) { url in
+                        model.openContentLink(url)
+                    }
                     .navigationDestination(for: VideoPlaybackRequest.self) { request in
                         VideoDetailView(
                             video: request.video,

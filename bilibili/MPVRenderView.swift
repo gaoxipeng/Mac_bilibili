@@ -760,7 +760,13 @@ final class MPVRenderView: NSView {
                         return
                     }
                     self.onError?(String(cString: mpv_error_string(code)))
-                } else {
+                } else if reason?.reason == MPV_END_FILE_REASON_EOF {
+                    // `loadfile replace` emits END_FILE/STOP for the previous
+                    // collection episode. Treating that as a natural ending
+                    // races with the new FILE_LOADED event and flips the
+                    // playback engine back to `isPlaying = false`, which stops
+                    // danmaku updates until the user clicks Play. Only a real
+                    // EOF belongs to the currently completed playback timeline.
                     self.onEnded?()
                 }
             }

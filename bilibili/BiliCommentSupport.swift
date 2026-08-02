@@ -6,6 +6,7 @@ enum BiliCommentSegment: Hashable {
     case text(String)
     case emote(URL, phrase: String)
     case mention(String)
+    case link(URL, label: String)
 }
 
 enum BiliCommentSegmentBuilder {
@@ -41,7 +42,7 @@ enum BiliCommentSegmentBuilder {
                 if tail.prefixMatch(of: mentionRegex) != nil { break }
                 end = text.index(after: end)
             }
-            segments.append(.text(String(text[index..<end])))
+            segments.append(contentsOf: linkifiedTextSegments(String(text[index..<end])))
             index = end
         }
 
@@ -54,7 +55,7 @@ enum BiliCommentSegmentBuilder {
             switch segment {
             case .emote:
                 hasEmote = true
-            case .text(let value), .mention(let value):
+            case .text(let value), .mention(let value), .link(_, let value):
                 if !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     return false
                 }
@@ -69,6 +70,52 @@ enum BiliCommentSegmentBuilder {
             if case .emote(let url, _) = segment { return url }
             return nil
         }
+    }
+
+    private static func linkifiedTextSegments(_ value: String) -> [BiliCommentSegment] {
+        guard let detector = try? NSDataDetector(
+            types: NSTextCheckingResult.CheckingType.link.rawValue
+        ) else { return [.text(value)] }
+
+        let source = value as NSString
+        let matches = detector.matches(
+            in: value,
+            range: NSRange(location: 0, length: source.length)
+        )
+        guard !matches.isEmpty else { return [.text(value)] }
+
+        var result: [BiliCommentSegment] = []
+        var location = 0
+        for match in matches {
+            if match.range.location > location {
+                result.append(.text(source.substring(with: NSRange(
+                    location: location,
+                    length: match.range.location - location
+                ))))
+            }
+            let label = source.substring(with: match.range)
+            if let url = match.url {
+                result.append(.link(url, label: label))
+            } else {
+                result.append(.text(label))
+            }
+            location = NSMaxRange(match.range)
+        }
+        if location < source.length {
+            result.append(.text(source.substring(from: location)))
+        }
+        return result
+    }
+}
+
+private struct BiliLinkHandlerKey: EnvironmentKey {
+    static let defaultValue: (URL) -> Void = { NSWorkspace.shared.open($0) }
+}
+
+extension EnvironmentValues {
+    var biliLinkHandler: (URL) -> Void {
+        get { self[BiliLinkHandlerKey.self] }
+        set { self[BiliLinkHandlerKey.self] = newValue }
     }
 }
 
@@ -111,6 +158,7 @@ struct BiliCommentText: View {
     let text: String
     let emoticons: [String: String]
     var fontSize: CGFloat = 15
+    @Environment(\.biliLinkHandler) private var openLink
 
     private var font: Font { .system(size: fontSize) }
 
@@ -125,7 +173,7 @@ struct BiliCommentText: View {
     private var needsRichText: Bool {
         !emoticons.isEmpty || segments.contains { segment in
             switch segment {
-            case .emote, .mention:
+            case .emote, .mention, .link:
                 return true
             case .text:
                 return false
@@ -138,7 +186,7 @@ struct BiliCommentText: View {
             CommentEmoteOnlyRow(urls: emoteOnlyURLs, fontSize: fontSize)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else if needsRichText {
-            CommentRichTextView(segments: segments, fontSize: fontSize)
+            CommentRichTextView(segments: segments, fontSize: fontSize, onOpenURL: openLink)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             Text(text)
@@ -155,6 +203,7 @@ struct BiliCommentText: View {
 private struct CommentRichTextView: View {
     let segments: [BiliCommentSegment]
     let fontSize: CGFloat
+    let onOpenURL: (URL) -> Void
     @State private var availableWidth: CGFloat = 1
     /// Bumped when async emote images finish so `sizeThatFits` is asked again.
     @State private var layoutTicket = 0
@@ -164,6 +213,7 @@ private struct CommentRichTextView: View {
             segments: segments,
             fontSize: fontSize,
             layoutTicket: layoutTicket,
+            onOpenURL: onOpenURL,
             onLayoutInvalidated: {
                 layoutTicket &+= 1
             }
@@ -280,6 +330,7 @@ private struct CommentRichTextRepresentable: NSViewRepresentable {
     let segments: [BiliCommentSegment]
     let fontSize: CGFloat
     let layoutTicket: Int
+    let onOpenURL: (URL) -> Void
     let onLayoutInvalidated: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -288,6 +339,7 @@ private struct CommentRichTextRepresentable: NSViewRepresentable {
 
     func makeNSView(context: Context) -> CommentRichTextContainerView {
         let view = CommentRichTextContainerView()
+        view.onOpenURL = onOpenURL
         context.coordinator.container = view
         view.onLayoutInvalidated = { [weak coordinator = context.coordinator] in
             coordinator?.notifyLayoutInvalidated()
@@ -297,6 +349,7 @@ private struct CommentRichTextRepresentable: NSViewRepresentable {
 
     func updateNSView(_ nsView: CommentRichTextContainerView, context: Context) {
         context.coordinator.container = nsView
+        nsView.onOpenURL = onOpenURL
         context.coordinator.onLayoutInvalidated = onLayoutInvalidated
         nsView.onLayoutInvalidated = { [weak coordinator = context.coordinator] in
             coordinator?.notifyLayoutInvalidated()
@@ -384,6 +437,7 @@ private final class CommentRichTextContainerView: NSView {
     private var renderedWidth: CGFloat = 1
     private var lastPublishedHeight: CGFloat = 0
     var onLayoutInvalidated: (() -> Void)?
+    var onOpenURL: ((URL) -> Void)?
 
     /// Top-left origin so text grows downward inside the SwiftUI-assigned frame.
     /// The previous bottom-left origin made oversized `NSTextView` frames paint
@@ -400,6 +454,7 @@ private final class CommentRichTextContainerView: NSView {
 
         textView.isEditable = false
         textView.isSelectable = true
+        textView.delegate = self
         textView.drawsBackground = false
         textView.backgroundColor = .clear
         textView.textContainerInset = .zero
@@ -539,6 +594,18 @@ private final class CommentRichTextContainerView: NSView {
                         ]
                     )
                 )
+            case .link(let url, let label):
+                result.append(
+                    NSAttributedString(
+                        string: label,
+                        attributes: [
+                            .font: font,
+                            .foregroundColor: NSColor.linkColor,
+                            .underlineStyle: NSUnderlineStyle.single.rawValue,
+                            .link: url,
+                        ]
+                    )
+                )
             case .emote(let url, _):
                 let attachment = NSTextAttachment()
                 attachment.bounds = CGRect(
@@ -567,6 +634,19 @@ private final class CommentRichTextContainerView: NSView {
             range: NSRange(location: 0, length: result.length)
         )
         return result
+    }
+}
+
+extension CommentRichTextContainerView: NSTextViewDelegate {
+    func textView(
+        _ textView: NSTextView,
+        clickedOnLink link: Any,
+        at charIndex: Int
+    ) -> Bool {
+        let url = (link as? URL) ?? (link as? String).flatMap(URL.init(string:))
+        guard let url else { return false }
+        onOpenURL?(url)
+        return true
     }
 }
 
@@ -1080,4 +1160,3 @@ private final class CommentImageFullscreenEscapeView: NSView {
         }
     }
 }
-

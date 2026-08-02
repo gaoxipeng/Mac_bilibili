@@ -266,7 +266,7 @@
 				CODE_SIGN_ENTITLEMENTS = bilibili/bilibili.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20260729;
+				CURRENT_PROJECT_VERSION = 20260802;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
@@ -279,7 +279,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 20260729;
+				MARKETING_VERSION = 20260802;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"$(SRCROOT)/bilibili/Vendor/MPVCoreAudioPatched.o",
@@ -304,7 +304,7 @@
 				CODE_SIGN_ENTITLEMENTS = bilibili/bilibili.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20260729;
+				CURRENT_PROJECT_VERSION = 20260802;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
@@ -317,7 +317,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 20260729;
+				MARKETING_VERSION = 20260802;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"$(SRCROOT)/bilibili/Vendor/MPVCoreAudioPatched.o",

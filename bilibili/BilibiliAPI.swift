@@ -1268,6 +1268,20 @@ actor BilibiliAPI {
         return detail
     }
 
+    func videoDetail(aid: Int64, credential: BilibiliCredential? = nil) async throws -> BiliVideoDetail {
+        let referer = "https://www.bilibili.com/video/av\(aid)"
+        let json = try await self.json(
+            url: "https://api.bilibili.com/x/web-interface/view",
+            params: ["aid": "\(aid)"],
+            credential: credential,
+            referer: referer
+        )
+        guard let detail = JSONParser.parseVideoDetail(from: json) else {
+            throw APIError.message("无法读取视频详情")
+        }
+        return detail
+    }
+
     func videoTags(aid: Int64, credential: BilibiliCredential? = nil) async throws -> [String] {
         guard aid > 0 else { return [] }
         let json = try await self.json(

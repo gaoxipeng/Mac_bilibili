@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import Foundation
 import SwiftUI
@@ -354,6 +355,60 @@ final class AppModel: ObservableObject {
     func openPlayback(_ request: VideoPlaybackRequest) {
         guard beginPlaybackNavigation() else { return }
         pendingPlaybackRequest = request
+    }
+
+    func openContentLink(_ url: URL) {
+        Task { @MainActor in
+            let resolvedURL = await resolvedContentURL(url)
+            do {
+                if let epid = JSONParser.parsePgcEpidFromUri(resolvedURL.absoluteString), epid > 0 {
+                    let detail = try await api.pgcVideoDetail(epid: epid, credential: account?.credential)
+                    openPlayback(VideoPlaybackRequest(
+                        detail.video,
+                        epid: epid,
+                        refererURL: resolvedURL
+                    ))
+                    return
+                }
+                if let bvid = Self.bvid(in: resolvedURL.absoluteString) {
+                    let detail = try await api.videoDetail(bvid: bvid, credential: account?.credential)
+                    openPlayback(VideoPlaybackRequest(detail.video, refererURL: resolvedURL))
+                    return
+                }
+                if let aid = Self.aid(in: resolvedURL), aid > 0 {
+                    let detail = try await api.videoDetail(aid: aid, credential: account?.credential)
+                    openPlayback(VideoPlaybackRequest(detail.video, refererURL: resolvedURL))
+                    return
+                }
+            } catch {
+                // If a Bilibili detail lookup fails, preserve the link's normal
+                // browser behavior instead of making the text appear broken.
+            }
+            NSWorkspace.shared.open(resolvedURL)
+        }
+    }
+
+    private func resolvedContentURL(_ url: URL) async -> URL {
+        guard url.host?.lowercased().hasSuffix("b23.tv") == true else { return url }
+        var request = URLRequest(url: url)
+        request.httpMethod = "HEAD"
+        request.timeoutInterval = 8
+        return (try? await URLSession.shared.data(for: request).1.url) ?? url
+    }
+
+    private static func bvid(in value: String) -> String? {
+        guard let range = value.range(of: #"BV[0-9A-Za-z]+"#, options: .regularExpression) else {
+            return nil
+        }
+        return String(value[range])
+    }
+
+    private static func aid(in url: URL) -> Int64? {
+        let path = url.path
+        guard let range = path.range(of: #"/av[0-9]+"#, options: [.regularExpression, .caseInsensitive]) else {
+            return nil
+        }
+        return Int64(path[range].dropFirst(3))
     }
 
     func didConsumePlaybackNavigation() {

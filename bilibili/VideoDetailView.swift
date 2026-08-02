@@ -2395,7 +2395,8 @@ private struct VideoPlayerSection: View {
                         settings: model.danmakuSettings,
                         layoutMode: isFullscreen ? .fullscreen : .inline,
                         isActive: rendersDanmaku,
-                        playbackEngine: player
+                        playbackEngine: player,
+                        faceMaskAnalyzer: player.faceMaskAnalyzer
                     )
                     .equatable()
                     .opacity(rendersDanmaku ? 1 : 0)

@@ -85,12 +85,15 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
     private var drawPending = false
     private var wantsDraw = false
     private var stopped = false
+    private var lastFaceMaskSampleTime = 0.0
+    private let faceMaskAnalyzer: DanmakuFaceMaskAnalyzer?
 
-    init?(layer: CAMetalLayer) {
+    init?(layer: CAMetalLayer, faceMaskAnalyzer: DanmakuFaceMaskAnalyzer?) {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue() else { return nil }
         self.layer = layer
         self.commandQueue = commandQueue
+        self.faceMaskAnalyzer = faceMaskAnalyzer
         layer.device = device
         layer.pixelFormat = .bgra8Unorm
         layer.framebufferOnly = false
@@ -268,16 +271,68 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
         }
         commandBuffer.present(drawable)
         commandBuffer.commit()
+
+        // Face detection only needs a small, occasional sample. Downsample
+        // before handing the frame to Vision so analysis never competes with
+        // full-resolution playback or the 120 Hz compositor.
+        if let faceMaskAnalyzer {
+            let now = CACurrentMediaTime()
+            if now - lastFaceMaskSampleTime >= 1.0 / 15.0 {
+                lastFaceMaskSampleTime = now
+                submitFaceMaskSample(
+                    analyzer: faceMaskAnalyzer,
+                    buffer: buffer.contents(),
+                    width: width,
+                    height: height,
+                    bytesPerRow: bytesPerRow
+                )
+            }
+        }
         // MTLCommandBuffer retains encoded resources until GPU completion.
         // Never wait synchronously here: after display sleep/wake Metal may
         // temporarily stop completing presents, and a blocking wait would also
         // prevent the player from shutting down or responding to AppKit events.
+    }
+
+    private func submitFaceMaskSample(
+        analyzer: DanmakuFaceMaskAnalyzer,
+        buffer: UnsafeMutableRawPointer,
+        width: Int,
+        height: Int,
+        bytesPerRow: Int
+    ) {
+        let sampleWidth = min(320, width)
+        let sampleHeight = max(1, Int((Double(height) * Double(sampleWidth) / Double(width)).rounded()))
+        let sampleBytesPerRow = sampleWidth * 4
+        var sample = Data(count: sampleHeight * sampleBytesPerRow)
+        sample.withUnsafeMutableBytes { destination in
+            guard let destinationBase = destination.baseAddress else { return }
+            for row in 0..<sampleHeight {
+                let sourceRow = min(height - 1, row * height / sampleHeight)
+                let source = buffer.advanced(by: sourceRow * bytesPerRow)
+                let destinationRow = destinationBase.advanced(by: row * sampleBytesPerRow)
+                for column in 0..<sampleWidth {
+                    let sourceColumn = min(width - 1, column * width / sampleWidth)
+                    let sourcePixel = source.advanced(by: sourceColumn * 4)
+                    let destinationPixel = destinationRow.advanced(by: column * 4)
+                    memcpy(destinationPixel, sourcePixel, 4)
+                }
+            }
+        }
+        analyzer.submit(
+            data: sample,
+            width: sampleWidth,
+            height: sampleHeight,
+            bytesPerRow: sampleBytesPerRow
+        )
     }
 }
 
 @MainActor
 final class MPVRenderView: NSView {
     private static let playbackLogger = Logger(subsystem: "gaoxipeng.bilibili", category: "Playback")
+
+    let faceMaskAnalyzer = DanmakuFaceMaskAnalyzer()
 
     var onTimeChanged: ((Double) -> Void)?
     var onDurationChanged: ((Double) -> Void)?
@@ -417,6 +472,7 @@ final class MPVRenderView: NSView {
         currentFileLoaded = false
         videoFramePixelSize = .zero
         lastDrawablePixelSize = .zero
+        faceMaskAnalyzer.reset()
         try submitLoad(videoURL: videoURL)
     }
 
@@ -549,7 +605,10 @@ final class MPVRenderView: NSView {
         guard !mpvCoreReady else { return }
         guard let handle = mpv_create() else { return }
         mpv = handle
-        guard let renderer = MPVSoftwareMetalRenderer(layer: metalLayer) else {
+        guard let renderer = MPVSoftwareMetalRenderer(
+            layer: metalLayer,
+            faceMaskAnalyzer: faceMaskAnalyzer
+        ) else {
             mpv_destroy(handle)
             mpv = nil
             return

@@ -53,6 +53,10 @@ final class VideoPlaybackEngine: ObservableObject {
 
     var avPlayer: AVPlayer? { player }
 
+    var faceMaskAnalyzer: DanmakuFaceMaskAnalyzer {
+        renderView.faceMaskAnalyzer
+    }
+
     var preciseCurrentTime: Double {
         if isPictureInPictureActive,
            let seconds = player?.currentTime().seconds,

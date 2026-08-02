@@ -770,11 +770,12 @@ struct CommentPictureAttachments: View {
             VStack(alignment: .leading, spacing: 10) {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
                     HStack(alignment: .top, spacing: 10) {
-                        ForEach(row, id: \.self) { picture in
+                        ForEach(row) { item in
                             CommentPictureThumbnail(
-                                picture: picture,
+                                picture: item.picture,
                                 gallery: pictures,
-                                galleryIndex: pictures.firstIndex(of: picture) ?? 0,
+                                galleryIndex: pictures.firstIndex(of: item.picture) ?? 0,
+                                displaySize: item.size,
                                 onTap: onSelect
                             )
                         }
@@ -797,7 +798,7 @@ struct CommentPictureAttachments: View {
         }
     }
 
-    private func pictureRows(maxWidth: CGFloat) -> [[BiliCommentPicture]] {
+    private func pictureRows(maxWidth: CGFloat) -> [[CommentPictureLayoutItem]] {
         var rows: [[BiliCommentPicture]] = []
         var current: [BiliCommentPicture] = []
         var rowWidth: CGFloat = 0
@@ -817,8 +818,29 @@ struct CommentPictureAttachments: View {
         if !current.isEmpty {
             rows.append(current)
         }
-        return rows
+        return rows.map { row in
+            guard row.count == 1, let picture = row.first else {
+                return row.map { CommentPictureLayoutItem(picture: $0, size: $0.thumbnailSize()) }
+            }
+
+            let originalSize = picture.thumbnailSize()
+            let safeAspect = max(picture.aspectRatio, 0.01)
+            var expandedWidth = min(maxWidth, max(originalSize.width, maxWidth * 0.86))
+            var expandedHeight = expandedWidth / safeAspect
+            if expandedHeight > 220 {
+                expandedHeight = 220
+                expandedWidth = expandedHeight * safeAspect
+            }
+            let expandedSize = CGSize(width: expandedWidth, height: expandedHeight)
+            return [CommentPictureLayoutItem(picture: picture, size: expandedSize)]
+        }
     }
+}
+
+private struct CommentPictureLayoutItem: Identifiable {
+    let picture: BiliCommentPicture
+    let size: CGSize
+    var id: BiliCommentPicture { picture }
 }
 
 private struct CommentPictureWidthKey: PreferenceKey {
@@ -833,13 +855,14 @@ private struct CommentPictureThumbnail: View {
     let picture: BiliCommentPicture
     let gallery: [BiliCommentPicture]
     let galleryIndex: Int
+    let displaySize: CGSize
     let onTap: (CommentFullscreenPicture) -> Void
 
     @State private var isHovered = false
     @State private var sourceFrame: CGRect = .zero
 
     private var size: CGSize {
-        picture.thumbnailSize()
+        displaySize
     }
 
     var body: some View {

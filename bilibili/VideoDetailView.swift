@@ -1334,7 +1334,6 @@ struct VideoDetailView: View {
     @State private var showLogin = false
     @StateObject private var webSession = BilibiliWebSession()
     @State private var publishesFloatingChrome = false
-    @State private var commentFullscreenPicture: CommentFullscreenPicture?
     /// Keep inline danmaku inactive across the fullscreen→inline mpv handoff.
     /// Reactivating it in the same frame as reparenting flashes black behind Metal.
     @State private var allowsInlineDanmaku = true
@@ -1352,11 +1351,11 @@ struct VideoDetailView: View {
     }
 
     private func updateImmersiveChromeSuppression() {
-        appModel.setVideoChromeActionsHidden(commentFullscreenPicture != nil)
-        // Image viewing hides the chrome visually but must not change the
-        // page's measured top inset. Only the actual video fullscreen window
-        // suppresses the layout chrome.
+        // The comment image viewer is mounted at the root app layer, so it
+        // covers the chrome without changing the chrome's state or layout.
+        // Only the actual video fullscreen window suppresses the layout chrome.
         appModel.setFloatingChromeSuppressed(fullscreenPresenter.suppressesInlineChrome)
+        appModel.setVideoChromeActionsHidden(fullscreenPresenter.suppressesInlineChrome)
     }
 
     var body: some View {
@@ -1436,6 +1435,7 @@ struct VideoDetailView: View {
         }
         .onDisappear {
             publishesFloatingChrome = false
+            appModel.commentFullscreenPicture = nil
             appModel.setFloatingChromeSuppressed(false)
             appModel.setVideoChromeActionsHidden(false)
             appModel.resignVideoFloatingChrome()
@@ -1443,9 +1443,6 @@ struct VideoDetailView: View {
             MediaPlaybackCoordinator.shared.notifyDetailHidden(model)
             model.player.clearNowPlaying()
             VideoFullscreenPresenter.restoreMainWindowAppearance()
-        }
-        .onChange(of: commentFullscreenPicture) { _, _ in
-            updateImmersiveChromeSuppression()
         }
         .onChange(of: fullscreenPresenter.isPresented) { _, presented in
             if presented {
@@ -1515,7 +1512,6 @@ struct VideoDetailView: View {
             }
             .environmentObject(appModel)
         }
-        .commentImageFullscreenOverlay(selection: $commentFullscreenPicture)
     }
 
     private func playerMaxHeight(
@@ -1791,7 +1787,7 @@ struct VideoDetailView: View {
                         VideoCommentsPanel(
                             model: model,
                             contentMinHeight: geometry.size.height,
-                            onPictureSelect: { commentFullscreenPicture = $0 }
+                            onPictureSelect: { appModel.commentFullscreenPicture = $0 }
                         )
                         .padding(.horizontal, AppLayout.videoDetailCardPadding)
                         .padding(.bottom, AppLayout.videoDetailCardPadding)

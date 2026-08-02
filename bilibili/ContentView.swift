@@ -124,6 +124,7 @@ struct ContentView: View {
                 }
             )
         }
+        .commentImageFullscreenOverlay(selection: $model.commentFullscreenPicture)
         .onPreferenceChange(UserProfileChromeMeasuredHeightKey.self) { profileChromeHeaderHeight = $0 }
         .onPreferenceChange(VideoDetailChromeMeasuredHeightKey.self) { detailChromeHeight = $0 }
         .onPreferenceChange(UserRelationChromeMeasuredHeightKey.self) { relationChromeHeaderHeight = $0 }

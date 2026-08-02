@@ -51,6 +51,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var activeFloatingChromeKind: AppFloatingChromeKind?
     @Published private(set) var suppressesFloatingChrome = false
     @Published private(set) var hidesVideoChromeActions = false
+    /// Comment image viewer presented above the entire app content.
+    /// Keeping this selection in the root model lets the viewer cover the
+    /// video page chrome without changing that chrome's layout or state.
+    @Published var commentFullscreenPicture: CommentFullscreenPicture?
     @Published private(set) var relationListSelectedTab: BiliUserRelationTab = .following
 
     private var relationListTabChangeHandler: ((BiliUserRelationTab) -> Void)?
@@ -190,12 +194,14 @@ final class AppModel: ObservableObject {
         activeFloatingChromeKind = nil
         suppressesFloatingChrome = false
         hidesVideoChromeActions = false
+        commentFullscreenPicture = nil
     }
 
     func handleReturnedToRootNavigation() {
         floatingVideoChrome = nil
         floatingRelationChrome = nil
         relationListTabChangeHandler = nil
+        commentFullscreenPicture = nil
         profileChromeStack.removeAll()
         if selectedSection == .mine, floatingProfileChrome != nil {
             // Keep owner mid so subsequent chrome refreshes still match this page.

@@ -416,15 +416,41 @@ final class DanmakuRenderNSView: NSView {
         // A small contour margin protects the face while avoiding the large
         // rectangular dead zone used by the first implementation.
         let expanded = points.map { point in
-            CGPoint(
+            let verticalScale: CGFloat = point.y >= center.y ? 1.36 : 1.12
+            return CGPoint(
                 x: center.x + (point.x - center.x) * 1.16,
-                y: center.y + (point.y - center.y) * 1.20
+                y: center.y + (point.y - center.y) * verticalScale
             )
         }
+
+        // Face landmarks often stop around the brow line. Add a shallow,
+        // rounded forehead cap from the detected face bounds so comments do
+        // not slip through the upper part of the face.
+        let boundsRect = CGRect(
+            x: face.boundingBox.minX * bounds.width,
+            y: face.boundingBox.minY * bounds.height,
+            width: face.boundingBox.width * bounds.width,
+            height: face.boundingBox.height * bounds.height
+        )
+        let topY = min(
+            bounds.height,
+            max(expanded.map(\.y).max() ?? boundsRect.maxY,
+                boundsRect.maxY + boundsRect.height * 0.24)
+        )
+        let capInset = boundsRect.width * 0.08
+        let capLeft = max(0, boundsRect.minX + capInset)
+        let capRight = min(bounds.width, boundsRect.maxX - capInset)
+        let capCenter = CGPoint(x: (capLeft + capRight) / 2, y: topY)
+
         path.move(to: expanded[0])
         for point in expanded.dropFirst() {
             path.addLine(to: point)
         }
+        path.addLine(to: CGPoint(x: capRight, y: topY - boundsRect.height * 0.04))
+        path.addQuadCurve(
+            to: CGPoint(x: capLeft, y: topY - boundsRect.height * 0.04),
+            control: capCenter
+        )
         path.closeSubpath()
     }
 

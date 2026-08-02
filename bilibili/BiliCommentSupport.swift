@@ -937,6 +937,7 @@ private struct CommentImageZoomPresenter: View {
     let thumbnailFrames: [URL: CGRect]
     @State private var displayed: CommentFullscreenPicture?
     @State private var progress: CGFloat = 0
+    @State private var galleryOffset: CGFloat = 0
     @State private var dismissTask: Task<Void, Never>?
 
     private let padding: CGFloat = 32
@@ -974,6 +975,7 @@ private struct CommentImageZoomPresenter: View {
                             )
                             .frame(width: max(frame.width, 1), height: max(frame.height, 1))
                             .position(x: frame.midX, y: frame.midY)
+                            .offset(x: galleryOffset)
                             .contentShape(Rectangle())
                             .onTapGesture(perform: dismiss)
 
@@ -1034,11 +1036,11 @@ private struct CommentImageZoomPresenter: View {
             return
         }
         let resolved = new.resolvedSourceFrame(using: thumbnailFrames)
-        if let displayed,
-           displayed.gallery == resolved.gallery,
-           displayed.galleryIndex != resolved.galleryIndex {
+        if let displayed, displayed.gallery == resolved.gallery {
             self.displayed = resolved
-            progress = 1
+            if displayed.galleryIndex != resolved.galleryIndex {
+                progress = 1
+            }
         } else {
             present(resolved)
         }
@@ -1054,8 +1056,8 @@ private struct CommentImageZoomPresenter: View {
             Image(systemName: systemName)
                 .font(.system(size: 22, weight: .bold))
                 .foregroundStyle(.white.opacity(enabled ? 0.92 : 0.28))
-                .frame(width: 46, height: 72)
-                .background(.black.opacity(enabled ? 0.48 : 0.16), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .frame(width: 48, height: 48)
+                .background(.black.opacity(enabled ? 0.48 : 0.16), in: Circle())
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -1066,6 +1068,7 @@ private struct CommentImageZoomPresenter: View {
         let nextIndex = displayed.galleryIndex + offset
         guard displayed.gallery.indices.contains(nextIndex) else { return }
         let picture = displayed.gallery[nextIndex]
+        galleryOffset = offset > 0 ? 42 : -42
         selection = CommentFullscreenPicture(
             url: picture.url,
             sourceFrame: thumbnailFrames[picture.url] ?? displayed.sourceFrame,
@@ -1073,11 +1076,15 @@ private struct CommentImageZoomPresenter: View {
             gallery: displayed.gallery,
             galleryIndex: nextIndex
         )
+        withAnimation(.easeOut(duration: 0.24)) {
+            galleryOffset = 0
+        }
     }
 
     private func present(_ picture: CommentFullscreenPicture) {
         displayed = picture
         progress = 0
+        galleryOffset = 0
         withAnimation(presentAnimation) {
             progress = 1
         }

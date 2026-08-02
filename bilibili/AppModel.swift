@@ -50,6 +50,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var floatingRelationChrome: UserRelationChromeInfo?
     @Published private(set) var activeFloatingChromeKind: AppFloatingChromeKind?
     @Published private(set) var suppressesFloatingChrome = false
+    @Published private(set) var hidesVideoChromeActions = false
     @Published private(set) var relationListSelectedTab: BiliUserRelationTab = .following
 
     private var relationListTabChangeHandler: ((BiliUserRelationTab) -> Void)?
@@ -174,6 +175,11 @@ final class AppModel: ObservableObject {
         suppressesFloatingChrome = suppressed
     }
 
+    func setVideoChromeActionsHidden(_ hidden: Bool) {
+        guard hidesVideoChromeActions != hidden else { return }
+        hidesVideoChromeActions = hidden
+    }
+
     func clearFloatingChrome() {
         floatingVideoChrome = nil
         floatingProfileChrome = nil
@@ -183,6 +189,7 @@ final class AppModel: ObservableObject {
         profileChromeOwnerMid = nil
         activeFloatingChromeKind = nil
         suppressesFloatingChrome = false
+        hidesVideoChromeActions = false
     }
 
     func handleReturnedToRootNavigation() {

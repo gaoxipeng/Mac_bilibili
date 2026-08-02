@@ -389,14 +389,14 @@ private struct DetailFloatingChrome: View {
     @ViewBuilder
     private func detailChromeRow(_ detailChrome: VideoDetailChromeInfo) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            if showsFloatingBackButton {
+            if showsFloatingBackButton && !model.hidesVideoChromeActions {
                 profileBackButton
             }
 
             VideoDetailChromeHeaderView(info: detailChrome)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            if let webURL = detailChrome.webURL {
+            if let webURL = detailChrome.webURL, !model.hidesVideoChromeActions {
                 GlassMoreButton(webURL: webURL)
             }
         }

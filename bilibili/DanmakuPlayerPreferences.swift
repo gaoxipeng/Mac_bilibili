@@ -7,6 +7,7 @@ enum DanmakuPlayerPreferences {
     private static let opacityKey = "danmaku_opacity"
     private static let fontSizeKey = "danmaku_font_size"
     private static let speedKey = "danmaku_speed"
+    private static let smartFaceAvoidanceKey = "danmaku_smart_face_avoidance"
 
     static func isDanmakuVisible() -> Bool {
         if defaults.object(forKey: danmakuVisibleKey) == nil {
@@ -33,7 +34,10 @@ enum DanmakuPlayerPreferences {
                 : defaults.integer(forKey: fontSizeKey).clamped(to: 50...170),
             speedLevel: defaults.object(forKey: speedKey) == nil
                 ? .medium
-                : DanmakuSpeedLevel.fromIndex(defaults.integer(forKey: speedKey))
+                : DanmakuSpeedLevel.fromIndex(defaults.integer(forKey: speedKey)),
+            smartFaceAvoidanceEnabled: defaults.object(forKey: smartFaceAvoidanceKey) == nil
+                ? true
+                : defaults.bool(forKey: smartFaceAvoidanceKey)
         )
     }
 
@@ -42,6 +46,7 @@ enum DanmakuPlayerPreferences {
         defaults.set(settings.opacityPercent, forKey: opacityKey)
         defaults.set(settings.fontSizePercent, forKey: fontSizeKey)
         defaults.set(settings.speedLevel.rawValue, forKey: speedKey)
+        defaults.set(settings.smartFaceAvoidanceEnabled, forKey: smartFaceAvoidanceKey)
     }
 }
 

@@ -896,6 +896,7 @@ nonisolated struct DanmakuSettings: Equatable, Sendable {
     var opacityPercent: Int
     var fontSizePercent: Int
     var speedLevel: DanmakuSpeedLevel
+    var smartFaceAvoidanceEnabled: Bool
 
     static let displayAreaOptions = [10, 25, 50, 75, 100]
 
@@ -903,12 +904,14 @@ nonisolated struct DanmakuSettings: Equatable, Sendable {
         displayAreaPercent: Int = 100,
         opacityPercent: Int = 100,
         fontSizePercent: Int = 100,
-        speedLevel: DanmakuSpeedLevel = .medium
+        speedLevel: DanmakuSpeedLevel = .medium,
+        smartFaceAvoidanceEnabled: Bool = true
     ) {
         self.displayAreaPercent = displayAreaPercent
         self.opacityPercent = opacityPercent
         self.fontSizePercent = fontSizePercent
         self.speedLevel = speedLevel
+        self.smartFaceAvoidanceEnabled = smartFaceAvoidanceEnabled
     }
 
     var displayAreaIndex: Int {

@@ -275,7 +275,7 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
         // Face detection only needs a small, occasional sample. Downsample
         // before handing the frame to Vision so analysis never competes with
         // full-resolution playback or the 120 Hz compositor.
-        if let faceMaskAnalyzer {
+        if let faceMaskAnalyzer, faceMaskAnalyzer.isEnabled {
             let now = CACurrentMediaTime()
             if now - lastFaceMaskSampleTime >= 1.0 / 15.0 {
                 lastFaceMaskSampleTime = now

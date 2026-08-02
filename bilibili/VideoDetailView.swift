@@ -82,6 +82,7 @@ final class VideoDetailModel: ObservableObject {
         let resolvedEpid = playbackEpid > 0 ? playbackEpid : video.pgcEpid
         self.activeEpid = max(0, resolvedEpid)
         self.playbackRefererURL = playbackRefererURL
+        player.faceMaskAnalyzer.setEnabled(danmakuSettings.smartFaceAvoidanceEnabled)
         // The detail page is a large view tree (metadata, episode list and
         // comments). Forwarding the player's complete objectWillChange stream
         // invalidated that whole tree for every progress tick and starved the
@@ -1053,6 +1054,7 @@ final class VideoDetailModel: ObservableObject {
     func updateDanmakuSettings(_ settings: DanmakuSettings) {
         danmakuSettings = settings
         DanmakuPlayerPreferences.setDanmakuSettings(settings)
+        player.faceMaskAnalyzer.setEnabled(settings.smartFaceAvoidanceEnabled)
     }
 
     func loadComments(reset: Bool) async {

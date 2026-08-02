@@ -61,6 +61,11 @@ struct DanmakuSettingsOverlay: View {
                         }
                     )
                 }
+                DanmakuSettingToggleRow(
+                    title: "智能防挡脸",
+                    isOn: settings.smartFaceAvoidanceEnabled,
+                    onChange: { onSettingsChange(settings.with(smartFaceAvoidanceEnabled: $0)) }
+                )
             }
             .padding(22)
             .frame(maxWidth: 400)
@@ -72,6 +77,31 @@ struct DanmakuSettingsOverlay: View {
             .shadow(color: .black.opacity(0.12), radius: 18, x: 0, y: 10)
         }
         .zIndex(20)
+    }
+}
+
+private struct DanmakuSettingToggleRow: View {
+    let title: String
+    let isOn: Bool
+    let onChange: (Bool) -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(DanmakuSettingsChrome.title)
+                Text(isOn ? "已开启" : "已关闭")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(DanmakuSettingsChrome.value)
+            }
+            .frame(width: 88, alignment: .leading)
+
+            Toggle("", isOn: Binding(get: { isOn }, set: onChange))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
 
@@ -255,13 +285,15 @@ private extension DanmakuSettings {
         displayAreaPercent: Int? = nil,
         opacityPercent: Int? = nil,
         fontSizePercent: Int? = nil,
-        speedLevel: DanmakuSpeedLevel? = nil
+        speedLevel: DanmakuSpeedLevel? = nil,
+        smartFaceAvoidanceEnabled: Bool? = nil
     ) -> DanmakuSettings {
         DanmakuSettings(
             displayAreaPercent: displayAreaPercent ?? self.displayAreaPercent,
             opacityPercent: opacityPercent ?? self.opacityPercent,
             fontSizePercent: fontSizePercent ?? self.fontSizePercent,
-            speedLevel: speedLevel ?? self.speedLevel
+            speedLevel: speedLevel ?? self.speedLevel,
+            smartFaceAvoidanceEnabled: smartFaceAvoidanceEnabled ?? self.smartFaceAvoidanceEnabled
         )
     }
 }

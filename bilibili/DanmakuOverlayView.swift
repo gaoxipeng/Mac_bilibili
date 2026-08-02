@@ -82,6 +82,8 @@ final class DanmakuRenderNSView: NSView {
     private var configuredEnabled = false
     private var configuredActive = true
     private var appliedFaceMaskGeneration: UInt64 = .max
+    private var scrollingContainer: CALayer?
+    private var fixedContainer: CALayer?
 
     weak var playbackEngine: VideoPlaybackEngine?
     var faceMaskAnalyzer: DanmakuFaceMaskAnalyzer? {
@@ -95,6 +97,7 @@ final class DanmakuRenderNSView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        ensureDanmakuContainers()
         updateScreenChangeObservation()
         reconfigureTimelineIfNeeded(force: true)
         syncCurrentFrameAndRender()
@@ -364,7 +367,12 @@ final class DanmakuRenderNSView: NSView {
     }
 
     private func applyFaceMaskIfNeeded(force: Bool = false) {
-        guard let layer else { return }
+        ensureDanmakuContainers()
+        guard let scrollingContainer else { return }
+        guard settings.smartFaceAvoidanceEnabled else {
+            scrollingContainer.mask = nil
+            return
+        }
         let snapshot = faceMaskAnalyzer?.snapshot() ?? DanmakuFaceMaskAnalyzer.Snapshot(
             generation: 0,
             faces: []
@@ -373,7 +381,7 @@ final class DanmakuRenderNSView: NSView {
         appliedFaceMaskGeneration = snapshot.generation
 
         guard !snapshot.faces.isEmpty, bounds.width > 1, bounds.height > 1 else {
-            layer.mask = nil
+            scrollingContainer.mask = nil
             return
         }
 
@@ -381,8 +389,7 @@ final class DanmakuRenderNSView: NSView {
         let path = CGMutablePath()
         path.addRect(maskBounds)
         for face in snapshot.faces {
-            let expanded = expandedFaceRect(face)
-            path.addRect(expanded)
+            addExpandedFaceContour(face, to: path)
         }
 
         let mask = CAShapeLayer()
@@ -391,25 +398,54 @@ final class DanmakuRenderNSView: NSView {
         mask.fillColor = NSColor.white.cgColor
         mask.fillRule = .evenOdd
         mask.path = path
-        layer.mask = mask
+        scrollingContainer.mask = mask
     }
 
-    private func expandedFaceRect(_ face: CGRect) -> CGRect {
-        // Vision returns normalized coordinates with the origin at the lower
-        // left, which is also the coordinate system used by CALayer masks.
-        let maskBounds = CGRect(origin: .zero, size: bounds.size)
-        let x = face.minX * bounds.width
-        let y = face.minY * bounds.height
-        let width = face.width * bounds.width
-        let height = face.height * bounds.height
-        let horizontalPadding = max(10, width * 0.55)
-        let verticalPadding = max(12, height * 0.85)
-        return CGRect(
-            x: max(0, x - horizontalPadding),
-            y: max(0, y - verticalPadding),
-            width: min(bounds.width, width + horizontalPadding * 2),
-            height: min(bounds.height, height + verticalPadding * 2)
-        ).intersection(maskBounds)
+    private func addExpandedFaceContour(
+        _ face: DanmakuFaceMaskAnalyzer.Face,
+        to path: CGMutablePath
+    ) {
+        let points = face.contour.map { point in
+            CGPoint(x: point.x * bounds.width, y: point.y * bounds.height)
+        }
+        guard points.count >= 3 else { return }
+        let center = CGPoint(
+            x: points.reduce(0) { $0 + $1.x } / CGFloat(points.count),
+            y: points.reduce(0) { $0 + $1.y } / CGFloat(points.count)
+        )
+        // A small contour margin protects the face while avoiding the large
+        // rectangular dead zone used by the first implementation.
+        let expanded = points.map { point in
+            CGPoint(
+                x: center.x + (point.x - center.x) * 1.16,
+                y: center.y + (point.y - center.y) * 1.20
+            )
+        }
+        path.move(to: expanded[0])
+        for point in expanded.dropFirst() {
+            path.addLine(to: point)
+        }
+        path.closeSubpath()
+    }
+
+    private func ensureDanmakuContainers() {
+        guard let layer else { return }
+        if scrollingContainer == nil {
+            let container = CALayer()
+            container.frame = bounds
+            container.masksToBounds = true
+            layer.addSublayer(container)
+            scrollingContainer = container
+        }
+        if fixedContainer == nil {
+            let container = CALayer()
+            container.frame = bounds
+            container.masksToBounds = true
+            layer.addSublayer(container)
+            fixedContainer = container
+        }
+        scrollingContainer?.frame = bounds
+        fixedContainer?.frame = bounds
     }
 
     private func renderNewLayer(frame: DanmakuDrawFrame, contentsScale: CGFloat) {
@@ -429,7 +465,8 @@ final class DanmakuRenderNSView: NSView {
             "opacity": NSNull()
         ]
         created.frame = layerFrame(for: frame)
-        layer?.addSublayer(created)
+        ensureDanmakuContainers()
+        (frame.isScrolling ? scrollingContainer : fixedContainer)?.addSublayer(created)
         if frame.isScrolling {
             _ = addScrollAnimation(to: created, frame: frame)
         }

@@ -207,8 +207,12 @@ final class DanmakuRenderNSView: NSView {
         // event. A main-queue dispatch timer is independent of AppKit's event
         // tracking state, so switching videos cannot reduce danmaku updates to
         // one frame every few seconds.
-        let refreshRate = max(window?.screen?.maximumFramesPerSecond ?? 60, 60)
-        let interval = DispatchTimeInterval.nanoseconds(1_000_000_000 / refreshRate)
+        let displayRefreshRate = max(window?.screen?.maximumFramesPerSecond ?? 60, 60)
+        // The compositor animates text at the display rate. The main-queue
+        // timer only advances the timeline and admits/removes layers, so 60 Hz
+        // is sufficient and leaves the 120 Hz budget to video/UI work.
+        let timelineRefreshRate = min(displayRefreshRate, 60)
+        let interval = DispatchTimeInterval.nanoseconds(1_000_000_000 / timelineRefreshRate)
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(1))
         timer.setEventHandler { [weak self] in
@@ -314,37 +318,25 @@ final class DanmakuRenderNSView: NSView {
         var visibleIDs = Set<Int>()
         visibleIDs.reserveCapacity(frames.count)
         var newFrames: [DanmakuDrawFrame] = []
-        var movingFrames: [DanmakuDrawFrame] = []
 
         for frame in frames {
             visibleIDs.insert(frame.id)
             if textLayers[frame.id] == nil {
                 newFrames.append(frame)
-            } else if frame.isScrolling {
-                movingFrames.append(frame)
             }
         }
 
         let staleIDs = textLayers.keys.filter { !visibleIDs.contains($0) }
-        guard !newFrames.isEmpty || !movingFrames.isEmpty || !staleIDs.isEmpty else { return }
+        guard !newFrames.isEmpty || !staleIDs.isEmpty else { return }
 
-        // Drive scrolling positions from the display link itself. A part
-        // switch can leave an ancestor Core Animation clock paused until the
-        // next AppKit input event; compositor-only CABasicAnimations would
-        // therefore appear frozen and jump only when the user clicks. Direct
-        // position updates keep danmaku tied to the playback/display clocks and
-        // do not depend on an event waking an inherited layer clock.
+        // Let Core Animation's compositor move existing scrolling comments.
+        // Updating every text layer from the main thread at 120 Hz competes
+        // with mpv and SwiftUI and produces visible judder. The timeline still
+        // runs on the display timer, but only layer entry/exit touches AppKit.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for frame in newFrames {
             renderNewLayer(frame: frame, contentsScale: scale)
-        }
-        for frame in movingFrames {
-            guard let textLayer = textLayers[frame.id]?.layer else { continue }
-            textLayer.position = CGPoint(
-                x: frame.x + textLayer.bounds.width / 2,
-                y: bounds.height - frame.y - textLayer.bounds.height / 2
-            )
         }
         for id in staleIDs {
             textLayers[id]?.layer.removeFromSuperlayer()
@@ -375,6 +367,9 @@ final class DanmakuRenderNSView: NSView {
         ]
         created.frame = layerFrame(for: frame)
         layer?.addSublayer(created)
+        if frame.isScrolling {
+            _ = addScrollAnimation(to: created, frame: frame)
+        }
         textLayers[frame.id] = DanmakuTextLayerState(layer: created)
     }
 
@@ -385,6 +380,26 @@ final class DanmakuRenderNSView: NSView {
             width: frame.textWidth + 4,
             height: frame.textHeight + 3
         )
+    }
+
+    private func addScrollAnimation(to textLayer: CATextLayer, frame: DanmakuDrawFrame) -> Bool {
+        let remainingMillis = frame.durationMillis - frame.elapsedMillis
+        guard remainingMillis > 16 else { return false }
+
+        let startX = frame.x + (frame.textWidth + 4) / 2
+        let endX = frame.endX + (frame.textWidth + 4) / 2
+        let currentY = textLayer.position.y
+        textLayer.position = CGPoint(x: endX, y: currentY)
+
+        let animation = CABasicAnimation(keyPath: "position.x")
+        animation.fromValue = startX
+        animation.toValue = endX
+        animation.duration = remainingMillis / 1000
+        animation.timingFunction = CAMediaTimingFunction(name: .linear)
+        animation.isRemovedOnCompletion = false
+        animation.fillMode = .forwards
+        textLayer.add(animation, forKey: "danmaku-scroll-x")
+        return true
     }
 
     private func removeStaleTextLayers(keeping visibleIDs: Set<Int>) {

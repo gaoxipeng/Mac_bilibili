@@ -440,18 +440,53 @@ final class DanmakuRenderNSView: NSView {
         let capInset = boundsRect.width * 0.08
         let capLeft = max(0, boundsRect.minX + capInset)
         let capRight = min(bounds.width, boundsRect.maxX - capInset)
-        let capCenter = CGPoint(x: (capLeft + capRight) / 2, y: topY)
-
-        path.move(to: expanded[0])
-        for point in expanded.dropFirst() {
+        // Build one non-self-intersecting outline. Landmark point order can
+        // vary between Vision revisions; appending a cap directly to that
+        // order caused the X-shaped hole seen in the forehead.
+        let capPoints = [
+            CGPoint(x: capLeft, y: topY - boundsRect.height * 0.04),
+            CGPoint(x: (capLeft + capRight) / 2, y: topY),
+            CGPoint(x: capRight, y: topY - boundsRect.height * 0.04),
+        ]
+        let outline = convexHull(expanded + capPoints)
+        guard outline.count >= 3 else { return }
+        path.move(to: outline[0])
+        for point in outline.dropFirst() {
             path.addLine(to: point)
         }
-        path.addLine(to: CGPoint(x: capRight, y: topY - boundsRect.height * 0.04))
-        path.addQuadCurve(
-            to: CGPoint(x: capLeft, y: topY - boundsRect.height * 0.04),
-            control: capCenter
-        )
         path.closeSubpath()
+    }
+
+    private func convexHull(_ points: [CGPoint]) -> [CGPoint] {
+        let sorted = points.sorted { lhs, rhs in
+            lhs.x == rhs.x ? lhs.y < rhs.y : lhs.x < rhs.x
+        }
+        guard sorted.count >= 3 else { return sorted }
+
+        func cross(_ a: CGPoint, _ b: CGPoint, _ c: CGPoint) -> CGFloat {
+            (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+        }
+
+        var lower: [CGPoint] = []
+        for point in sorted {
+            while lower.count >= 2,
+                  cross(lower[lower.count - 2], lower[lower.count - 1], point) <= 0 {
+                lower.removeLast()
+            }
+            lower.append(point)
+        }
+
+        var upper: [CGPoint] = []
+        for point in sorted.reversed() {
+            while upper.count >= 2,
+                  cross(upper[upper.count - 2], upper[upper.count - 1], point) <= 0 {
+                upper.removeLast()
+            }
+            upper.append(point)
+        }
+        lower.removeLast()
+        upper.removeLast()
+        return lower + upper
     }
 
     private func ensureDanmakuContainers() {

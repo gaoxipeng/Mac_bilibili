@@ -318,13 +318,12 @@ private struct DetailFloatingChrome: View {
     }
 
     var body: some View {
-        Group {
-            if !model.suppressesFloatingChrome {
-                chromeBody
-            }
-        }
-        // Image fullscreen dismissal should restore the title immediately;
-        // other chrome interactions keep their own hover/visibility motion.
+        chromeBody
+            // Keep the chrome in the layout while an image is fullscreen.
+            // The image layer covers it, and returning only changes opacity,
+            // avoiding a remove/reinsert fade from blank to visible.
+            .opacity(model.suppressesFloatingChrome ? 0 : 1)
+            .allowsHitTesting(!model.suppressesFloatingChrome)
         .animation(nil, value: model.suppressesFloatingChrome)
     }
 

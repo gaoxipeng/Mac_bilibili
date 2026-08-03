@@ -552,16 +552,16 @@ private struct Sidebar: View {
                     size: 34,
                     foreground: Color(red: 0.45, green: 0.45, blue: 0.48),
                     background: Color.white.opacity(0.72),
-                    border: isMineSelected ? BiliTheme.pink.opacity(0.55) : Color.black.opacity(0.08)
+                    border: Color.black.opacity(0.08)
                 )
                 .overlay {
                     if isMineSelected || isAccountHovered {
                         Circle()
                             .stroke(
-                                BiliTheme.pink.opacity(isMineSelected ? 1 : 0.58),
-                                lineWidth: isMineSelected ? 1.5 : 1.2
+                                BiliTheme.pink.opacity(isMineSelected ? 0.72 : 0.58),
+                                lineWidth: isMineSelected ? 1.1 : 1.2
                             )
-                            .padding(isMineSelected ? -2 : -1)
+                            .padding(-1)
                     }
                 }
                 .scaleEffect(isAccountHovered ? 1.08 : 1)

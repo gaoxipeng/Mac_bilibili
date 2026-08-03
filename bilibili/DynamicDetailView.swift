@@ -191,6 +191,10 @@ struct DynamicDetailView: View {
         )
     }
 
+    private var dynamicChromeOwnerID: String {
+        "dynamic:\(model.item.id)"
+    }
+
     private func updateImmersiveChromeSuppression() {
         appModel.setFloatingChromeSuppressed(commentFullscreenPicture != nil)
     }
@@ -222,13 +226,16 @@ struct DynamicDetailView: View {
         .task { await model.load() }
         .onAppear {
             publishesFloatingChrome = true
-            appModel.presentVideoFloatingChrome(dynamicChromeInfo)
+            appModel.presentVideoFloatingChrome(
+                dynamicChromeInfo,
+                ownerID: dynamicChromeOwnerID
+            )
             MediaPlaybackCoordinator.shared.notifyObscuringPageVisible()
         }
         .onDisappear {
             publishesFloatingChrome = false
             appModel.setFloatingChromeSuppressed(false)
-            appModel.resignVideoFloatingChrome()
+            appModel.resignVideoFloatingChrome(ownerID: dynamicChromeOwnerID)
             MediaPlaybackCoordinator.shared.notifyObscuringPageHidden()
         }
         .onChange(of: commentFullscreenPicture) { _, _ in

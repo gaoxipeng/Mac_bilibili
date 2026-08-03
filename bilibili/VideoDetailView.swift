@@ -1340,14 +1340,27 @@ struct VideoDetailView: View {
 
     private func updateFloatingChrome() {
         if publishesFloatingChrome {
-            appModel.presentVideoFloatingChrome(detailChromeInfo)
+            appModel.presentVideoFloatingChrome(
+                detailChromeInfo,
+                ownerID: videoChromeOwnerID
+            )
         } else {
-            appModel.refreshVideoFloatingChrome(detailChromeInfo)
+            appModel.refreshVideoFloatingChrome(
+                detailChromeInfo,
+                ownerID: videoChromeOwnerID
+            )
         }
     }
 
     private func publishVideoFloatingChrome() {
-        appModel.presentVideoFloatingChrome(detailChromeInfo)
+        appModel.presentVideoFloatingChrome(
+            detailChromeInfo,
+            ownerID: videoChromeOwnerID
+        )
+    }
+
+    private var videoChromeOwnerID: String {
+        model.seedVideo.id
     }
 
     private func updateImmersiveChromeSuppression() {
@@ -1438,7 +1451,7 @@ struct VideoDetailView: View {
             appModel.commentFullscreenPicture = nil
             appModel.setFloatingChromeSuppressed(false)
             appModel.setVideoChromeActionsHidden(false)
-            appModel.resignVideoFloatingChrome()
+            appModel.resignVideoFloatingChrome(ownerID: videoChromeOwnerID)
             fullscreenPresenter.dismissImmediately()
             MediaPlaybackCoordinator.shared.notifyDetailHidden(model)
             model.player.clearNowPlaying()

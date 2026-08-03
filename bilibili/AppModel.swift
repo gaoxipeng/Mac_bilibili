@@ -63,17 +63,53 @@ final class AppModel: ObservableObject {
         let chrome: UserProfileChromeInfo
     }
 
+    private struct VideoChromeStackEntry {
+        let ownerID: String
+        let chrome: VideoDetailChromeInfo
+    }
+
     private var profileChromeStack: [ProfileChromeStackEntry] = []
     private var profileChromeOwnerMid: Int64?
+    private var videoChromeStack: [VideoChromeStackEntry] = []
+    private var videoChromeOwnerID: String?
 
-    func presentVideoFloatingChrome(_ info: VideoDetailChromeInfo?) {
+    func presentVideoFloatingChrome(_ info: VideoDetailChromeInfo?, ownerID: String? = nil) {
         if let info {
-            floatingVideoChrome = info
+            if let ownerID, !ownerID.isEmpty {
+                if videoChromeOwnerID != ownerID {
+                    if let stackIndex = videoChromeStack.lastIndex(where: { $0.ownerID == ownerID }) {
+                        // The underlying detail can receive onAppear before
+                        // the pushed detail receives onDisappear. Restore its
+                        // entry instead of adding a duplicate stack frame.
+                        let restored = videoChromeStack[stackIndex]
+                        videoChromeStack.removeSubrange(stackIndex..<videoChromeStack.count)
+                        floatingVideoChrome = info
+                        videoChromeOwnerID = restored.ownerID
+                    } else {
+                        if let currentOwnerID = videoChromeOwnerID,
+                           let currentChrome = floatingVideoChrome {
+                            videoChromeStack.append(
+                                VideoChromeStackEntry(
+                                    ownerID: currentOwnerID,
+                                    chrome: currentChrome
+                                )
+                            )
+                        }
+                        floatingVideoChrome = info
+                        videoChromeOwnerID = ownerID
+                    }
+                } else {
+                    floatingVideoChrome = info
+                }
+            } else {
+                floatingVideoChrome = info
+            }
         }
         activeFloatingChromeKind = .video
     }
 
-    func refreshVideoFloatingChrome(_ info: VideoDetailChromeInfo?) {
+    func refreshVideoFloatingChrome(_ info: VideoDetailChromeInfo?, ownerID: String? = nil) {
+        guard ownerID == nil || ownerID == videoChromeOwnerID else { return }
         if let info {
             floatingVideoChrome = info
         }
@@ -169,9 +205,20 @@ final class AppModel: ObservableObject {
         dismissRelationListChrome()
     }
 
-    func resignVideoFloatingChrome() {
+    func resignVideoFloatingChrome(ownerID: String? = nil) {
         guard activeFloatingChromeKind == .video else { return }
-        activeFloatingChromeKind = floatingProfileChrome != nil ? .profile : nil
+        if let ownerID, ownerID != videoChromeOwnerID { return }
+
+        if let restored = videoChromeStack.popLast() {
+            floatingVideoChrome = restored.chrome
+            videoChromeOwnerID = restored.ownerID
+        } else {
+            floatingVideoChrome = nil
+            videoChromeOwnerID = nil
+        }
+        activeFloatingChromeKind = floatingProfileChrome != nil
+            ? .profile
+            : (floatingVideoChrome != nil ? .video : nil)
     }
 
     func setFloatingChromeSuppressed(_ suppressed: Bool) {
@@ -191,6 +238,8 @@ final class AppModel: ObservableObject {
         relationListTabChangeHandler = nil
         profileChromeStack.removeAll()
         profileChromeOwnerMid = nil
+        videoChromeStack.removeAll()
+        videoChromeOwnerID = nil
         activeFloatingChromeKind = nil
         suppressesFloatingChrome = false
         hidesVideoChromeActions = false
@@ -203,6 +252,8 @@ final class AppModel: ObservableObject {
         relationListTabChangeHandler = nil
         commentFullscreenPicture = nil
         profileChromeStack.removeAll()
+        videoChromeStack.removeAll()
+        videoChromeOwnerID = nil
         if selectedSection == .mine, floatingProfileChrome != nil {
             // Keep owner mid so subsequent chrome refreshes still match this page.
             activeFloatingChromeKind = .profile

@@ -71,9 +71,6 @@ struct ContentView: View {
             NavigationStack(path: $navigationPath) {
                 content
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                    .environment(\.biliLinkHandler) { url in
-                        model.openContentLink(url)
-                    }
                     .navigationDestination(for: VideoPlaybackRequest.self) { request in
                         VideoDetailView(
                             video: request.video,
@@ -107,6 +104,12 @@ struct ContentView: View {
                         )
                         .environmentObject(model)
                     }
+            }
+            // Apply the link handler to the whole navigation stack so links
+            // inside pushed video/detail destinations (including comments)
+            // use the in-app playback route instead of the default browser.
+            .environment(\.biliLinkHandler) { url in
+                model.openContentLink(url)
             }
             .environment(\.profileNavigationDepth, navigationPath.count)
             .frame(maxWidth: .infinity, maxHeight: .infinity)

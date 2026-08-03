@@ -522,6 +522,7 @@ private struct Sidebar: View {
     @ObservedObject var model: AppModel
     @Binding var selection: AppSection
     let onReselect: () -> Void
+    @State private var isAccountHovered = false
 
     private var isMineSelected: Bool {
         selection == .mine
@@ -554,16 +555,30 @@ private struct Sidebar: View {
                     border: isMineSelected ? BiliTheme.pink.opacity(0.55) : Color.black.opacity(0.08)
                 )
                 .overlay {
-                    if isMineSelected {
+                    if isMineSelected || isAccountHovered {
                         Circle()
-                            .stroke(BiliTheme.pink, lineWidth: 1.5)
-                            .padding(-2)
+                            .stroke(
+                                BiliTheme.pink.opacity(isMineSelected ? 1 : 0.58),
+                                lineWidth: isMineSelected ? 1.5 : 1.2
+                            )
+                            .padding(isMineSelected ? -2 : -1)
                     }
                 }
+                .scaleEffect(isAccountHovered ? 1.08 : 1)
+                .shadow(
+                    color: BiliTheme.pink.opacity(isAccountHovered ? 0.22 : 0),
+                    radius: isAccountHovered ? 8 : 0,
+                    y: 2
+                )
                 .padding(.vertical, 6)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .onHover { hovering in
+                withAnimation(.easeOut(duration: 0.16)) {
+                    isAccountHovered = hovering
+                }
+            }
             .padding(.bottom, AppLayout.sidebarBottomInset)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

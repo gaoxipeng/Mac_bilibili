@@ -691,33 +691,9 @@ struct GlassSettingsButton: View {
 }
 
 private enum AppVersion {
-    static var display: String {
-        let marketing = nonEmptyVersion(
-            Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
-        )
-        let build = nonEmptyVersion(
-            Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
-        )
-        // Prefer a single marketing version. Only show build in parentheses when
-        // it intentionally differs (e.g. hotfix builds).
-        switch (marketing, build) {
-        case let (version?, build?) where version != build:
-            return "\(version) (\(build))"
-        case let (version?, _):
-            return version
-        case let (_, build?):
-            return build
-        default:
-            return "—"
-        }
-    }
-
-    private static func nonEmptyVersion(_ value: String?) -> String? {
-        guard let value, !value.isEmpty, value != "$(MARKETING_VERSION)", value != "$(CURRENT_PROJECT_VERSION)" else {
-            return nil
-        }
-        return value
-    }
+    /// Always follows `AppMarketingVersion.string` (same as project MARKETING_VERSION),
+    /// so Settings → About never lags behind a stale Bundle Info.plist from incremental builds.
+    static var display: String { AppMarketingVersion.string }
 }
 
 struct GlassSettingsPopUpButtonRepresentable: NSViewRepresentable {

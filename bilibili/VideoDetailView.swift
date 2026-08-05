@@ -3245,33 +3245,28 @@ private struct VideoPlaybackRatePopup: View {
 
     @State private var hoveredRate: Float?
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 4),
-        GridItem(.flexible(), spacing: 4),
-    ]
-
     var body: some View {
-        LazyVGrid(columns: columns, spacing: 4) {
+        HStack(spacing: 2) {
             ForEach(VideoPlaybackRateOptions.values, id: \.self) { rate in
                 let isSelected = abs(rate - selectedRate) < 0.001
                 Button {
                     onSelect(rate)
                 } label: {
                     Text(VideoPlaybackRateOptions.label(for: rate))
-                        .font(.system(size: 14, weight: isSelected ? .semibold : .medium))
+                        .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
                         .foregroundStyle(.white.opacity(isSelected || hoveredRate == rate ? 1 : 0.86))
-                        .frame(width: 62, height: 30)
+                        .frame(width: 40, height: 30)
                         .background {
-                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            Capsule(style: .continuous)
                                 .fill(
                                     isSelected
-                                        ? BiliTheme.pink
+                                        ? BiliTheme.pink.opacity(0.92)
                                         : .white.opacity(hoveredRate == rate ? 0.14 : 0)
                                 )
                         }
                 }
                 .buttonStyle(.plain)
-                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .contentShape(Capsule(style: .continuous))
                 .onHover { hovering in
                     withAnimation(.easeOut(duration: 0.12)) {
                         hoveredRate = hovering ? rate : nil
@@ -3279,13 +3274,10 @@ private struct VideoPlaybackRatePopup: View {
                 }
             }
         }
-        .padding(7)
-        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(BiliTheme.videoControlBorder, lineWidth: 0.5)
-        }
-        .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 5)
+        .modifier(VideoControlCapsuleChrome())
+        .contentShape(Capsule(style: .continuous))
     }
 }
 

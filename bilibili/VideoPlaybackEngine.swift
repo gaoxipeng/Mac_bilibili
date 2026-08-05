@@ -200,10 +200,7 @@ final class VideoPlaybackEngine: ObservableObject {
             abs($0 - rate) < abs($1 - rate)
         } ?? 1
         playbackRate = normalized
-        renderView.setSpeed(normalized)
-        if isPlaying {
-            player?.rate = normalized
-        }
+        applyPlaybackRate(normalized)
         updateNowPlayingInfo()
     }
 
@@ -510,12 +507,23 @@ final class VideoPlaybackEngine: ObservableObject {
 
     private func startPlayback() {
         guard isReady || player == nil else { return }
-        renderView.setSpeed(playbackRate)
+        applyPlaybackRate(playbackRate)
         renderView.setPaused(false)
         player?.play()
         player?.rate = playbackRate
         isPlaying = true
         updateNowPlayingInfo()
+    }
+
+    private func applyPlaybackRate(_ rate: Float) {
+        renderView.setSpeed(rate)
+        guard let player else { return }
+        // defaultRate keeps the selected value for the next play call. Updating
+        // rate as well makes an already-running PiP player react immediately.
+        player.defaultRate = rate
+        if isPlaying || player.timeControlStatus == .playing {
+            player.rate = rate
+        }
     }
 
     private func installRemoteCommands() {

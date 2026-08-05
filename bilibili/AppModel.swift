@@ -278,7 +278,7 @@ final class AppModel: ObservableObject {
     private let api = BilibiliAPI()
     private var playbackNavigationLocked = false
     private var playbackNavigationUnlockTask: Task<Void, Never>?
-    private let accountStore = AccountStore()
+    private let accountStore = KeychainAccountStore()
     private let homeFeedStore = HomeFeedStore()
     private let profileSpaceStore = ProfileSpaceStore()
     /// In-memory「我的」空间缓存，避免切换侧边栏时整页空白再加载。
@@ -1130,31 +1130,6 @@ enum AppSection: String, CaseIterable, Hashable, Identifiable {
         case .favorites: "star"
         case .mine: "person.crop.circle"
         }
-    }
-}
-
-private struct AccountStore {
-    private let fileURL: URL
-
-    init() {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let appDirectory = support.appendingPathComponent("gaoxipeng.bilibili", isDirectory: true)
-        try? FileManager.default.createDirectory(at: appDirectory, withIntermediateDirectories: true)
-        fileURL = appDirectory.appendingPathComponent("account.json")
-    }
-
-    func load() -> BiliAccount? {
-        guard let data = try? Data(contentsOf: fileURL) else { return nil }
-        return try? JSONDecoder().decode(BiliAccount.self, from: data)
-    }
-
-    func save(_ account: BiliAccount) {
-        guard let data = try? JSONEncoder().encode(account) else { return }
-        try? data.write(to: fileURL, options: .atomic)
-    }
-
-    func clear() {
-        try? FileManager.default.removeItem(at: fileURL)
     }
 }
 

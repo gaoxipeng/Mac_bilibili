@@ -19,6 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct bilibiliApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
+    init() {
+        CoverImageDiskCache.prepare()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()

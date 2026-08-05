@@ -108,6 +108,16 @@ final class VideoPlaybackEngine: ObservableObject {
             isPlaying = !paused
             updateNowPlayingInfo()
         }
+        renderView.onSpeedChanged = { [weak self] speed in
+            guard let self, speed.isFinite else { return }
+            guard abs(speed - playbackRate) > 0.001 else { return }
+            // mpv may reset speed while an audio track or replacement file is
+            // attached. Restore the selected rate as soon as it is observed.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, abs(speed - playbackRate) > 0.001 else { return }
+                applyPlaybackRate(playbackRate)
+            }
+        }
         renderView.onVideoSizeChanged = { [weak self] size in
             guard let self, size.width > 0, size.height > 0 else { return }
             videoDisplaySize = size
@@ -514,8 +524,8 @@ final class VideoPlaybackEngine: ObservableObject {
 
     private func startPlayback() {
         guard isReady || player == nil else { return }
-        applyPlaybackRate(playbackRate)
         renderView.setPaused(false)
+        applyPlaybackRate(playbackRate)
         player?.play()
         player?.rate = playbackRate
         isPlaying = true

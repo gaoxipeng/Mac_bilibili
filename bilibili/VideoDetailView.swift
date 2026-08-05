@@ -2928,6 +2928,9 @@ private struct VideoControlCapsule: View {
             if isPlaybackRateMenuPresented {
                 VideoPlaybackRatePopup(
                     selectedRate: player.playbackRate,
+                    onHoverChange: { hovering in
+                        if hovering { hoverProgress = nil }
+                    },
                     onSelect: { rate in
                         player.setPlaybackRate(rate)
                         isPlaybackRateMenuPresented = false
@@ -2969,6 +2972,10 @@ private struct VideoControlCapsule: View {
         .onContinuousHover { phase in
             switch phase {
             case .active(let location):
+                guard location.y >= 0, location.y <= VideoControlLayout.capsuleHeight else {
+                    hoverProgress = nil
+                    return
+                }
                 hoverProgress = scrubFraction(at: location.x, totalWidth: capsuleWidth)
             case .ended:
                 if dragProgress == nil { hoverProgress = nil }
@@ -3239,6 +3246,7 @@ private func formatVideoShotTime(_ seconds: Double) -> String {
 
 private struct VideoPlaybackRatePopup: View {
     let selectedRate: Float
+    let onHoverChange: (Bool) -> Void
     let onSelect: (Float) -> Void
 
     @State private var hoveredRate: Float?
@@ -3276,6 +3284,7 @@ private struct VideoPlaybackRatePopup: View {
         .frame(height: VideoControlLayout.capsuleHeight)
         .modifier(VideoControlCapsuleChrome())
         .contentShape(Capsule(style: .continuous))
+        .onHover(perform: onHoverChange)
     }
 }
 

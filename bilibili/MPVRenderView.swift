@@ -337,6 +337,7 @@ final class MPVRenderView: NSView {
     var onTimeChanged: ((Double) -> Void)?
     var onDurationChanged: ((Double) -> Void)?
     var onPauseChanged: ((Bool) -> Void)?
+    var onSpeedChanged: ((Float) -> Void)?
     var onVideoSizeChanged: ((CGSize) -> Void)?
     var onReady: (() -> Void)?
     var onEnded: (() -> Void)?
@@ -655,6 +656,7 @@ final class MPVRenderView: NSView {
 
         observe("time-pos", MPV_FORMAT_DOUBLE)
         observe("duration", MPV_FORMAT_DOUBLE)
+        observe("speed", MPV_FORMAT_DOUBLE)
         observe("pause", MPV_FORMAT_FLAG)
         observe("video-params/w", MPV_FORMAT_INT64)
         observe("video-params/h", MPV_FORMAT_INT64)
@@ -777,6 +779,7 @@ final class MPVRenderView: NSView {
                 let value = data.assumingMemoryBound(to: Double.self).pointee
                 if name == "time-pos" { onTimeChanged?(value) }
                 if name == "duration" { onDurationChanged?(value) }
+                if name == "speed", value.isFinite { onSpeedChanged?(Float(value)) }
             case MPV_FORMAT_FLAG:
                 let value = data.assumingMemoryBound(to: Int32.self).pointee != 0
                 if name == "pause" { onPauseChanged?(value) }

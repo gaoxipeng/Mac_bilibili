@@ -3246,16 +3246,16 @@ private struct VideoPlaybackRatePopup: View {
     @State private var hoveredRate: Float?
 
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 4) {
             ForEach(VideoPlaybackRateOptions.values, id: \.self) { rate in
                 let isSelected = abs(rate - selectedRate) < 0.001
                 Button {
                     onSelect(rate)
                 } label: {
                     Text(VideoPlaybackRateOptions.label(for: rate))
-                        .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                        .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
                         .foregroundStyle(.white.opacity(isSelected || hoveredRate == rate ? 1 : 0.86))
-                        .frame(width: 40, height: 30)
+                        .frame(width: 56, height: 44)
                         .background {
                             Capsule(style: .continuous)
                                 .fill(
@@ -3274,8 +3274,8 @@ private struct VideoPlaybackRatePopup: View {
                 }
             }
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 8)
+        .frame(height: VideoControlLayout.capsuleHeight)
         .modifier(VideoControlCapsuleChrome())
         .contentShape(Capsule(style: .continuous))
     }

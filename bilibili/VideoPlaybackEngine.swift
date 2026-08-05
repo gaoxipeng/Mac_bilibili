@@ -113,7 +113,14 @@ final class VideoPlaybackEngine: ObservableObject {
             videoDisplaySize = size
             videoAspectRatio = size.width / size.height
         }
-        renderView.onReady = { [weak self] in self?.isReady = true }
+        renderView.onReady = { [weak self] in
+            guard let self else { return }
+            isReady = true
+            // FILE_LOADED can restore mpv's default speed after a source
+            // switch. Reapply the user's selection as soon as the new file is
+            // ready so the first rendered frames use the chosen rate.
+            applyPlaybackRate(playbackRate)
+        }
         renderView.onEnded = { [weak self] in
             guard let self else { return }
             isPlaying = false

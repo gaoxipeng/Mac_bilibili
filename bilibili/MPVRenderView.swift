@@ -487,7 +487,14 @@ final class MPVRenderView: NSView {
     func setPaused(_ paused: Bool) { setFlag("pause", paused) }
     func setMuted(_ muted: Bool) { setFlag("mute", muted) }
     func setVolume(_ volume: Float) { setDouble("volume", Double(volume * 100)) }
-    func setSpeed(_ speed: Float) { setDouble("speed", Double(speed)) }
+    func setSpeed(_ speed: Float) {
+        guard speed.isFinite, speed > 0 else { return }
+        let value = String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), speed)
+        // Update the writable property directly and issue the equivalent mpv
+        // command so an already-running file applies the new rate immediately.
+        setString("speed", value)
+        _ = command("set", ["speed", value])
+    }
     func seek(to seconds: Double) { command("seek", [String(max(0, seconds)), "absolute+exact"]) }
 
     /// Re-present the current frame after the Metal view is reparented/resized.

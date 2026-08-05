@@ -1845,7 +1845,7 @@ struct VideoDetailView: View {
 
     private func toggleFullscreen() {
         if fullscreenPresenter.isPresented {
-            fullscreenPresenter.dismiss()
+            fullscreenPresenter.togglePresentedState()
         } else {
             enterFullscreen()
         }
@@ -1858,7 +1858,8 @@ struct VideoDetailView: View {
         ) {
             VideoPlayerFullscreenContent(
                 model: model,
-                onClose: { fullscreenPresenter.dismiss() }
+                onToggleFullscreen: { fullscreenPresenter.togglePresentedState() },
+                onExitFullscreen: { fullscreenPresenter.dismiss() }
             )
         }
     }
@@ -2323,6 +2324,7 @@ private struct VideoPlayerSection: View {
     var rendersDanmaku = true
     var acceptsKeyboardShortcuts = true
     var onToggleFullscreen: (() -> Void)?
+    var onExitFullscreen: (() -> Void)?
 
     init(
         model: VideoDetailModel,
@@ -2332,7 +2334,8 @@ private struct VideoPlayerSection: View {
         fullscreenTitle: String? = nil,
         rendersDanmaku: Bool = true,
         acceptsKeyboardShortcuts: Bool = true,
-        onToggleFullscreen: (() -> Void)? = nil
+        onToggleFullscreen: (() -> Void)? = nil,
+        onExitFullscreen: (() -> Void)? = nil
     ) {
         self.model = model
         self.maxWidth = maxWidth
@@ -2342,6 +2345,7 @@ private struct VideoPlayerSection: View {
         self.rendersDanmaku = rendersDanmaku
         self.acceptsKeyboardShortcuts = acceptsKeyboardShortcuts
         self.onToggleFullscreen = onToggleFullscreen
+        self.onExitFullscreen = onExitFullscreen
         player = model.player
         _visualState = StateObject(wrappedValue: VideoPlayerVisualState(player: model.player))
     }
@@ -2512,7 +2516,7 @@ private struct VideoPlayerSection: View {
             onVolumeUp: { SystemAudioVolume.adjust(by: 0.1) },
             onVolumeDown: { SystemAudioVolume.adjust(by: -0.1) },
             onToggleFullscreen: { onToggleFullscreen?() },
-            onExitFullscreen: { onToggleFullscreen?() },
+            onExitFullscreen: { (onExitFullscreen ?? onToggleFullscreen)?() },
             onToggleMute: { player.toggleMute() },
             onToggleDanmaku: { model.toggleDanmakuVisible() }
         )
@@ -2521,7 +2525,8 @@ private struct VideoPlayerSection: View {
 
 private struct VideoPlayerFullscreenContent: View {
     @ObservedObject var model: VideoDetailModel
-    let onClose: () -> Void
+    let onToggleFullscreen: () -> Void
+    let onExitFullscreen: () -> Void
 
     var body: some View {
         VideoPlayerSection(
@@ -2530,7 +2535,8 @@ private struct VideoPlayerFullscreenContent: View {
             maxHeight: 0,
             isFullscreen: true,
             fullscreenTitle: model.displayVideo.title,
-            onToggleFullscreen: onClose
+            onToggleFullscreen: onToggleFullscreen,
+            onExitFullscreen: onExitFullscreen
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.black)
@@ -2793,6 +2799,9 @@ private struct VideoControlCapsule: View {
     @State private var hoverProgress: Double?
     @State private var capsuleWidth: CGFloat = 1
     @State private var isPlaybackRateMenuPresented = false
+    @State private var isPlaybackRateButtonHovered = false
+    @State private var isPlaybackRatePopupHovered = false
+    @State private var playbackRateDismissTask: Task<Void, Never>?
 
     private var progress: Double {
         if let dragProgress { return dragProgress }
@@ -2874,15 +2883,23 @@ private struct VideoControlCapsule: View {
 
                     Button(action: {
                         onInteraction()
-                        isPlaybackRateMenuPresented.toggle()
-                        onSpeedMenuVisibilityChanged(isPlaybackRateMenuPresented)
+                        presentPlaybackRateMenu()
                     }) {
                         Text(player.playbackRateLabel)
                             .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
-                            .videoControlHoverForeground()
                             .frame(minWidth: VideoControlLayout.speedMinWidth, alignment: .center)
+                            .videoControlHoverForeground()
                     }
                     .buttonStyle(.plain)
+                    .onHover { hovering in
+                        isPlaybackRateButtonHovered = hovering
+                        if hovering {
+                            onInteraction()
+                            presentPlaybackRateMenu()
+                        } else {
+                            schedulePlaybackRateMenuDismissal()
+                        }
+                    }
 
                     Text(formatTime(max(0, player.duration - positionTime)))
                         .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
@@ -2929,12 +2946,17 @@ private struct VideoControlCapsule: View {
                 VideoPlaybackRatePopup(
                     selectedRate: player.playbackRate,
                     onHoverChange: { hovering in
-                        if hovering { hoverProgress = nil }
+                        isPlaybackRatePopupHovered = hovering
+                        if hovering {
+                            hoverProgress = nil
+                            playbackRateDismissTask?.cancel()
+                        } else {
+                            schedulePlaybackRateMenuDismissal()
+                        }
                     },
                     onSelect: { rate in
                         player.setPlaybackRate(rate)
-                        isPlaybackRateMenuPresented = false
-                        onSpeedMenuVisibilityChanged(false)
+                        dismissPlaybackRateMenu()
                         onInteraction()
                     }
                 )
@@ -2961,6 +2983,9 @@ private struct VideoControlCapsule: View {
         }
         .onAppear {
             displayedProgress = progress
+        }
+        .onDisappear {
+            playbackRateDismissTask?.cancel()
         }
         .onHover { hovering in
             if hovering {
@@ -3006,6 +3031,32 @@ private struct VideoControlCapsule: View {
 
     private func scrubFraction(at x: CGFloat, totalWidth: CGFloat) -> Double {
         min(1, max(0, Double(x / max(totalWidth, 1))))
+    }
+
+    private func presentPlaybackRateMenu() {
+        playbackRateDismissTask?.cancel()
+        guard !isPlaybackRateMenuPresented else { return }
+        isPlaybackRateMenuPresented = true
+        onSpeedMenuVisibilityChanged(true)
+    }
+
+    private func schedulePlaybackRateMenuDismissal() {
+        playbackRateDismissTask?.cancel()
+        playbackRateDismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled,
+                  !isPlaybackRateButtonHovered,
+                  !isPlaybackRatePopupHovered else { return }
+            dismissPlaybackRateMenu()
+        }
+    }
+
+    private func dismissPlaybackRateMenu() {
+        playbackRateDismissTask?.cancel()
+        playbackRateDismissTask = nil
+        guard isPlaybackRateMenuPresented else { return }
+        isPlaybackRateMenuPresented = false
+        onSpeedMenuVisibilityChanged(false)
     }
 
     private func formatTime(_ seconds: Double) -> String {
@@ -3260,14 +3311,19 @@ private struct VideoPlaybackRatePopup: View {
                 } label: {
                     Text(VideoPlaybackRateOptions.label(for: rate))
                         .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
-                        .foregroundStyle(.white.opacity(isSelected || hoveredRate == rate ? 1 : 0.86))
+                        .foregroundStyle(
+                            hoveredRate == rate
+                                ? BiliTheme.pink
+                                : .white.opacity(isSelected ? 1 : 0.86)
+                        )
+                        .videoControlSoftShadow()
                         .frame(width: 56, height: 44)
                         .background {
                             Capsule(style: .continuous)
                                 .fill(
-                                    isSelected
-                                        ? BiliTheme.pink.opacity(0.92)
-                                        : .white.opacity(hoveredRate == rate ? 0.14 : 0)
+                                    hoveredRate == rate
+                                        ? .white.opacity(0.14)
+                                        : (isSelected ? BiliTheme.pink.opacity(0.92) : .clear)
                                 )
                         }
                 }

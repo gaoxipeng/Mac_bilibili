@@ -488,13 +488,21 @@ final class MPVRenderView: NSView {
     func setPaused(_ paused: Bool) { setFlag("pause", paused) }
     func setMuted(_ muted: Bool) { setFlag("mute", muted) }
     func setVolume(_ volume: Float) { setDouble("volume", Double(volume * 100)) }
-    func setSpeed(_ speed: Float) {
+    func setSpeed(_ speed: Float, flushPlayback: Bool = false) {
         guard speed.isFinite, speed > 0 else { return }
         let value = String(format: "%.3f", locale: Locale(identifier: "en_US_POSIX"), speed)
         // Update the writable property directly and issue the equivalent mpv
         // command so an already-running file applies the new rate immediately.
         setString("speed", value)
         _ = command("set", ["speed", value])
+
+        // libmpv can retain several seconds of audio/video already queued at
+        // the previous rate. Re-seeking the active timeline to its current
+        // position discards those queues, so a user-initiated rate change is
+        // audible and visible immediately instead of after they drain.
+        if flushPlayback, currentFileLoaded, !getFlag("pause") {
+            _ = command("seek", ["0", "relative+exact"])
+        }
     }
     func seek(to seconds: Double) { command("seek", [String(max(0, seconds)), "absolute+exact"]) }
 

@@ -217,7 +217,7 @@ final class VideoPlaybackEngine: ObservableObject {
             abs($0 - rate) < abs($1 - rate)
         } ?? 1
         playbackRate = normalized
-        applyPlaybackRate(normalized)
+        applyPlaybackRate(normalized, flushMPVBuffers: true)
         updateNowPlayingInfo()
     }
 
@@ -532,8 +532,8 @@ final class VideoPlaybackEngine: ObservableObject {
         updateNowPlayingInfo()
     }
 
-    private func applyPlaybackRate(_ rate: Float) {
-        renderView.setSpeed(rate)
+    private func applyPlaybackRate(_ rate: Float, flushMPVBuffers: Bool = false) {
+        renderView.setSpeed(rate, flushPlayback: flushMPVBuffers)
         guard let player else { return }
         // defaultRate keeps the selected value for the next play call. Updating
         // rate as well makes an already-running PiP player react immediately.

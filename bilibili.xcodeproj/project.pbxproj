@@ -266,20 +266,20 @@
 				CODE_SIGN_ENTITLEMENTS = bilibili/bilibili.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20260803;
+				CURRENT_PROJECT_VERSION = 20260805;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = bilibili/Info.plist;
-				INFOPLIST_KEY_CFBundleShortVersionString = 20260803;
-				INFOPLIST_KEY_CFBundleVersion = 20260803;
+				INFOPLIST_KEY_CFBundleShortVersionString = 20260805;
+				INFOPLIST_KEY_CFBundleVersion = 20260805;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 20260803;
+				MARKETING_VERSION = 20260805;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"$(SRCROOT)/bilibili/Vendor/MPVCoreAudioPatched.o",
@@ -304,20 +304,20 @@
 				CODE_SIGN_ENTITLEMENTS = bilibili/bilibili.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20260803;
+				CURRENT_PROJECT_VERSION = 20260805;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = bilibili/Info.plist;
-				INFOPLIST_KEY_CFBundleShortVersionString = 20260803;
-				INFOPLIST_KEY_CFBundleVersion = 20260803;
+				INFOPLIST_KEY_CFBundleShortVersionString = 20260805;
+				INFOPLIST_KEY_CFBundleVersion = 20260805;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 20260803;
+				MARKETING_VERSION = 20260805;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"$(SRCROOT)/bilibili/Vendor/MPVCoreAudioPatched.o",

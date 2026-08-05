@@ -6,6 +6,7 @@ import SwiftUI
 @MainActor
 final class VideoFullscreenPresenter: ObservableObject {
     @Published private(set) var isPresented = false
+    @Published private(set) var isExiting = false
     /// The fullscreen window remains presented throughout its exit animation,
     /// but inline chrome should already be available underneath it so the title
     /// fades back with the rest of the main window.
@@ -92,6 +93,7 @@ final class VideoFullscreenPresenter: ObservableObject {
         window.makeKeyAndOrderFront(nil)
 
         self.window = window
+        isExiting = false
         suppressesInlineChrome = true
         isPresented = true
         enterSystemFullscreenChrome()
@@ -122,7 +124,9 @@ final class VideoFullscreenPresenter: ObservableObject {
             dismissImmediately()
             return
         }
+        guard !isExiting else { return }
 
+        isExiting = true
         let targetFrame = sourceFrameProvider?() ?? window.frame
         suppressesInlineChrome = false
         removeEscapeMonitor()
@@ -162,11 +166,61 @@ final class VideoFullscreenPresenter: ObservableObject {
         }
     }
 
+    /// Reverse an in-flight exit without rebuilding or reparenting the player.
+    /// The new opening animation starts from the layer's current presentation
+    /// transform, so repeated fullscreen shortcuts remain visually continuous.
+    func resumePresentation() {
+        guard isPresented,
+              isExiting,
+              let window,
+              let container = window.contentView as? FullscreenWindowContainerView else { return }
+
+        isExiting = false
+        suppressesInlineChrome = true
+        isRestoringSystemChrome = false
+        window.ignoresMouseEvents = false
+        enterSystemFullscreenChrome()
+        installEdgeMouseMonitors()
+        installActivationObserver()
+        installEscapeMonitor()
+        setFullscreenBackdropOpaque(false, for: window)
+
+        let screen = window.screen ?? screenContaining(window.frame) ?? NSScreen.main
+        guard let screen else { return }
+        let targetFrame = targetFullscreenFrame(on: screen, excluding: window)
+
+        animateWindow(
+            window,
+            container: container,
+            from: window.frame,
+            to: targetFrame,
+            duration: 0.72,
+            mainWindowAlpha: 0,
+            opening: true
+        ) {
+            window.setFrame(targetFrame, display: true)
+            self.setFullscreenBackdropOpaque(true, for: window)
+            window.alphaValue = 1
+            container.cornerRadius = 0
+            container.transitionProgress = 1
+            self.applySystemFullscreenChrome()
+        }
+    }
+
+    func togglePresentedState() {
+        if isExiting {
+            resumePresentation()
+        } else {
+            dismiss()
+        }
+    }
+
     func dismissImmediately() {
         cancelTransition()
         PlayerClipContainerView.beginFullscreenToInlineHandoff()
         suppressesInlineChrome = false
         isPresented = false
+        isExiting = false
         if let window {
             prepareForSystemChromeRestoration(window: window, activateMainWindow: true)
             PlayerClipContainerView.handoffRenderViewToInline()?.refreshPresentation()
@@ -189,6 +243,7 @@ final class VideoFullscreenPresenter: ObservableObject {
         PlayerClipContainerView.beginFullscreenToInlineHandoff()
         suppressesInlineChrome = false
         isPresented = false
+        isExiting = false
         if let window {
             prepareForSystemChromeRestoration(window: window, activateMainWindow: false)
             PlayerClipContainerView.handoffRenderViewToInline()?.refreshPresentation()
@@ -215,6 +270,7 @@ final class VideoFullscreenPresenter: ObservableObject {
         sourceFrameProvider = nil
         suppressesInlineChrome = false
         isPresented = false
+        isExiting = false
         isRestoringSystemChrome = false
         cancelSystemChromeReveal()
         removeEscapeMonitor()
@@ -489,7 +545,7 @@ final class VideoFullscreenPresenter: ObservableObject {
         opening: Bool,
         completion: @escaping @MainActor () -> Void
     ) {
-        cancelTransition()
+        let interruptedTransform = cancelTransition(preservingPresentationTransform: true)
         let generation = transitionGeneration
         let mainWindow = NSApp.mainWindow === window ? nil : NSApp.mainWindow
         let fixedWindowFrame = opening ? endFrame : startFrame
@@ -516,7 +572,8 @@ final class VideoFullscreenPresenter: ObservableObject {
         let timing = opening
             ? CAMediaTimingFunction(controlPoints: 0.16, 1.0, 0.30, 1.0)
             : CAMediaTimingFunction(controlPoints: 0.40, 0.0, 0.20, 1.0)
-        let startTransform = contentTransform(layer: contentLayer, to: localStartFrame)
+        let startTransform = interruptedTransform
+            ?? contentTransform(layer: contentLayer, to: localStartFrame)
         let endTransform = contentTransform(layer: contentLayer, to: localEndFrame)
         let transformAnimation = CABasicAnimation(keyPath: "transform")
         transformAnimation.fromValue = NSValue(caTransform3D: startTransform)
@@ -577,12 +634,19 @@ final class VideoFullscreenPresenter: ObservableObject {
         return transform
     }
 
-    private func cancelTransition() {
+    @discardableResult
+    private func cancelTransition(
+        preservingPresentationTransform: Bool = false
+    ) -> CATransform3D? {
+        let interruptedTransform = preservingPresentationTransform
+            ? transitionContentLayer?.presentation()?.transform
+            : nil
         transitionGeneration &+= 1
         transitionContentLayer?.removeAnimation(forKey: "fullscreenTransition")
-        transitionContentLayer?.transform = CATransform3DIdentity
+        transitionContentLayer?.transform = interruptedTransform ?? CATransform3DIdentity
         transitionContentLayer = nil
         (window?.contentView as? FullscreenWindowContainerView)?.setContentVisible(true)
+        return interruptedTransform
     }
 
     private func installEscapeMonitor() {

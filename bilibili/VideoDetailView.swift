@@ -2936,9 +2936,7 @@ private struct VideoControlCapsule: View {
                     }
                 )
                 .offset(
-                    x: -(VideoControlLayout.horizontalPadding
-                        + VideoControlLayout.trailingControlSpacing
-                        + VideoControlLayout.timeMinWidth),
+                    x: -VideoControlLayout.horizontalPadding,
                     y: -(VideoControlLayout.capsuleHeight + 10)
                 )
                 .transition(

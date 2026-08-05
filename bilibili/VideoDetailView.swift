@@ -2470,7 +2470,14 @@ private struct VideoPlayerSection: View {
                         danmakuVisible: model.danmakuVisible,
                         onDanmakuToggle: model.toggleDanmakuVisible,
                         onDanmakuRightClick: { model.showDanmakuSettings = true },
-                        onInteraction: { chromeState.revealControls() }
+                        onInteraction: { chromeState.revealControls() },
+                        onSpeedMenuVisibilityChanged: { presented in
+                            if presented {
+                                chromeState.showControlsPersistently()
+                            } else {
+                                chromeState.revealControls()
+                            }
+                        }
                     )
                     .transition(.opacity)
                     .padding(.horizontal, 16)
@@ -2779,11 +2786,13 @@ private struct VideoControlCapsule: View {
     let onDanmakuToggle: () -> Void
     let onDanmakuRightClick: () -> Void
     var onInteraction: () -> Void = {}
+    var onSpeedMenuVisibilityChanged: (Bool) -> Void = { _ in }
 
     @State private var dragProgress: Double?
     @State private var displayedProgress: Double = 0
     @State private var hoverProgress: Double?
     @State private var capsuleWidth: CGFloat = 1
+    @State private var isPlaybackRateMenuPresented = false
 
     private var progress: Double {
         if let dragProgress { return dragProgress }
@@ -2865,7 +2874,8 @@ private struct VideoControlCapsule: View {
 
                     Button(action: {
                         onInteraction()
-                        player.cyclePlaybackRate()
+                        isPlaybackRateMenuPresented.toggle()
+                        onSpeedMenuVisibilityChanged(isPlaybackRateMenuPresented)
                     }) {
                         Text(player.playbackRateLabel)
                             .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
@@ -2914,6 +2924,31 @@ private struct VideoControlCapsule: View {
             }
             .allowsHitTesting(false)
         }
+        .overlay(alignment: .bottomTrailing) {
+            if isPlaybackRateMenuPresented {
+                VideoPlaybackRatePopup(
+                    selectedRate: player.playbackRate,
+                    onSelect: { rate in
+                        player.setPlaybackRate(rate)
+                        isPlaybackRateMenuPresented = false
+                        onSpeedMenuVisibilityChanged(false)
+                        onInteraction()
+                    }
+                )
+                .offset(
+                    x: -(VideoControlLayout.horizontalPadding
+                        + VideoControlLayout.trailingControlSpacing
+                        + VideoControlLayout.timeMinWidth),
+                    y: -(VideoControlLayout.capsuleHeight + 10)
+                )
+                .transition(
+                    .scale(scale: 0.92, anchor: .bottomTrailing)
+                        .combined(with: .opacity)
+                )
+                .zIndex(20)
+            }
+        }
+        .animation(.easeOut(duration: 0.16), value: isPlaybackRateMenuPresented)
         .onChange(of: progress) { _, newValue in
             if player.isScrubbing || !player.isPlaying {
                 displayedProgress = newValue
@@ -3202,6 +3237,56 @@ private func formatVideoShotTime(_ seconds: Double) -> String {
     return hours > 0
         ? String(format: "%d:%02d:%02d", hours, minutes, remainder)
         : String(format: "%d:%02d", minutes, remainder)
+}
+
+private struct VideoPlaybackRatePopup: View {
+    let selectedRate: Float
+    let onSelect: (Float) -> Void
+
+    @State private var hoveredRate: Float?
+
+    private let columns = [
+        GridItem(.flexible(), spacing: 4),
+        GridItem(.flexible(), spacing: 4),
+    ]
+
+    var body: some View {
+        LazyVGrid(columns: columns, spacing: 4) {
+            ForEach(VideoPlaybackRateOptions.values, id: \.self) { rate in
+                let isSelected = abs(rate - selectedRate) < 0.001
+                Button {
+                    onSelect(rate)
+                } label: {
+                    Text(VideoPlaybackRateOptions.label(for: rate))
+                        .font(.system(size: 14, weight: isSelected ? .semibold : .medium))
+                        .foregroundStyle(.white.opacity(isSelected || hoveredRate == rate ? 1 : 0.86))
+                        .frame(width: 62, height: 30)
+                        .background {
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(
+                                    isSelected
+                                        ? BiliTheme.pink
+                                        : .white.opacity(hoveredRate == rate ? 0.14 : 0)
+                                )
+                        }
+                }
+                .buttonStyle(.plain)
+                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .onHover { hovering in
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        hoveredRate = hovering ? rate : nil
+                    }
+                }
+            }
+        }
+        .padding(7)
+        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(BiliTheme.videoControlBorder, lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
+    }
 }
 
 private struct VideoControlCapsuleProgress: View {

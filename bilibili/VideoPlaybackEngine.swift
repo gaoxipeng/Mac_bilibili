@@ -5,6 +5,20 @@ import Foundation
 import MediaPlayer
 import QuartzCore
 
+enum VideoPlaybackRateOptions {
+    static let values: [Float] = [0.5, 0.75, 1, 1.5, 2, 3]
+
+    static func label(for rate: Float) -> String {
+        let value: Float
+        if let matched = values.first(where: { abs($0 - rate) < 0.001 }) {
+            value = matched
+        } else {
+            value = rate
+        }
+        return "\(String(format: "%g", value))×"
+    }
+}
+
 @MainActor
 final class VideoPlaybackEngine: ObservableObject {
     var onSeekCommitted: ((Double) -> Void)?
@@ -180,30 +194,21 @@ final class VideoPlaybackEngine: ObservableObject {
         startPictureInPicturePrewarming()
     }
 
-    func cyclePlaybackRate() {
-        switch playbackRate {
-        case ..<1.25:
-            playbackRate = 1.5
-        case ..<1.75:
-            playbackRate = 2
-        default:
-            playbackRate = 1
-        }
+    func setPlaybackRate(_ rate: Float) {
+        guard rate.isFinite else { return }
+        let normalized = VideoPlaybackRateOptions.values.min {
+            abs($0 - rate) < abs($1 - rate)
+        } ?? 1
+        playbackRate = normalized
+        renderView.setSpeed(normalized)
         if isPlaying {
-            renderView.setSpeed(playbackRate)
-            player?.rate = playbackRate
+            player?.rate = normalized
         }
+        updateNowPlayingInfo()
     }
 
     var playbackRateLabel: String {
-        switch playbackRate {
-        case ..<1.25:
-            return "1×"
-        case ..<1.75:
-            return "1.5×"
-        default:
-            return "2×"
-        }
+        VideoPlaybackRateOptions.label(for: playbackRate)
     }
 
     func requestPictureInPicture() {

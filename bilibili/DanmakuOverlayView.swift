@@ -61,7 +61,7 @@ struct DanmakuOverlayView: NSViewRepresentable, Equatable {
 
 final class DanmakuRenderNSView: NSView {
     private let timeline = DanmakuTimeline()
-    private var displayLink: DispatchSourceTimer?
+    private var displayLink: CADisplayLink?
     private var screenChangeObserver: NSObjectProtocol?
     private var textLayers: [Int: DanmakuTextLayerState] = [:]
     private var lastResolvedPositionMillis: Double?
@@ -217,29 +217,20 @@ final class DanmakuRenderNSView: NSView {
         guard isActive, isPlaying, enabled, !items.isEmpty, window != nil else { return }
         guard displayLink == nil else { return }
 
-        // CADisplayLink may remain in an idle/throttled state after mpv replaces
-        // a file and only return to the display cadence after the next mouse
-        // event. A main-queue dispatch timer is independent of AppKit's event
-        // tracking state, so switching videos cannot reduce danmaku updates to
-        // one frame every few seconds.
-        let displayRefreshRate = max(window?.screen?.maximumFramesPerSecond ?? 60, 60)
-        // The compositor animates text at the display rate. The main-queue
-        // timer only advances the timeline and admits/removes layers, so 60 Hz
-        // is sufficient and leaves the 120 Hz budget to video/UI work.
-        let timelineRefreshRate = min(displayRefreshRate, 60)
-        let interval = DispatchTimeInterval.nanoseconds(1_000_000_000 / timelineRefreshRate)
-        let timer = DispatchSource.makeTimerSource(queue: .main)
-        timer.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(1))
-        timer.setEventHandler { [weak self] in
-            self?.displayLinkFired()
-        }
-        displayLink = timer
-        timer.resume()
+        // AppKit binds this display link to the screen containing the view.
+        // The callback runs on the main run loop at the display's native
+        // cadence, so ProMotion and high-refresh external displays are not
+        // reduced to a fixed 60/120 Hz timer.
+        let link = displayLink(
+            target: self,
+            selector: #selector(displayLinkDidFire(_:))
+        )
+        displayLink = link
+        link.add(to: .main, forMode: .common)
     }
 
     func stopDisplayLink() {
-        displayLink?.setEventHandler {}
-        displayLink?.cancel()
+        displayLink?.invalidate()
         displayLink = nil
     }
 
@@ -257,9 +248,13 @@ final class DanmakuRenderNSView: NSView {
         startDisplayLinkIfNeeded()
     }
 
-    private func updateDisplayLinkFrameRate(_ link: DispatchSourceTimer? = nil) {
-        guard link != nil || displayLink != nil else { return }
+    private func updateDisplayLinkFrameRate() {
+        guard displayLink != nil else { return }
         refreshDisplayLink()
+    }
+
+    @objc private func displayLinkDidFire(_ link: CADisplayLink) {
+        displayLinkFired()
     }
 
     private func updateScreenChangeObservation() {
@@ -360,7 +355,7 @@ final class DanmakuRenderNSView: NSView {
             textLayers.removeValue(forKey: id)
         }
         CATransaction.commit()
-        // CADisplayLink callbacks can sit outside the usual AppKit event
+        // Display-link callbacks can sit outside the usual AppKit event
         // transaction. Submit newly added scrolling animations immediately;
         // otherwise they may remain frozen until the next mouse event.
         CATransaction.flush()

@@ -15,23 +15,11 @@ final class VideoFullscreenPresenter: ObservableObject {
     private var window: NSWindow?
     private var sourceFrameProvider: (() -> NSRect)?
     private var escapeMonitor: Any?
-    private var localEdgeMouseMonitor: Any?
-    private var globalEdgeMouseMonitor: Any?
     private var activationObserver: NSObjectProtocol?
     private var transitionGeneration = 0
     private weak var transitionContentLayer: CALayer?
     private var savedPresentationOptions: NSApplication.PresentationOptions?
     private var isRestoringSystemChrome = false
-    /// Which system chrome edge is currently revealed (`nil` = both auto-hidden).
-    private var revealedChrome: SystemChromeRevealTarget?
-    private var pendingRevealTarget: SystemChromeRevealTarget?
-    private var systemChromeRevealWorkItem: DispatchWorkItem?
-    private static let systemChromeRevealDelay: TimeInterval = 0.18
-
-    private enum SystemChromeRevealTarget: Equatable {
-        case menuBar
-        case dock
-    }
 
     func present<Content: View>(
         from sourceFrame: NSRect,
@@ -82,7 +70,8 @@ final class VideoFullscreenPresenter: ObservableObject {
         ].forEach { buttonType in
             window.standardWindowButton(buttonType)?.isHidden = true
         }
-        // Stay above the main window but below the menu bar and Dock so edge hover can reveal them.
+        // Keep the video above the main window while presentation options hide
+        // the system menu bar and Dock for the entire video fullscreen session.
         window.level = .floating
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         window.displaysWhenScreenProfileChanges = true
@@ -90,14 +79,15 @@ final class VideoFullscreenPresenter: ObservableObject {
         window.isReleasedWhenClosed = false
         window.alphaValue = 0.98
         window.ignoresMouseEvents = false
-        window.makeKeyAndOrderFront(nil)
 
         self.window = window
         isExiting = false
         suppressesInlineChrome = true
         isPresented = true
         enterSystemFullscreenChrome()
-        installEdgeMouseMonitors()
+        // Apply the system presentation policy before exposing the overlay so
+        // the menu bar cannot flash during the first fullscreen frame.
+        window.makeKeyAndOrderFront(nil)
         installActivationObserver()
         installEscapeMonitor()
 
@@ -180,7 +170,6 @@ final class VideoFullscreenPresenter: ObservableObject {
         isRestoringSystemChrome = false
         window.ignoresMouseEvents = false
         enterSystemFullscreenChrome()
-        installEdgeMouseMonitors()
         installActivationObserver()
         installEscapeMonitor()
         setFullscreenBackdropOpaque(false, for: window)
@@ -263,7 +252,6 @@ final class VideoFullscreenPresenter: ObservableObject {
     private func cleanup() {
         cancelTransition()
         PlayerClipContainerView.endFullscreenToInlineHandoff()
-        removeEdgeMouseMonitors()
         removeActivationObserver()
         exitSystemFullscreenChrome()
         window = nil
@@ -272,7 +260,6 @@ final class VideoFullscreenPresenter: ObservableObject {
         isPresented = false
         isExiting = false
         isRestoringSystemChrome = false
-        cancelSystemChromeReveal()
         removeEscapeMonitor()
         Self.restoreMainWindowAppearance()
         NotificationCenter.default.post(name: .videoFullscreenDidFinishExit, object: nil)
@@ -284,8 +271,9 @@ final class VideoFullscreenPresenter: ObservableObject {
     }
 
     private func enterSystemFullscreenChrome() {
-        savedPresentationOptions = NSApp.presentationOptions
-        cancelSystemChromeReveal()
+        if savedPresentationOptions == nil {
+            savedPresentationOptions = NSApp.presentationOptions
+        }
         applySystemFullscreenChrome()
         DispatchQueue.main.async { [weak self] in
             self?.applySystemFullscreenChrome()
@@ -296,21 +284,15 @@ final class VideoFullscreenPresenter: ObservableObject {
         guard isPresented, !isRestoringSystemChrome else { return }
         // Never force-activate while the user is switching away; that would yank
         // focus back from the Dock / destination app.
-        if NSApp.isActive, revealedChrome == nil {
+        if NSApp.isActive {
             NSApp.activate(ignoringOtherApps: true)
         }
-        var options: NSApplication.PresentationOptions = []
-        // Only drop auto-hide for the edge under the cursor — top shows the
-        // menu bar/clock, Dock edge shows the Dock, never both at once.
-        switch revealedChrome {
-        case .none:
-            options.insert(.autoHideMenuBar)
-            options.insert(.autoHideDock)
-        case .menuBar:
-            options.insert(.autoHideDock)
-        case .dock:
-            options.insert(.autoHideMenuBar)
-        }
+        // Match native macOS fullscreen behavior: the menu bar and Dock remain
+        // hidden until the pointer reaches their screen edge, then reappear.
+        var options: NSApplication.PresentationOptions = [
+            .autoHideMenuBar,
+            .autoHideDock,
+        ]
         if Self.isAppInNativeFullscreen {
             options.insert(.fullScreen)
         }
@@ -325,14 +307,11 @@ final class VideoFullscreenPresenter: ObservableObject {
         guard savedPresentationOptions != nil else { return }
         NSApp.presentationOptions = savedPresentationOptions ?? []
         savedPresentationOptions = nil
-        cancelSystemChromeReveal()
     }
 
     private func prepareForSystemChromeRestoration(window: NSWindow, activateMainWindow: Bool) {
         isRestoringSystemChrome = true
-        removeEdgeMouseMonitors()
         removeActivationObserver()
-        cancelSystemChromeReveal()
         window.ignoresMouseEvents = true
         exitSystemFullscreenChrome()
         if activateMainWindow {
@@ -340,48 +319,6 @@ final class VideoFullscreenPresenter: ObservableObject {
         } else {
             // Restore inline chrome visibility without ordering this app front.
             Self.restoreMainWindowAppearance()
-        }
-    }
-
-    private func installEdgeMouseMonitors() {
-        removeEdgeMouseMonitors()
-        // Local: mouse is delivered to this app while the overlay captures events.
-        // Global: once we pass through at the Dock/menu edge, events go elsewhere
-        // and only a global monitor keeps updating ignoresMouseEvents.
-        localEdgeMouseMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged]
-        ) { [weak self] event in
-            self?.handleEdgeMouseEvent()
-            return event
-        }
-        globalEdgeMouseMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.mouseMoved, .leftMouseDragged, .rightMouseDragged]
-        ) { [weak self] _ in
-            self?.handleEdgeMouseEvent()
-        }
-        syncEdgeMousePassThrough()
-    }
-
-    private func handleEdgeMouseEvent() {
-        if Thread.isMainThread {
-            MainActor.assumeIsolated {
-                syncEdgeMousePassThrough()
-            }
-        } else {
-            DispatchQueue.main.async { [weak self] in
-                self?.syncEdgeMousePassThrough()
-            }
-        }
-    }
-
-    private func removeEdgeMouseMonitors() {
-        if let localEdgeMouseMonitor {
-            NSEvent.removeMonitor(localEdgeMouseMonitor)
-            self.localEdgeMouseMonitor = nil
-        }
-        if let globalEdgeMouseMonitor {
-            NSEvent.removeMonitor(globalEdgeMouseMonitor)
-            self.globalEdgeMouseMonitor = nil
         }
     }
 
@@ -410,7 +347,6 @@ final class VideoFullscreenPresenter: ObservableObject {
     func prepareForPictureInPicture() {
         guard isPresented, !isRestoringSystemChrome else { return }
         removeActivationObserver()
-        cancelSystemChromeReveal()
         window?.ignoresMouseEvents = false
         if savedPresentationOptions != nil {
             NSApp.presentationOptions = []
@@ -454,70 +390,6 @@ final class VideoFullscreenPresenter: ObservableObject {
         // Dock / app switching actually reveals the destination app — without
         // re-activating Bilibili.
         dismissForApplicationSwitch()
-    }
-
-    private func syncEdgeMousePassThrough() {
-        guard isPresented, !isRestoringSystemChrome, let window else { return }
-        let screen = window.screen ?? NSScreen.main
-        let zone = FullscreenWindowContainerView.systemChromeRevealZone(
-            at: NSEvent.mouseLocation,
-            screen: screen
-        )
-
-        if let zone {
-            let target: SystemChromeRevealTarget = (zone == .menuBar) ? .menuBar : .dock
-            if revealedChrome == target {
-                if !window.ignoresMouseEvents {
-                    window.ignoresMouseEvents = true
-                }
-                return
-            }
-            if revealedChrome != nil {
-                // Already revealing one edge; switch immediately when crossing.
-                cancelPendingSystemChromeReveal()
-                revealedChrome = target
-                window.ignoresMouseEvents = true
-                applySystemFullscreenChrome()
-                return
-            }
-            scheduleSystemChromeReveal(for: window, target: target)
-        } else {
-            cancelPendingSystemChromeReveal()
-            if window.ignoresMouseEvents {
-                window.ignoresMouseEvents = false
-            }
-            if revealedChrome != nil {
-                revealedChrome = nil
-                applySystemFullscreenChrome()
-            }
-        }
-    }
-
-    private func scheduleSystemChromeReveal(for window: NSWindow, target: SystemChromeRevealTarget) {
-        if pendingRevealTarget == target, systemChromeRevealWorkItem != nil { return }
-        cancelPendingSystemChromeReveal()
-        pendingRevealTarget = target
-        let work = DispatchWorkItem { [weak self] in
-            guard let self, self.isPresented, !self.isRestoringSystemChrome else { return }
-            self.systemChromeRevealWorkItem = nil
-            self.pendingRevealTarget = nil
-            self.revealedChrome = target
-            window.ignoresMouseEvents = true
-            self.applySystemFullscreenChrome()
-        }
-        systemChromeRevealWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.systemChromeRevealDelay, execute: work)
-    }
-
-    private func cancelPendingSystemChromeReveal() {
-        systemChromeRevealWorkItem?.cancel()
-        systemChromeRevealWorkItem = nil
-        pendingRevealTarget = nil
-    }
-
-    private func cancelSystemChromeReveal() {
-        cancelPendingSystemChromeReveal()
-        revealedChrome = nil
     }
 
     private func screenContaining(_ frame: NSRect) -> NSScreen? {
@@ -685,8 +557,6 @@ private final class FullscreenOverlayWindow: NSWindow {
 }
 
 private final class FullscreenWindowContainerView: NSView {
-    private static let fallbackSystemChromeRevealBand: CGFloat = 12
-
     private let contentView: NSView
 
     @objc dynamic var cornerRadius: CGFloat = 0 {
@@ -729,72 +599,7 @@ private final class FullscreenWindowContainerView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard bounds.contains(point) else { return nil }
-        if isSystemChromeRevealPoint(point) {
-            return nil
-        }
         return super.hitTest(point)
-    }
-
-    private func isSystemChromeRevealPoint(_ point: NSPoint) -> Bool {
-        guard let window else { return false }
-        let screenPoint = window.convertPoint(toScreen: convert(point, to: nil))
-        return Self.isScreenPointInSystemChromeRevealZone(screenPoint, screen: window.screen ?? NSScreen.main)
-    }
-
-    enum SystemChromeRevealZone: Equatable {
-        case menuBar
-        case dock
-    }
-
-    static func systemChromeRevealZone(at screenPoint: NSPoint, screen: NSScreen?) -> SystemChromeRevealZone? {
-        guard let screen else { return nil }
-
-        let frame = screen.frame
-        let band = systemChromeRevealBand(for: screen)
-
-        if screenPoint.y >= frame.maxY - band {
-            return .menuBar
-        }
-
-        let dockEdges = dockRevealEdges()
-        if dockEdges.bottom, screenPoint.y <= frame.minY + band {
-            return .dock
-        }
-        if dockEdges.left, screenPoint.x <= frame.minX + band {
-            return .dock
-        }
-        if dockEdges.right, screenPoint.x >= frame.maxX - band {
-            return .dock
-        }
-        return nil
-    }
-
-    static func isScreenPointInSystemChromeRevealZone(_ screenPoint: NSPoint, screen: NSScreen?) -> Bool {
-        systemChromeRevealZone(at: screenPoint, screen: screen) != nil
-    }
-
-    private static func systemChromeRevealBand(for screen: NSScreen) -> CGFloat {
-        let prefs = UserDefaults.standard.persistentDomain(forName: "com.apple.dock") ?? [:]
-        if let area = prefs["autohide-edge-area"] as? Double, area > 0 {
-            return CGFloat(area)
-        }
-        if let area = prefs["autohide-edge-area"] as? Int, area > 0 {
-            return CGFloat(area)
-        }
-        // Match the default Dock/menu-bar edge trigger when the pref is unset.
-        return fallbackSystemChromeRevealBand
-    }
-
-    private static func dockRevealEdges() -> (bottom: Bool, left: Bool, right: Bool) {
-        let prefs = UserDefaults.standard.persistentDomain(forName: "com.apple.dock") ?? [:]
-        switch prefs["orientation"] as? String {
-        case "left":
-            return (false, true, false)
-        case "right":
-            return (false, false, true)
-        default:
-            return (true, false, false)
-        }
     }
 
     private func updateCornerMask() {

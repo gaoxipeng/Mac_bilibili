@@ -75,7 +75,11 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
     private let layer: CAMetalLayer
     private let queue = DispatchQueue(label: "bilibili.mpv.metal-render", qos: .userInteractive)
     private let commandQueue: MTLCommandQueue
-    private let inFlightFrames = DispatchSemaphore(value: 3)
+    // A display sleep can withdraw the CAMetalLayer drawable before its
+    // command-buffer completion handlers run. Keep this replaceable so the
+    // wake path can discard the pre-sleep frame budget instead of leaving all
+    // three slots permanently occupied and freezing on the last frame.
+    private var inFlightFrames = DispatchSemaphore(value: 3)
     private let bufferPool = MPVMetalBufferPool()
     private let displayStateLock = NSLock()
     private let lifecycleLock = NSLock()
@@ -135,6 +139,13 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
 
     func resumeAfterDisplayWake() {
         guard !isStopped, let context else { return }
+        // `suspendForDisplaySleep()` drains the serial render queue, but it
+        // cannot wait for GPU work whose drawable was withdrawn by WindowServer.
+        // Completion handlers for that old work retain the old semaphore; new
+        // frames use a fresh budget and can therefore resume immediately.
+        queue.sync {
+            inFlightFrames = DispatchSemaphore(value: 3)
+        }
         let owner: Unmanaged<MPVSoftwareMetalRenderer>
         if let callbackOwner {
             owner = callbackOwner

@@ -83,12 +83,14 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
     private let bufferPool = MPVMetalBufferPool()
     private let displayStateLock = NSLock()
     private let lifecycleLock = NSLock()
+    private let progressLock = NSLock()
     private var displayAvailable = true
     private var context: OpaquePointer?
     private var callbackOwner: Unmanaged<MPVSoftwareMetalRenderer>?
     private var drawPending = false
     private var wantsDraw = false
     private var stopped = false
+    private var lastFrameSubmissionUptime = CACurrentMediaTime()
     private var lastFaceMaskSampleTime = 0.0
     private let faceMaskAnalyzer: DanmakuFaceMaskAnalyzer?
 
@@ -124,6 +126,7 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
     }
 
     func start() {
+        markFrameSubmissionProgress()
         resumeAfterDisplayWake()
     }
 
@@ -146,6 +149,7 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
         queue.sync {
             inFlightFrames = DispatchSemaphore(value: 3)
         }
+        markFrameSubmissionProgress()
         let owner: Unmanaged<MPVSoftwareMetalRenderer>
         if let callbackOwner {
             owner = callbackOwner
@@ -222,7 +226,8 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
     }
 
     private func draw() {
-        guard isDisplayAvailable, let context, let drawable = layer.nextDrawable() else { return }
+        guard isDisplayAvailable, let context else { return }
+        guard let drawable = layer.nextDrawable() else { return }
         let width = drawable.texture.width
         let height = drawable.texture.height
         guard width > 1, height > 1 else { return }
@@ -255,8 +260,12 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
                 }
             }
         }
-        guard result >= 0,
-              let commandBuffer = commandQueue.makeCommandBuffer(),
+        guard result >= 0 else {
+            bufferPool.put(buffer)
+            inFlightFrames.signal()
+            return
+        }
+        guard let commandBuffer = commandQueue.makeCommandBuffer(),
               let blit = commandBuffer.makeBlitCommandEncoder() else {
             bufferPool.put(buffer)
             inFlightFrames.signal()
@@ -282,6 +291,7 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
         }
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        markFrameSubmissionProgress()
 
         // Face detection only needs a small, occasional sample. Downsample
         // before handing the frame to Vision so analysis never competes with
@@ -303,6 +313,19 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
         // Never wait synchronously here: after display sleep/wake Metal may
         // temporarily stop completing presents, and a blocking wait would also
         // prevent the player from shutting down or responding to AppKit events.
+    }
+
+    var frameSubmissionAge: TimeInterval {
+        progressLock.lock()
+        let lastSubmission = lastFrameSubmissionUptime
+        progressLock.unlock()
+        return max(0, CACurrentMediaTime() - lastSubmission)
+    }
+
+    private func markFrameSubmissionProgress() {
+        progressLock.lock()
+        lastFrameSubmissionUptime = CACurrentMediaTime()
+        progressLock.unlock()
     }
 
     private func submitFaceMaskSample(
@@ -353,6 +376,9 @@ final class MPVRenderView: NSView {
     var onReady: (() -> Void)?
     var onEnded: (() -> Void)?
     var onError: ((String) -> Void)?
+    /// Gives the owner one chance to obtain a fresh signed playback URL before
+    /// surfacing a libmpv network/stream failure to the user.
+    var onStreamFailure: (() -> Bool)?
 
     private var mpv: OpaquePointer?
     /// Bumped on shutdown so already-posted main-queue drains bail out before destroy.
@@ -375,6 +401,9 @@ final class MPVRenderView: NSView {
     private var seamlessResizeGeneration = 0
     private var isDeferringDrawableResize = false
     private var lastAudioWakeRecoveryUptime: TimeInterval = 0
+    private var renderWatchdog: DispatchSourceTimer?
+    private var lastWatchdogVideoTime: Double?
+    private var lastRendererRecoveryUptime: TimeInterval = 0
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -449,6 +478,7 @@ final class MPVRenderView: NSView {
             for observer in workspaceObservers {
                 workspaceCenter.removeObserver(observer)
             }
+            stopRenderWatchdog()
             shutdown()
         }
     }
@@ -496,7 +526,15 @@ final class MPVRenderView: NSView {
         }
     }
 
-    func setPaused(_ paused: Bool) { setFlag("pause", paused) }
+    func setPaused(_ paused: Bool) {
+        setFlag("pause", paused)
+        lastWatchdogVideoTime = nil
+        if paused {
+            stopRenderWatchdog()
+        } else {
+            startRenderWatchdog()
+        }
+    }
     func setMuted(_ muted: Bool) { setFlag("mute", muted) }
     func setVolume(_ volume: Float) { setDouble("volume", Double(volume * 100)) }
     func setSpeed(_ speed: Float, flushPlayback: Bool = false) {
@@ -516,6 +554,78 @@ final class MPVRenderView: NSView {
         }
     }
     func seek(to seconds: Double) { command("seek", [String(max(0, seconds)), "absolute+exact"]) }
+
+    private func startRenderWatchdog() {
+        guard renderWatchdog == nil else { return }
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        timer.schedule(
+            deadline: .now() + .milliseconds(1_000),
+            repeating: .milliseconds(750),
+            leeway: .milliseconds(100)
+        )
+        timer.setEventHandler { [weak self] in
+            self?.checkRenderHealth()
+        }
+        renderWatchdog = timer
+        timer.resume()
+    }
+
+    private func stopRenderWatchdog() {
+        renderWatchdog?.setEventHandler {}
+        renderWatchdog?.cancel()
+        renderWatchdog = nil
+        lastWatchdogVideoTime = nil
+    }
+
+    private func checkRenderHealth() {
+        guard mpvCoreReady, mpv != nil, !getFlag("pause"), let renderer = metalRenderer else {
+            return
+        }
+
+        // Keep a stalled update callback from leaving the last drawable on
+        // screen forever. This is cheap while healthy and also helps after a
+        // display wake where mpv may not immediately issue another callback.
+        renderer.requestDraw()
+
+        let currentVideoTime = getDouble("time-pos")
+        guard currentVideoTime.isFinite else { return }
+        defer { lastWatchdogVideoTime = currentVideoTime }
+
+        guard let previousVideoTime = lastWatchdogVideoTime,
+              currentVideoTime - previousVideoTime > 0.05 else {
+            return
+        }
+
+        let now = CACurrentMediaTime()
+        guard renderer.frameSubmissionAge > 1.5,
+              now - lastRendererRecoveryUptime > 2.5 else {
+            return
+        }
+
+        if onStreamFailure?() == true { return }
+        recoverVideoRenderer()
+    }
+
+    private func recoverVideoRenderer() {
+        guard let handle = mpv, mpvCoreReady, !getFlag("pause") else { return }
+        lastRendererRecoveryUptime = CACurrentMediaTime()
+
+        // Recreate only libmpv's render context and Metal bridge. The demuxer,
+        // audio pipeline, current time and selected stream remain untouched.
+        metalRenderer?.stop()
+        metalRenderer = nil
+        updateMetalLayerGeometry()
+
+        guard let renderer = MPVSoftwareMetalRenderer(
+            layer: metalLayer,
+            faceMaskAnalyzer: faceMaskAnalyzer
+        ), renderer.createContext(for: handle) >= 0 else {
+            return
+        }
+        metalRenderer = renderer
+        renderer.start()
+        renderer.requestDraw()
+    }
 
     /// Re-present the current frame after the Metal view is reparented/resized.
     /// Needed especially while paused — mpv won't push a new frame on its own,
@@ -847,6 +957,7 @@ final class MPVRenderView: NSView {
                         }
                         return
                     }
+                    if self.onStreamFailure?() == true { return }
                     self.onError?(String(cString: mpv_error_string(code)))
                 } else if reason?.reason == MPV_END_FILE_REASON_EOF {
                     // `loadfile replace` emits END_FILE/STOP for the previous

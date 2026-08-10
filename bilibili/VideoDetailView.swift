@@ -690,6 +690,13 @@ final class VideoDetailModel: ObservableObject {
                     guard let self else { throw APIError.message("播放页面已关闭") }
                     return try await self.resolvePlayStream(bvid: bvid, cid: cid)
                 },
+                streamRefreshLoader: { [weak self] in
+                    guard let self else { throw APIError.message("播放页面已关闭") }
+                    if let dashStream = try? await self.resolveDASHStream(bvid: bvid, cid: cid) {
+                        return dashStream
+                    }
+                    return try await self.resolvePlayStream(bvid: bvid, cid: cid)
+                },
                 cookieHeader: cookieHeader,
                 startAt: initialStartSeconds
             )

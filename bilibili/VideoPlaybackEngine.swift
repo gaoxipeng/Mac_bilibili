@@ -64,6 +64,15 @@ final class VideoPlaybackEngine: ObservableObject {
     private var pictureInPicturePrewarmTask: Task<Void, Never>?
     private var preparedPictureInPictureItem: AVPlayerItem?
     @Published private(set) var isPictureInPicturePreparing = false
+    private var streamRefreshLoader: (() async throws -> BiliPlayStream)?
+    private var streamRefreshTask: Task<Void, Never>?
+    private var pauseStartedAt: CFTimeInterval?
+    private var streamLoadedAt = Date.distantPast
+    private var streamExpiresAt: Date?
+    private var streamRefreshAttempted = false
+
+    private static let stalePauseThreshold: TimeInterval = 30 * 60
+    private static let streamExpirySafetyWindow: TimeInterval = 5 * 60
 
     var avPlayer: AVPlayer? { player }
 
@@ -126,6 +135,7 @@ final class VideoPlaybackEngine: ObservableObject {
         renderView.onReady = { [weak self] in
             guard let self else { return }
             isReady = true
+            streamRefreshAttempted = false
             // FILE_LOADED can restore mpv's default speed after a source
             // switch. Reapply the user's selection as soon as the new file is
             // ready so the first rendered frames use the chosen rate.
@@ -145,6 +155,9 @@ final class VideoPlaybackEngine: ObservableObject {
             self?.isReady = false
             self?.updateNowPlayingInfo()
             self?.onPlaybackError?(message)
+        }
+        renderView.onStreamFailure = { [weak self] in
+            self?.refreshStreamAfterFailure() ?? false
         }
         installRemoteCommands()
     }
@@ -189,6 +202,7 @@ final class VideoPlaybackEngine: ObservableObject {
         stream: BiliPlayStream,
         pictureInPictureStream: BiliPlayStream? = nil,
         pictureInPictureStreamLoader: (() async throws -> BiliPlayStream)? = nil,
+        streamRefreshLoader: (() async throws -> BiliPlayStream)? = nil,
         cookieHeader: String,
         startAt startSeconds: Double = 0
     ) async throws {
@@ -198,7 +212,10 @@ final class VideoPlaybackEngine: ObservableObject {
         let headers = BilibiliEndpoints.playbackHeaders(cookie: cookieHeader)
         self.pictureInPictureStream = pictureInPictureStream
         self.pictureInPictureStreamLoader = pictureInPictureStreamLoader
+        self.streamRefreshLoader = streamRefreshLoader
         playbackHeaders = headers
+        recordStreamLifetime(stream)
+        streamRefreshAttempted = false
         try renderView.load(
             videoURL: stream.videoURL,
             fallbackVideoURLs: stream.videoFallbackURLs,
@@ -281,6 +298,8 @@ final class VideoPlaybackEngine: ObservableObject {
     func setPictureInPictureActive(_ isActive: Bool) {
         if isActive, !isPictureInPictureActive {
             resumeMPVAfterPictureInPicture = isPlaying
+            pauseStartedAt = CACurrentMediaTime()
+            streamRefreshAttempted = false
             renderView.setPaused(true)
             player?.isMuted = isMuted
             player?.volume = volume
@@ -297,8 +316,16 @@ final class VideoPlaybackEngine: ObservableObject {
             player?.pause()
             player = nil
             applyVolume()
-            renderView.setPaused(!resumeMPVAfterPictureInPicture)
-            isPlaying = resumeMPVAfterPictureInPicture
+            let shouldResumeMPV = resumeMPVAfterPictureInPicture
+            isPictureInPictureActive = false
+            if shouldResumeMPV {
+                startPlayback()
+            } else {
+                renderView.setPaused(true)
+                isPlaying = false
+            }
+            updateNowPlayingInfo()
+            return
         } else if !isActive {
             // 启动尚未进入 willStart 就失败或超时：临时 AVPlayer 仍在静音
             // 预播放，必须清除，否则会保留旧帧并占用后续画中画请求。
@@ -310,6 +337,10 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     func pausePlayback() {
+        if pauseStartedAt == nil {
+            pauseStartedAt = CACurrentMediaTime()
+            streamRefreshAttempted = false
+        }
         renderView.setPaused(true)
         // Keep the temporary AVPlayer running while PiP is preparing/active;
         // pausing it here is a common reason startPictureInPicture fails.
@@ -451,6 +482,13 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     func stop() {
+        streamRefreshTask?.cancel()
+        streamRefreshTask = nil
+        streamRefreshLoader = nil
+        pauseStartedAt = nil
+        streamLoadedAt = .distantPast
+        streamExpiresAt = nil
+        streamRefreshAttempted = false
         pictureInPicturePreparationTask?.cancel()
         pictureInPicturePreparationTask = nil
         pictureInPicturePrewarmTask?.cancel()
@@ -524,12 +562,104 @@ final class VideoPlaybackEngine: ObservableObject {
 
     private func startPlayback() {
         guard isReady || player == nil else { return }
+        if shouldRefreshStreamBeforeResume, streamRefreshLoader != nil {
+            streamRefreshAttempted = true
+            scheduleStreamRefresh(startAt: preciseCurrentTime)
+            return
+        }
+        beginPlayback()
+    }
+
+    private func beginPlayback() {
         renderView.setPaused(false)
         applyPlaybackRate(playbackRate)
         player?.play()
         player?.rate = playbackRate
         isPlaying = true
+        pauseStartedAt = nil
         updateNowPlayingInfo()
+    }
+
+    private var shouldRefreshStreamBeforeResume: Bool {
+        let now = Date()
+        let pausedTooLong = pauseStartedAt.map {
+            CACurrentMediaTime() - $0 >= Self.stalePauseThreshold
+        } ?? false
+        let streamAgeTooLong = now.timeIntervalSince(streamLoadedAt) >= Self.stalePauseThreshold
+        let expiryNear = streamExpiresAt.map {
+            $0.timeIntervalSince(now) <= Self.streamExpirySafetyWindow
+        } ?? false
+        return pausedTooLong || streamAgeTooLong || expiryNear
+    }
+
+    private func refreshStreamAfterFailure() -> Bool {
+        guard !streamRefreshAttempted,
+              streamRefreshLoader != nil else { return false }
+        streamRefreshAttempted = true
+        return scheduleStreamRefresh(startAt: preciseCurrentTime)
+    }
+
+    @discardableResult
+    private func scheduleStreamRefresh(startAt seconds: Double) -> Bool {
+        guard streamRefreshTask == nil,
+              let loader = streamRefreshLoader else { return false }
+
+        let resumeSeconds = max(0, seconds.isFinite ? seconds : currentTime)
+        renderView.setPaused(true)
+        isPlaying = false
+        updateNowPlayingInfo()
+
+        streamRefreshTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { streamRefreshTask = nil }
+            do {
+                let stream = try await loader()
+                guard !Task.isCancelled else { return }
+                try renderView.load(
+                    videoURL: stream.videoURL,
+                    fallbackVideoURLs: stream.videoFallbackURLs,
+                    audioURL: stream.audioURL,
+                    headers: playbackHeaders,
+                    start: resumeSeconds
+                )
+                recordStreamLifetime(stream)
+                applyVolume()
+                renderView.setPaused(false)
+                applyPlaybackRate(playbackRate)
+                isPlaying = true
+                pauseStartedAt = nil
+                updateNowPlayingInfo()
+            } catch is CancellationError {
+                return
+            } catch {
+                streamRefreshAttempted = false
+                onPlaybackError?(error.localizedDescription)
+                updateNowPlayingInfo()
+            }
+        }
+        return true
+    }
+
+    private func recordStreamLifetime(_ stream: BiliPlayStream) {
+        streamLoadedAt = Date()
+        let urls = [stream.videoURL, stream.audioURL].compactMap { $0 }
+            + stream.videoFallbackURLs
+        streamExpiresAt = urls
+            .compactMap(Self.expiryDate(from:))
+            .min()
+    }
+
+    private static func expiryDate(from urlString: String) -> Date? {
+        guard let components = URLComponents(string: urlString) else { return nil }
+        let expiryKeys = Set(["deadline", "expires", "expire", "expiration"])
+        for item in components.queryItems ?? [] {
+            guard expiryKeys.contains(item.name.lowercased()),
+                  let rawValue = item.value,
+                  let timestamp = TimeInterval(rawValue),
+                  timestamp > 1_000_000_000 else { continue }
+            return Date(timeIntervalSince1970: timestamp)
+        }
+        return nil
     }
 
     private func applyPlaybackRate(_ rate: Float, flushMPVBuffers: Bool = false) {

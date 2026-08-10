@@ -101,7 +101,7 @@ private struct DanmakuSettingToggleRow: View {
                 .labelsHidden()
                 .toggleStyle(.switch)
                 .tint(Color(red: 0, green: 174 / 255, blue: 236 / 255))
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
     }
 }

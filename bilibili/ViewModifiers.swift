@@ -332,10 +332,11 @@ struct BiliLiquidSegmentedControl<Tab: Hashable & Identifiable>: View {
     @State private var isPressing = false
     @State private var isHovered = false
     @State private var dragX: CGFloat?
-    @State private var animationTrigger = 0
 
-    private let outerPadding: CGFloat = 5
-    private let indicatorInset: CGFloat = 3
+    // The selected capsule is exactly one half of the outer capsule. It shares
+    // the same height and touches the outer capsule at the corresponding edge.
+    private let outerPadding: CGFloat = 0
+    private let indicatorInset: CGFloat = 0
 
     init(
         selection: Binding<Tab>,
@@ -355,7 +356,9 @@ struct BiliLiquidSegmentedControl<Tab: Hashable & Identifiable>: View {
             let size = proxy.size
             let segmentWidth = max(1, (size.width - outerPadding * 2) / CGFloat(tabs.count))
             let indicatorWidth = max(1, segmentWidth - indicatorInset * 2)
-            let indicatorHeight = max(1, size.height - outerPadding * 2)
+            // The selected capsule matches the outer capsule's height; only
+            // its width is reduced to fit the selected segment.
+            let indicatorHeight = max(1, size.height)
             let restingX = outerPadding + CGFloat(selectedIndex) * segmentWidth + indicatorInset
             let draggingX = clampedIndicatorX(
                 centerX: dragX ?? restingX + indicatorWidth / 2,
@@ -365,9 +368,9 @@ struct BiliLiquidSegmentedControl<Tab: Hashable & Identifiable>: View {
             let indicatorX = isPressing ? draggingX : restingX
 
             ZStack(alignment: .topLeading) {
-                BiliLiquidSegmentIndicator(isPressing: isPressing, animationTrigger: animationTrigger)
+                BiliLiquidSegmentIndicator(isPressing: isPressing)
                     .frame(width: indicatorWidth, height: indicatorHeight)
-                    .offset(x: indicatorX, y: outerPadding)
+                    .offset(x: indicatorX, y: 0)
                     .animation(
                         isPressing
                         ? .interactiveSpring(response: 0.18, dampingFraction: 0.78, blendDuration: 0.02)
@@ -380,11 +383,10 @@ struct BiliLiquidSegmentedControl<Tab: Hashable & Identifiable>: View {
                     ForEach(tabs) { tab in
                         Text(title(tab))
                             .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(Color.black.opacity(selection == tab ? 0.92 : 0.82))
+                            .foregroundStyle(Color.black.opacity(selection == tab ? 0.92 : 0.55))
                             .lineLimit(1)
                             .frame(maxWidth: .infinity)
                             .frame(height: indicatorHeight)
-                            .offset(y: outerPadding)
                             .contentShape(Rectangle())
                             .onTapGesture {
                                 select(tab)
@@ -407,7 +409,6 @@ struct BiliLiquidSegmentedControl<Tab: Hashable & Identifiable>: View {
                     .onEnded { value in
                         updateSelection(for: value.location.x, segmentWidth: segmentWidth)
                         dragX = nil
-                        animationTrigger += 1
                         withAnimation(.spring(response: 0.36, dampingFraction: 0.56, blendDuration: 0.04)) {
                             isPressing = false
                         }
@@ -415,7 +416,23 @@ struct BiliLiquidSegmentedControl<Tab: Hashable & Identifiable>: View {
             )
         }
         .frame(width: width, height: height)
-        .searchHeaderCapsuleChrome(isEmphasized: isPressing, isHovered: isHovered)
+        .background(
+            Color(red: 0.94, green: 0.94, blue: 0.95),
+            in: Capsule(style: .continuous)
+        )
+        .overlay {
+            Capsule(style: .continuous)
+                .strokeBorder(
+                    Color.black.opacity(isPressing || isHovered ? 0.16 : 0.10),
+                    lineWidth: 0.8
+                )
+        }
+        .shadow(
+            color: .black.opacity(isPressing || isHovered ? 0.08 : 0.04),
+            radius: isPressing || isHovered ? 10 : 6,
+            x: 0,
+            y: 3
+        )
         .contentShape(Capsule(style: .continuous))
         .onHover { hovering in
             withAnimation(.easeOut(duration: 0.12)) {
@@ -430,13 +447,11 @@ struct BiliLiquidSegmentedControl<Tab: Hashable & Identifiable>: View {
 
     private func select(_ tab: Tab) {
         guard selection != tab else {
-            animationTrigger += 1
             return
         }
         withAnimation(.spring(response: 0.34, dampingFraction: 0.58, blendDuration: 0.04)) {
             selection = tab
         }
-        animationTrigger += 1
     }
 
     private func updateSelection(for x: CGFloat, segmentWidth: CGFloat) {
@@ -453,41 +468,29 @@ struct BiliLiquidSegmentedControl<Tab: Hashable & Identifiable>: View {
     }
 
     private func clampedIndicatorX(centerX: CGFloat, indicatorWidth: CGFloat, totalWidth: CGFloat) -> CGFloat {
-        let expandedOverflow = indicatorWidth * 0.08
         return min(
-            totalWidth - outerPadding - indicatorWidth - expandedOverflow,
-            max(outerPadding + expandedOverflow, centerX - indicatorWidth / 2)
+            totalWidth - outerPadding - indicatorWidth,
+            max(outerPadding, centerX - indicatorWidth / 2)
         )
     }
 }
 
 private struct BiliLiquidSegmentIndicator: View {
     let isPressing: Bool
-    let animationTrigger: Int
 
     var body: some View {
         Capsule(style: .continuous)
-            .fill(Color(red: 0.92, green: 0.92, blue: 0.93))
-            .glassEffect(.regular.interactive(), in: .capsule)
-            .phaseAnimator(
-                BiliLiquidSegmentPhase.allCases,
-                trigger: animationTrigger
-            ) { content, phase in
-                content
-                    .scaleEffect(
-                        x: isPressing ? 1.12 : phase.xScale,
-                        y: isPressing ? 1.08 : phase.yScale
-                    )
-                    .blur(radius: isPressing ? 0.18 : phase.blurRadius)
-                    .shadow(
-                        color: .black.opacity(isPressing ? 0.08 : 0.025),
-                        radius: isPressing ? 8 : 3,
-                        x: 0,
-                        y: isPressing ? 3 : 1
-                    )
-            } animation: { phase in
-                phase.animation
+            .fill(Color.white)
+            .overlay {
+                Capsule(style: .continuous)
+                    .strokeBorder(Color.black.opacity(isPressing ? 0.10 : 0.05), lineWidth: 0.6)
             }
+            .shadow(
+                color: .black.opacity(isPressing ? 0.08 : 0.04),
+                radius: isPressing ? 8 : 5,
+                x: 0,
+                y: isPressing ? 3 : 2
+            )
     }
 }
 

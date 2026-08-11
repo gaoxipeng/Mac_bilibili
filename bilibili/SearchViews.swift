@@ -670,10 +670,16 @@ struct SearchDashboard: View {
         VStack(alignment: .leading, spacing: 8) {
             ForEach(items) { item in
                 SearchHotCapsuleChip(item: item, chipWidth: chipWidth) {
-                    runSearch(item.keyword)
+                    searchHotKeyword(item.keyword)
                 }
             }
         }
+    }
+
+    private func searchHotKeyword(_ keyword: String) {
+        // 热搜词对应的是视频榜单；在“UP主”标签下点击热搜仍应进入视频结果。
+        searchModel.selectedTab = .videos
+        runSearch(keyword)
     }
 
     @ViewBuilder
@@ -764,6 +770,7 @@ struct SearchDashboard: View {
         }
     }
 
+    @ViewBuilder
     private func userResults(metrics: SearchPageMetrics) -> some View {
         let layout = metrics.userResultLayout
         let columns = Array(
@@ -771,17 +778,14 @@ struct SearchDashboard: View {
             count: layout.columnCount
         )
 
-        return LazyVGrid(columns: columns, alignment: .center, spacing: 10) {
-            if searchModel.userLoading, searchModel.users.isEmpty {
-                ProgressView("正在搜索 UP 主")
-                    .gridCellColumns(layout.columnCount)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 40)
-            } else if searchModel.users.isEmpty, !searchModel.userLoading {
-                ContentUnavailableView("没有找到相关 UP 主", systemImage: "person.crop.circle")
-                    .gridCellColumns(layout.columnCount)
-                    .padding(.vertical, 40)
-            } else {
+        if searchModel.userLoading, searchModel.users.isEmpty {
+            ProgressView("正在搜索 UP 主")
+                .frame(maxWidth: .infinity, minHeight: 320, alignment: .center)
+        } else if searchModel.users.isEmpty {
+            ContentUnavailableView("没有找到相关 UP 主", systemImage: "person.crop.circle")
+                .frame(maxWidth: .infinity, minHeight: 320, alignment: .center)
+        } else {
+            LazyVGrid(columns: columns, alignment: .center, spacing: 10) {
                 ForEach(searchModel.users) { user in
                     BiliUserCapsuleRow(user: user)
                 }
@@ -799,10 +803,10 @@ struct SearchDashboard: View {
                     .gridCellColumns(layout.columnCount)
                 }
             }
+            .frame(width: layout.gridWidth)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, AppLayout.searchUserResultsHorizontalInset)
         }
-        .frame(width: layout.gridWidth)
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, AppLayout.searchUserResultsHorizontalInset)
     }
 }
 

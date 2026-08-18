@@ -2673,7 +2673,9 @@ private enum VideoControlLayout {
     static let horizontalPadding: CGFloat = 16
     static let verticalPadding: CGFloat = 13
     static let itemSpacing: CGFloat = 12
-    static let timeMinWidth: CGFloat = 54
+    // Reserve space for the longest normal time label (hh:mm:ss). A fixed
+    // width prevents the whole control row from shifting as digits change.
+    static let timeWidth: CGFloat = 68
     static let speedMinWidth: CGFloat = 42
     static let trailingControlSpacing: CGFloat = 12
     static let pictureInPictureButtonSize: CGFloat = 50
@@ -2843,9 +2845,10 @@ private struct VideoControlCapsule: View {
             HStack(spacing: VideoControlLayout.itemSpacing) {
                 Text(formatTime(positionTime))
                     .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
+                    .monospacedDigit()
                     .foregroundStyle(.white)
                     .videoControlSoftShadow()
-                    .frame(minWidth: VideoControlLayout.timeMinWidth, alignment: .leading)
+                    .frame(width: VideoControlLayout.timeWidth, alignment: .leading)
                     .allowsHitTesting(false)
 
                 Button(action: {
@@ -2910,9 +2913,10 @@ private struct VideoControlCapsule: View {
 
                     Text(formatTime(max(0, player.duration - positionTime)))
                         .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
+                        .monospacedDigit()
                         .foregroundStyle(.white)
                         .videoControlSoftShadow()
-                        .frame(minWidth: VideoControlLayout.timeMinWidth, alignment: .trailing)
+                        .frame(width: VideoControlLayout.timeWidth, alignment: .trailing)
                         .allowsHitTesting(false)
                 }
             }

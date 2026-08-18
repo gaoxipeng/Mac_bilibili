@@ -220,7 +220,6 @@ final class DanmakuTimeline {
 
         let mode = BiliDanmakuMode.from(item.mode) ?? .scroll
         let speedMultiplier = layoutStrategy.speedMultiplier
-        let scrollAreaHeight = scrollAreaHeightPx()
         let screenWidth = layoutWidth
         let gapPx = layoutMetrics.scrollGap
         let scheduledStartMillis = scheduledDisplayTimeMillis(for: item, mode: mode)
@@ -228,7 +227,7 @@ final class DanmakuTimeline {
         let active: ActiveDanmaku?
         switch mode {
         case .bottom, .top:
-            let maxRows = fixedDanmakuMaxRows(scrollAreaHeight: scrollAreaHeight, lineHeight: trackLineHeight)
+            let maxRows = fixedDanmakuMaxRows(scrollAreaHeight: fixedDanmakuBandHeightPx(), lineHeight: trackLineHeight)
             var releaseTimes = mode == .top ? topFixedReleaseTimes : bottomFixedReleaseTimes
             let durationSec = Float(fixedDanmakuDurationMs) * speedMultiplier / 1000
             if let row = assignFixedDanmakuRow(
@@ -257,7 +256,7 @@ final class DanmakuTimeline {
             }
         case .scroll, .reverseScroll:
             let durationSec = Float(layoutStrategy.scrollDurationMillis(for: item)) / 1000
-            let maxTracks = min(layoutStrategy.maxTrackCount, max(1, Int(scrollAreaHeight / trackLineHeight)))
+            let maxTracks = min(layoutStrategy.maxTrackCount, max(1, Int(scrollLaneHeightPx() / trackLineHeight)))
             let reverse = mode == .reverseScroll
             let durationMs = layoutStrategy.scrollDurationMillis(for: item)
             if let track = assignDanmakuTrack(
@@ -388,6 +387,9 @@ final class DanmakuTimeline {
             case .top:
                 y = CGFloat(active.track) * rowGap + max(0, (rowGap - active.textHeight) / 2)
             case .scroll, .reverseScroll:
+                // Scrolling danmaku fills the user-selected display area from
+                // the top down, while scrollAreaHeightPx() already reserves
+                // the subtitle/progress-control area at the bottom.
                 y = CGFloat(active.track) * rowGap + max(0, (rowGap - active.textHeight) / 2)
             }
             let x: CGFloat
@@ -430,6 +432,17 @@ final class DanmakuTimeline {
             layoutMetrics.effectiveDisplayAreaPercent(from: settings).clamped(to: 10...100)
         ) / 100
         return full * percent
+    }
+
+    /// Fixed danmaku uses a compact band at the top or bottom. Scrolling
+    /// danmaku intentionally does not use these bands: it fills the complete
+    /// user-selected display area and stops before the bottom controls.
+    private func fixedDanmakuBandHeightPx() -> CGFloat {
+        min(ceil(layoutMetrics.layoutHeight * 0.20), max(34, trackLineHeight * 3))
+    }
+
+    private func scrollLaneHeightPx() -> CGFloat {
+        max(trackLineHeight, scrollAreaHeightPx())
     }
 
     private func currentRealtimeMillis() -> Double {

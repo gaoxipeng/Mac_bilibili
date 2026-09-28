@@ -298,7 +298,7 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
         // full-resolution playback or the 120 Hz compositor.
         if let faceMaskAnalyzer, faceMaskAnalyzer.isEnabled {
             let now = CACurrentMediaTime()
-            if now - lastFaceMaskSampleTime >= 1.0 / 15.0 {
+            if now - lastFaceMaskSampleTime >= 1.0 / 8.0 {
                 lastFaceMaskSampleTime = now
                 submitFaceMaskSample(
                     analyzer: faceMaskAnalyzer,

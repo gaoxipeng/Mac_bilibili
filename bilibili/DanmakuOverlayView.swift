@@ -10,6 +10,7 @@ struct DanmakuOverlayView: NSViewRepresentable, Equatable {
     let settings: DanmakuSettings
     var layoutMode: DanmakuLayoutMode = .inline
     var isActive: Bool = true
+    var timeline: DanmakuTimeline
     var playbackEngine: VideoPlaybackEngine?
     var faceMaskAnalyzer: DanmakuFaceMaskAnalyzer?
 
@@ -30,6 +31,7 @@ struct DanmakuOverlayView: NSViewRepresentable, Equatable {
 
     func makeNSView(context: Context) -> DanmakuRenderNSView {
         let view = DanmakuRenderNSView()
+        view.useTimeline(timeline)
         view.faceMaskAnalyzer = faceMaskAnalyzer
         view.wantsLayer = true
         view.layer?.backgroundColor = NSColor.clear.cgColor
@@ -42,6 +44,7 @@ struct DanmakuOverlayView: NSViewRepresentable, Equatable {
 
     func updateNSView(_ nsView: DanmakuRenderNSView, context: Context) {
         nsView.playbackEngine = playbackEngine
+        nsView.useTimeline(timeline)
         nsView.faceMaskAnalyzer = faceMaskAnalyzer
         nsView.apply(
             items: items,
@@ -60,7 +63,7 @@ struct DanmakuOverlayView: NSViewRepresentable, Equatable {
 }
 
 final class DanmakuRenderNSView: NSView {
-    private let timeline = DanmakuTimeline()
+    private var timeline = DanmakuTimeline()
     private var displayLink: CADisplayLink?
     private var screenChangeObserver: NSObjectProtocol?
     private var textLayers: [Int: DanmakuTextLayerState] = [:]
@@ -74,6 +77,7 @@ final class DanmakuRenderNSView: NSView {
     private var settings = DanmakuSettings()
     private var layoutMode: DanmakuLayoutMode = .inline
     private var wasPlaying = false
+    private var hasAppliedConfiguration = false
 
     private var configuredSize = CGSize.zero
     private var configuredLayoutMode: DanmakuLayoutMode = .inline
@@ -84,6 +88,7 @@ final class DanmakuRenderNSView: NSView {
     private var appliedFaceMaskGeneration: UInt64 = .max
     private var scrollingContainer: CALayer?
     private var fixedContainer: CALayer?
+    private let faceMaskLayer = CAShapeLayer()
 
     weak var playbackEngine: VideoPlaybackEngine?
     var faceMaskAnalyzer: DanmakuFaceMaskAnalyzer? {
@@ -99,8 +104,10 @@ final class DanmakuRenderNSView: NSView {
         super.viewDidMoveToWindow()
         ensureDanmakuContainers()
         updateScreenChangeObservation()
-        reconfigureTimelineIfNeeded(force: true)
-        syncCurrentFrameAndRender()
+        if hasAppliedConfiguration, isActive {
+            reconfigureTimelineIfNeeded(force: true)
+            syncCurrentFrameAndRender()
+        }
         applyFaceMaskIfNeeded(force: true)
         refreshDisplayLink()
     }
@@ -113,6 +120,7 @@ final class DanmakuRenderNSView: NSView {
 
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
+        guard hasAppliedConfiguration, isActive else { return }
         let size = normalizedRenderSize()
         guard danmakuSizeChanged(size, configuredSize) else { return }
         reconfigureTimelineIfNeeded(force: true)
@@ -129,6 +137,8 @@ final class DanmakuRenderNSView: NSView {
         settings: DanmakuSettings,
         layoutMode: DanmakuLayoutMode
     ) {
+        let wasActive = self.isActive
+        hasAppliedConfiguration = true
         self.items = items
         self.positionMs = positionMs
         self.isPlaying = isPlaying
@@ -136,6 +146,16 @@ final class DanmakuRenderNSView: NSView {
         self.isActive = isActive
         self.settings = settings
         self.layoutMode = layoutMode
+
+        // The inline and fullscreen hosts share one timeline. The inactive
+        // host must not reconfigure or advance it while the other host owns
+        // the visible danmaku layers.
+        guard isActive else {
+            removeStaleTextLayers(keeping: [])
+            stopDisplayLink()
+            updateLayerTreePlayback()
+            return
+        }
 
         let playStateChanged = isPlaying != wasPlaying
         let currentPositionMillis = resolvedPositionMillis()
@@ -148,7 +168,7 @@ final class DanmakuRenderNSView: NSView {
             wasPlaying = isPlaying
         }
 
-        let timelineChanged = reconfigureTimelineIfNeeded(force: false)
+        let timelineChanged = reconfigureTimelineIfNeeded(force: isActive && !wasActive)
 
         if timelineChanged, isPlaying, enabled, isActive {
             // A part switch can pause the existing layer tree and publish the
@@ -177,6 +197,19 @@ final class DanmakuRenderNSView: NSView {
                 self.commitNewTimelineToWindow()
             }
         }
+    }
+
+    func useTimeline(_ timeline: DanmakuTimeline) {
+        guard self.timeline !== timeline else { return }
+        self.timeline = timeline
+        hasAppliedConfiguration = false
+        configuredSize = .zero
+        configuredLayoutMode = .inline
+        configuredSettings = DanmakuSettings()
+        configuredItemsSignature = .empty
+        configuredEnabled = false
+        configuredActive = true
+        removeStaleTextLayers(keeping: [])
     }
 
     @discardableResult
@@ -254,7 +287,9 @@ final class DanmakuRenderNSView: NSView {
     }
 
     @objc private func displayLinkDidFire(_ link: CADisplayLink) {
-        displayLinkFired()
+        // Use the display's scheduled frame time rather than callback arrival
+        // time, which fluctuates with main-thread work.
+        displayLinkFired(realtimeMillis: link.timestamp * 1000)
     }
 
     private func updateScreenChangeObservation() {
@@ -274,14 +309,15 @@ final class DanmakuRenderNSView: NSView {
         }
     }
 
-    private func displayLinkFired() {
+    private func displayLinkFired(realtimeMillis: Double) {
         guard isActive, enabled, isPlaying, !items.isEmpty else { return }
         let positionMillis = resolvedPositionMillis()
         resetRenderedLayersIfPositionJumped(positionMillis)
         timeline.sync(
             positionMillis: positionMillis,
             isPlaying: true,
-            realtimeMillis: currentDisplayLinkMillis()
+            playbackSpeed: playbackEngine?.playbackRate ?? 1,
+            realtimeMillis: realtimeMillis
         )
         applyFaceMaskIfNeeded()
         renderCurrentFrame()
@@ -293,6 +329,7 @@ final class DanmakuRenderNSView: NSView {
         timeline.sync(
             positionMillis: positionMillis,
             isPlaying: isPlaying,
+            playbackSpeed: playbackEngine?.playbackRate ?? 1,
             realtimeMillis: currentDisplayLinkMillis()
         )
         applyFaceMaskIfNeeded()
@@ -340,11 +377,6 @@ final class DanmakuRenderNSView: NSView {
 
         let staleIDs = textLayers.keys.filter { !visibleIDs.contains($0) }
         guard !newFrames.isEmpty || !staleIDs.isEmpty else { return }
-
-        // Let Core Animation's compositor move existing scrolling comments.
-        // Updating every text layer from the main thread at 120 Hz competes
-        // with mpv and SwiftUI and produces visible judder. The timeline still
-        // runs on the display timer, but only layer entry/exit touches AppKit.
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for frame in newFrames {
@@ -355,13 +387,14 @@ final class DanmakuRenderNSView: NSView {
             textLayers.removeValue(forKey: id)
         }
         CATransaction.commit()
-        // Display-link callbacks can sit outside the usual AppKit event
-        // transaction. Submit newly added scrolling animations immediately;
-        // otherwise they may remain frozen until the next mouse event.
-        CATransaction.flush()
     }
 
     private func applyFaceMaskIfNeeded(force: Bool = false) {
+        // Mask changes must be atomic with the current video frame. Implicit
+        // layer animations can crossfade old/new silhouettes and leave trails.
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
         ensureDanmakuContainers()
         guard let scrollingContainer else { return }
         guard settings.smartFaceAvoidanceEnabled else {
@@ -387,13 +420,17 @@ final class DanmakuRenderNSView: NSView {
             addExpandedFaceContour(face, to: path)
         }
 
-        let mask = CAShapeLayer()
+        // Reuse the mask instead of allocating and attaching a new full-size
+        // compositing layer for every detection result.
+        let mask = faceMaskLayer
         mask.frame = maskBounds
         mask.contentsScale = window?.backingScaleFactor ?? 2
         mask.fillColor = NSColor.white.cgColor
         mask.fillRule = .evenOdd
         mask.path = path
-        scrollingContainer.mask = mask
+        if scrollingContainer.mask !== mask {
+            scrollingContainer.mask = mask
+        }
     }
 
     private func addExpandedFaceContour(
@@ -412,45 +449,16 @@ final class DanmakuRenderNSView: NSView {
             x: points.reduce(0) { $0 + $1.x } / CGFloat(points.count),
             y: points.reduce(0) { $0 + $1.y } / CGFloat(points.count)
         )
-        // A small contour margin protects the face while avoiding the large
-        // rectangular dead zone used by the first implementation.
+        // Segmentation already supplies the head silhouette; expand it only
+        // slightly to cover antialiasing and sampling uncertainty.
         let expanded = points.map { point in
-            let verticalScale: CGFloat = point.y >= center.y ? 1.36 : 1.12
             return CGPoint(
-                x: center.x + (point.x - center.x) * 1.16,
-                y: center.y + (point.y - center.y) * verticalScale
+                x: center.x + (point.x - center.x) * 1.04,
+                y: center.y + (point.y - center.y) * 1.04
             )
         }
-
-        // Face landmarks often stop around the brow line. Add a shallow,
-        // rounded forehead cap from the detected face bounds so comments do
-        // not slip through the upper part of the face.
-        let boundsRect = CGRect(
-            x: contentRect.minX + face.boundingBox.minX * contentRect.width,
-            y: contentRect.minY + face.boundingBox.minY * contentRect.height,
-            width: face.boundingBox.width * contentRect.width,
-            height: face.boundingBox.height * contentRect.height
-        )
-        let topY = min(
-            bounds.height,
-            max(expanded.map(\.y).max() ?? boundsRect.maxY,
-                boundsRect.maxY + boundsRect.height * 0.24)
-        )
-        let capInset = boundsRect.width * 0.08
-        let capLeft = max(0, boundsRect.minX + capInset)
-        let capRight = min(bounds.width, boundsRect.maxX - capInset)
-        // Build one non-self-intersecting outline. Landmark point order can
-        // vary between Vision revisions; appending a cap directly to that
-        // order caused the X-shaped hole seen in the forehead.
-        let capPoints = [
-            CGPoint(x: capLeft, y: topY - boundsRect.height * 0.04),
-            CGPoint(x: (capLeft + capRight) / 2, y: topY),
-            CGPoint(x: capRight, y: topY - boundsRect.height * 0.04),
-        ]
-        let outline = convexHull(expanded + capPoints)
-        guard outline.count >= 3 else { return }
-        path.move(to: outline[0])
-        for point in outline.dropFirst() {
+        path.move(to: expanded[0])
+        for point in expanded.dropFirst() {
             path.addLine(to: point)
         }
         path.closeSubpath()
@@ -474,38 +482,6 @@ final class DanmakuRenderNSView: NSView {
         )
     }
 
-    private func convexHull(_ points: [CGPoint]) -> [CGPoint] {
-        let sorted = points.sorted { lhs, rhs in
-            lhs.x == rhs.x ? lhs.y < rhs.y : lhs.x < rhs.x
-        }
-        guard sorted.count >= 3 else { return sorted }
-
-        func cross(_ a: CGPoint, _ b: CGPoint, _ c: CGPoint) -> CGFloat {
-            (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
-        }
-
-        var lower: [CGPoint] = []
-        for point in sorted {
-            while lower.count >= 2,
-                  cross(lower[lower.count - 2], lower[lower.count - 1], point) <= 0 {
-                lower.removeLast()
-            }
-            lower.append(point)
-        }
-
-        var upper: [CGPoint] = []
-        for point in sorted.reversed() {
-            while upper.count >= 2,
-                  cross(upper[upper.count - 2], upper[upper.count - 1], point) <= 0 {
-                upper.removeLast()
-            }
-            upper.append(point)
-        }
-        lower.removeLast()
-        upper.removeLast()
-        return lower + upper
-    }
-
     private func ensureDanmakuContainers() {
         guard let layer else { return }
         if scrollingContainer == nil {
@@ -522,19 +498,16 @@ final class DanmakuRenderNSView: NSView {
             layer.addSublayer(container)
             fixedContainer = container
         }
-        scrollingContainer?.frame = bounds
-        fixedContainer?.frame = bounds
+        if scrollingContainer?.frame != bounds {
+            scrollingContainer?.frame = bounds
+        }
+        if fixedContainer?.frame != bounds {
+            fixedContainer?.frame = bounds
+        }
     }
 
     private func renderNewLayer(frame: DanmakuDrawFrame, contentsScale: CGFloat) {
-        let created = CATextLayer()
-        created.string = frame.mainText
-        created.contentsScale = contentsScale
-        created.isWrapped = false
-        created.truncationMode = .none
-        created.alignmentMode = .left
-        created.rasterizationScale = contentsScale
-        created.shouldRasterize = true
+        let created = CALayer()
         created.actions = [
             "position": NSNull(),
             "bounds": NSNull(),
@@ -543,12 +516,44 @@ final class DanmakuRenderNSView: NSView {
             "opacity": NSNull()
         ]
         created.frame = layerFrame(for: frame)
+        let textLayer = CATextLayer()
+        textLayer.string = frame.mainText
+        textLayer.frame = created.bounds
+        configureTextLayer(textLayer, contentsScale: contentsScale)
+        created.addSublayer(textLayer)
         ensureDanmakuContainers()
         (frame.isScrolling ? scrollingContainer : fixedContainer)?.addSublayer(created)
         if frame.isScrolling {
-            _ = addScrollAnimation(to: created, frame: frame)
+            addScrollAnimation(to: created, frame: frame)
         }
         textLayers[frame.id] = DanmakuTextLayerState(layer: created)
+    }
+
+    private func configureTextLayer(_ layer: CATextLayer, contentsScale: CGFloat) {
+        layer.contentsScale = contentsScale
+        layer.isWrapped = false
+        layer.truncationMode = .none
+        layer.alignmentMode = .left
+        layer.rasterizationScale = contentsScale
+        layer.shouldRasterize = false
+        layer.actions = ["position": NSNull(), "bounds": NSNull(), "frame": NSNull(), "contents": NSNull()]
+    }
+
+    private func addScrollAnimation(to textLayer: CALayer, frame: DanmakuDrawFrame) {
+        let remainingMillis = frame.durationMillis - frame.elapsedMillis
+        guard remainingMillis > 16 else { return }
+        let startX = frame.x + textLayer.bounds.width / 2
+        let endX = frame.endX + textLayer.bounds.width / 2
+        let y = textLayer.position.y
+        textLayer.position = CGPoint(x: endX, y: y)
+        let animation = CABasicAnimation(keyPath: "position.x")
+        animation.fromValue = startX
+        animation.toValue = endX
+        animation.duration = remainingMillis / 1000
+        animation.timingFunction = CAMediaTimingFunction(name: .linear)
+        animation.isRemovedOnCompletion = false
+        animation.fillMode = .forwards
+        textLayer.add(animation, forKey: "danmaku-scroll-x")
     }
 
     private func layerFrame(for frame: DanmakuDrawFrame) -> CGRect {
@@ -558,26 +563,6 @@ final class DanmakuRenderNSView: NSView {
             width: frame.textWidth + 4,
             height: frame.textHeight + 3
         )
-    }
-
-    private func addScrollAnimation(to textLayer: CATextLayer, frame: DanmakuDrawFrame) -> Bool {
-        let remainingMillis = frame.durationMillis - frame.elapsedMillis
-        guard remainingMillis > 16 else { return false }
-
-        let startX = frame.x + (frame.textWidth + 4) / 2
-        let endX = frame.endX + (frame.textWidth + 4) / 2
-        let currentY = textLayer.position.y
-        textLayer.position = CGPoint(x: endX, y: currentY)
-
-        let animation = CABasicAnimation(keyPath: "position.x")
-        animation.fromValue = startX
-        animation.toValue = endX
-        animation.duration = remainingMillis / 1000
-        animation.timingFunction = CAMediaTimingFunction(name: .linear)
-        animation.isRemovedOnCompletion = false
-        animation.fillMode = .forwards
-        textLayer.add(animation, forKey: "danmaku-scroll-x")
-        return true
     }
 
     private func removeStaleTextLayers(keeping visibleIDs: Set<Int>) {
@@ -619,19 +604,29 @@ final class DanmakuRenderNSView: NSView {
         guard let layer else { return }
         let shouldPlay = isActive && enabled && isPlaying
         if shouldPlay {
-            guard layer.speed == 0 else { return }
-            let pausedTime = layer.timeOffset
-            layer.speed = 1
-            layer.timeOffset = 0
-            layer.beginTime = 0
-            let elapsedSincePause = layer.convertTime(CACurrentMediaTime(), from: nil) - pausedTime
-            layer.beginTime = elapsedSincePause
+            resumeAnimationLayer(layer)
+            if let scrollingContainer { resumeAnimationLayer(scrollingContainer) }
+            if let fixedContainer { resumeAnimationLayer(fixedContainer) }
         } else {
-            guard layer.speed != 0 else { return }
-            let pausedTime = layer.convertTime(CACurrentMediaTime(), from: nil)
-            layer.speed = 0
-            layer.timeOffset = pausedTime
+            pauseAnimationLayer(layer)
+            if let scrollingContainer { pauseAnimationLayer(scrollingContainer) }
+            if let fixedContainer { pauseAnimationLayer(fixedContainer) }
         }
+    }
+
+    private func pauseAnimationLayer(_ layer: CALayer) {
+        guard layer.speed != 0 else { return }
+        layer.timeOffset = layer.convertTime(CACurrentMediaTime(), from: nil)
+        layer.speed = 0
+    }
+
+    private func resumeAnimationLayer(_ layer: CALayer) {
+        guard layer.speed == 0 else { return }
+        let pausedTime = layer.timeOffset
+        layer.speed = 1
+        layer.timeOffset = 0
+        layer.beginTime = 0
+        layer.beginTime = layer.convertTime(CACurrentMediaTime(), from: nil) - pausedTime
     }
 
     private func resetLayerTreeClockForNewTimeline() {
@@ -671,7 +666,7 @@ final class DanmakuRenderNSView: NSView {
 }
 
 private struct DanmakuTextLayerState {
-    let layer: CATextLayer
+    let layer: CALayer
 }
 
 private nonisolated func danmakuSizeChanged(_ lhs: CGSize, _ rhs: CGSize) -> Bool {

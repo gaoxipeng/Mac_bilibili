@@ -26,6 +26,7 @@ final class VideoDetailModel: ObservableObject {
     @Published private(set) var commentsScrollToTopToken = 0
 
     let player = VideoPlaybackEngine()
+    let danmakuTimeline = DanmakuTimeline()
     private var commentsCursor: String?
     private var loadedCommentsKey: String?
     private var commentsLoadInFlight = false
@@ -2420,6 +2421,7 @@ private struct VideoPlayerSection: View {
                         settings: model.danmakuSettings,
                         layoutMode: isFullscreen ? .fullscreen : .inline,
                         isActive: rendersDanmaku,
+                        timeline: model.danmakuTimeline,
                         playbackEngine: player,
                         faceMaskAnalyzer: player.faceMaskAnalyzer
                     )
@@ -2675,7 +2677,8 @@ private enum VideoControlLayout {
     static let itemSpacing: CGFloat = 12
     // Reserve space for the longest normal time label (hh:mm:ss). A fixed
     // width prevents the whole control row from shifting as digits change.
-    static let timeWidth: CGFloat = 68
+    // Wide enough for hh:mm:ss without wrapping on long videos.
+    static let timeWidth: CGFloat = 78
     static let speedMinWidth: CGFloat = 42
     static let trailingControlSpacing: CGFloat = 12
     static let pictureInPictureButtonSize: CGFloat = 50
@@ -2846,6 +2849,9 @@ private struct VideoControlCapsule: View {
                 Text(formatTime(positionTime))
                     .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                    .allowsTightening(true)
                     .foregroundStyle(.white)
                     .videoControlSoftShadow()
                     .frame(width: VideoControlLayout.timeWidth, alignment: .leading)
@@ -2914,6 +2920,9 @@ private struct VideoControlCapsule: View {
                     Text(formatTime(max(0, player.duration - positionTime)))
                         .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
                         .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.82)
+                        .allowsTightening(true)
                         .foregroundStyle(.white)
                         .videoControlSoftShadow()
                         .frame(width: VideoControlLayout.timeWidth, alignment: .trailing)

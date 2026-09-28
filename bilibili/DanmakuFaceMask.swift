@@ -33,6 +33,7 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
     private var faces: [Face] = []
     private var trackedFaces: [DetectedFace] = []
     private var analysisPending = false
+    private var consecutiveMisses = 0
     private var enabled = true
 
     var isEnabled: Bool {
@@ -48,6 +49,7 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         if !enabled {
             faces.removeAll(keepingCapacity: true)
             trackedFaces.removeAll(keepingCapacity: true)
+            consecutiveMisses = 0
             inputGeneration &+= 1
             generation &+= 1
         }
@@ -81,36 +83,52 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
                 bytesPerRow: bytesPerRow
             ) else { return }
 
-            let faceRequest = VNDetectFaceLandmarksRequest()
-            let segmentationRequest = VNGeneratePersonSegmentationRequest()
-            segmentationRequest.qualityLevel = .fast
-            segmentationRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
+            let faceRequest = VNDetectFaceRectanglesRequest()
+            let personRequest = VNGeneratePersonSegmentationRequest()
+            personRequest.qualityLevel = .accurate
+            personRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
             let handler = VNImageRequestHandler(
                 cvPixelBuffer: pixelBuffer,
                 orientation: .up,
                 options: [:]
             )
-            try? handler.perform([faceRequest, segmentationRequest])
-
-            let segmentation = (segmentationRequest.results ?? []).first?.pixelBuffer
+            try? handler.perform([faceRequest, personRequest])
+            let personMask = personRequest.results?.first?.pixelBuffer
             let detected = (faceRequest.results ?? []).compactMap { observation -> DetectedFace? in
                 let box = observation.boundingBox
-                let contour = self.landmarkContour(for: observation)
-                    ?? self.segmentationContour(
-                        in: box,
-                        pixelBuffer: segmentation
-                    )
-                    ?? self.ellipseContour(for: box)
+                // Only use the segmented head silhouette. If segmentation
+                // cannot provide a reliable contour, leave this face unmasked
+                // instead of substituting a coarse landmark/ellipse shape.
+                guard let contour = self.headSegmentationContour(around: box, pixelBuffer: personMask) else {
+                    return nil
+                }
                 return DetectedFace(boundingBox: box, contour: contour)
             }
-            let smoothed = self.smooth(detected)
+            self.lock.lock()
+            let stableDetected: [DetectedFace]
+            if detected.isEmpty, !self.trackedFaces.isEmpty, self.consecutiveMisses < 1 {
+                // Ignore one transient missed analysis, but at 8 Hz retain the
+                // old contour for no more than roughly 125 ms.
+                self.consecutiveMisses += 1
+                stableDetected = self.trackedFaces
+            } else {
+                self.consecutiveMisses = 0
+                stableDetected = detected
+            }
+            self.lock.unlock()
+            let smoothed = self.smooth(stableDetected)
 
             self.lock.lock()
             guard self.inputGeneration == inputGeneration, self.enabled else {
                 self.lock.unlock()
                 return
             }
-            self.faces = smoothed.map { Face(boundingBox: $0.boundingBox, contour: $0.contour) }
+            self.faces = smoothed.map {
+                Face(
+                    boundingBox: $0.boundingBox,
+                    contour: $0.contour
+                )
+            }
             self.generation &+= 1
             self.lock.unlock()
         }
@@ -120,6 +138,7 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         lock.lock()
         faces.removeAll(keepingCapacity: true)
         trackedFaces.removeAll(keepingCapacity: true)
+        consecutiveMisses = 0
         inputGeneration &+= 1
         generation &+= 1
         lock.unlock()
@@ -132,23 +151,11 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         return result
     }
 
-    private func landmarkContour(for observation: VNFaceObservation) -> [CGPoint]? {
-        guard let points = observation.landmarks?.faceContour?.normalizedPoints,
-              points.count >= 3 else { return nil }
-        let box = observation.boundingBox
-        return points.map { point in
-            CGPoint(
-                x: box.minX + point.x * box.width,
-                y: box.minY + point.y * box.height
-            )
-        }
-    }
-
-    /// Uses the person mask only as a fallback when landmarks are unavailable.
-    /// The convex hull keeps the result contour-shaped while remaining cheap at
-    /// the low analysis resolution.
-    private func segmentationContour(
-        in face: CGRect,
+    /// Traces a head-shaped envelope from the upper-person segmentation mask.
+    /// The ROI spans from above the forehead to the lower face and stays narrow
+    /// enough to avoid pulling shoulders into the contour.
+    private func headSegmentationContour(
+        around face: CGRect,
         pixelBuffer: CVPixelBuffer?
     ) -> [CGPoint]? {
         guard let pixelBuffer else { return nil }
@@ -158,33 +165,47 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
         let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        var points: [CGPoint] = []
-        points.reserveCapacity(128)
-        for y in stride(from: 0, to: height, by: 2) {
+        let minX = max(0, face.minX - face.width * 0.42)
+        let maxX = min(1, face.maxX + face.width * 0.42)
+        let minY = max(0, face.minY - face.height * 0.08)
+        let maxY = min(1, face.maxY + face.height * 0.82)
+        let x0 = max(0, Int((minX * CGFloat(width - 1)).rounded(.down)))
+        let x1 = min(width - 1, Int((maxX * CGFloat(width - 1)).rounded(.up)))
+        var leftEdge: [CGPoint] = []
+        var rightEdge: [CGPoint] = []
+        leftEdge.reserveCapacity(96)
+        rightEdge.reserveCapacity(96)
+        for y in stride(from: 0, to: height, by: 1) {
+            let normalizedY = 1 - CGFloat(y) / CGFloat(max(1, height - 1))
+            guard normalizedY >= minY, normalizedY <= maxY else { continue }
             let row = baseAddress.advanced(by: y * bytesPerRow).assumingMemoryBound(to: UInt8.self)
-            for x in stride(from: 0, to: width, by: 2) {
-                guard row[x] >= 150 else { continue }
-                let normalized = CGPoint(
-                    x: CGFloat(x) / CGFloat(max(1, width - 1)),
-                    y: 1 - CGFloat(y) / CGFloat(max(1, height - 1))
-                )
-                if face.insetBy(dx: -face.width * 0.25, dy: -face.height * 0.25).contains(normalized) {
-                    points.append(normalized)
-                }
+            var first: Int?
+            var last: Int?
+            var foregroundCount = 0
+            for x in stride(from: x0, through: x1, by: 1) where row[x] >= 128 {
+                if first == nil { first = x }
+                last = x
+                foregroundCount += 1
             }
+            guard foregroundCount >= 3, let first, let last, last > first else { continue }
+            let normalized = 1 - CGFloat(y) / CGFloat(max(1, height - 1))
+            leftEdge.append(CGPoint(x: CGFloat(first) / CGFloat(max(1, width - 1)), y: normalized))
+            rightEdge.append(CGPoint(x: CGFloat(last) / CGFloat(max(1, width - 1)), y: normalized))
         }
-        return convexHull(points)
+        guard leftEdge.count >= 6 else { return nil }
+        // Lightly smooth row-to-row mask noise while preserving the silhouette.
+        let left = smoothEdge(leftEdge)
+        let right = smoothEdge(rightEdge).reversed()
+        return left + right
     }
 
-    private func ellipseContour(for box: CGRect) -> [CGPoint] {
-        let center = CGPoint(x: box.midX, y: box.midY)
-        let radiusX = box.width * 0.48
-        let radiusY = box.height * 0.52
-        return (0..<20).map { index in
-            let angle = (CGFloat(index) / 20) * 2 * .pi
+    private func smoothEdge(_ points: [CGPoint]) -> [CGPoint] {
+        guard points.count >= 3 else { return points }
+        return points.indices.map { index in
+            guard index > 0, index < points.count - 1 else { return points[index] }
             return CGPoint(
-                x: center.x + cos(angle) * radiusX,
-                y: center.y + sin(angle) * radiusY
+                x: (points[index - 1].x + points[index].x * 2 + points[index + 1].x) / 4,
+                y: points[index].y
             )
         }
     }
@@ -217,7 +238,7 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
                     : face.contour
                 result.append(DetectedFace(boundingBox: box, contour: contour))
             } else {
-                result.append(face)
+                result.append(DetectedFace(boundingBox: face.boundingBox, contour: face.contour))
             }
         }
 
@@ -247,32 +268,6 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         let unionArea = lhs.union(rhs).width * lhs.union(rhs).height
         guard unionArea > 0 else { return 0 }
         return (lhs.intersection(rhs).width * lhs.intersection(rhs).height) / unionArea
-    }
-
-    private func convexHull(_ points: [CGPoint]) -> [CGPoint]? {
-        guard points.count >= 3 else { return nil }
-        let sorted = points.sorted { $0.x == $1.x ? $0.y < $1.y : $0.x < $1.x }
-        func cross(_ a: CGPoint, _ b: CGPoint, _ c: CGPoint) -> CGFloat {
-            (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
-        }
-        var lower: [CGPoint] = []
-        for point in sorted {
-            while lower.count >= 2, cross(lower[lower.count - 2], lower[lower.count - 1], point) <= 0 {
-                lower.removeLast()
-            }
-            lower.append(point)
-        }
-        var upper: [CGPoint] = []
-        for point in sorted.reversed() {
-            while upper.count >= 2, cross(upper[upper.count - 2], upper[upper.count - 1], point) <= 0 {
-                upper.removeLast()
-            }
-            upper.append(point)
-        }
-        lower.removeLast()
-        upper.removeLast()
-        let hull = lower + upper
-        return hull.count >= 3 ? hull : nil
     }
 
     private func makePixelBuffer(

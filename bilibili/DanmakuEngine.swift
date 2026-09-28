@@ -11,7 +11,7 @@ private let maxSpawnInspectionsPerFrame = 180
 private let maxDanmakuTrackCapacity = 48
 private let fixedDanmakuRowCount = 14
 private let trackGapSec: Float = 0.12
-private let playbackDriftReanchorThresholdMs: Double = 260
+private let maximumMeasureCacheEntries = 512
 
 func danmakuScrollDurationMs(item: BiliDanmakuItem, speedMultiplier: Float) -> Int64 {
     let base = scrollBaseDurationMs + Int64(item.content.count) * scrollPerCharDurationMs
@@ -48,10 +48,10 @@ private struct ActiveDanmaku {
     let item: BiliDanmakuItem
     var track: Int
     var animStartDisplayTimeMillis: Double
-    let textWidth: CGFloat
-    let textHeight: CGFloat
-    let fontSize: CGFloat
-    let mainText: NSAttributedString
+    var textWidth: CGFloat
+    var textHeight: CGFloat
+    var fontSize: CGFloat
+    var mainText: NSAttributedString
     let scrollDurationMs: Int64
 }
 
@@ -90,7 +90,7 @@ final class DanmakuTimeline {
         let signature = DanmakuItemsSignature(items: items)
         let layoutHeight = max(1, size.height)
         let metrics = DanmakuLayoutMetrics.make(mode: layoutMode, layoutHeight: layoutHeight)
-        let sizeChanged = abs(layoutWidth - size.width) > 0.5 || !layoutMetricsApproximatelyEqual(self.layoutMetrics, metrics)
+        let textMetricsChanged = !layoutMetricsApproximatelyEqual(layoutMetrics, metrics)
         let settingsChanged = self.settings != settings
         let itemsChanged = signature != itemsSignature
         self.items = items
@@ -111,10 +111,35 @@ final class DanmakuTimeline {
             strategy: layoutStrategy
         )
         itemsSignature = signature
-        if itemsChanged || settingsChanged {
+        if itemsChanged || settingsChanged || textMetricsChanged {
             measureCache.removeAll()
         }
-        if itemsChanged || settingsChanged || sizeChanged {
+        if textMetricsChanged, !itemsChanged, !settingsChanged {
+            // A host can briefly be configured with a 1×1/transition size
+            // before its real bounds arrive. Keep each active comment's
+            // playback progress and lane, but refresh its text metrics so a
+            // temporary minimum-size measurement does not stay tiny onscreen.
+            activeDanmaku = activeDanmaku.map { active in
+                var updated = active
+                let expectedFontSize = danmakuFontSize(
+                    itemFontSize: active.item.fontSize,
+                    settings: settings,
+                    metrics: metrics
+                )
+                if abs(expectedFontSize - active.fontSize) >= 0.8,
+                   let measured = measureDanmaku(item: active.item) {
+                    updated.textWidth = measured.textWidth
+                    updated.textHeight = measured.textHeight
+                    updated.fontSize = measured.fontSize
+                    updated.mainText = measured.mainText
+                }
+                return updated
+            }
+        }
+        // Resizing or switching between inline/fullscreen changes only the
+        // coordinate system. Keep active comments, their timestamps, and lane
+        // assignments so they continue at the same animation progress.
+        if itemsChanged || settingsChanged {
             resetTimeline(positionMillis: anchorPositionMillis)
         }
     }
@@ -144,14 +169,19 @@ final class DanmakuTimeline {
 
         if isPlaying {
             if let realtimeMillis {
-                let elapsed = realtimeMillis - anchorRealtimeMillis
+                let elapsed = max(0, realtimeMillis - anchorRealtimeMillis)
                 displayTimeMillis = anchorPositionMillis + elapsed * Double(max(0.1, playbackSpeed))
                 let drift = positionMillis - displayTimeMillis
-                if abs(drift) > playbackDriftReanchorThresholdMs {
-                    anchorPositionMillis = positionMillis
-                    anchorRealtimeMillis = realtimeMillis
-                    displayTimeMillis = positionMillis
-                }
+                // Correct clock drift gradually rather than jumping hundreds
+                // of milliseconds. Real seeks are handled above separately.
+                let correctionLimit = max(0, elapsed) * 0.05
+                // mpv reports sampled timestamps. Following each small sample
+                // error makes velocity oscillate even on a high-refresh panel.
+                let correction = abs(drift) > 100
+                    ? min(correctionLimit, max(-correctionLimit, drift)) : 0
+                displayTimeMillis += correction
+                anchorPositionMillis = displayTimeMillis
+                anchorRealtimeMillis = realtimeMillis
             } else {
                 displayTimeMillis = positionMillis
             }
@@ -319,9 +349,9 @@ final class DanmakuTimeline {
         let baseColor = danmakuNSColor(item.colorArgb).withAlphaComponent(opacity)
         let font = NSFont.systemFont(ofSize: fontSize, weight: .medium)
         let shadow = NSShadow()
-        shadow.shadowOffset = NSSize(width: 1, height: -1)
-        shadow.shadowBlurRadius = 2
-        shadow.shadowColor = NSColor.black.withAlphaComponent(0.72 * opacity)
+        shadow.shadowOffset = .zero
+        shadow.shadowBlurRadius = 2.6
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.98 * opacity)
         let mainAttributes: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: baseColor,
@@ -337,23 +367,33 @@ final class DanmakuTimeline {
             fontSize: fontSize,
             mainText: mainText
         )
+        // The input cursor never revisits old comments during normal playback.
+        // Retaining their attributed strings for the entire video is unbounded.
+        if measureCache.count >= maximumMeasureCacheEntries {
+            measureCache.removeAll(keepingCapacity: true)
+        }
         measureCache[key] = measured
         return measured
     }
 
     private func pruneExpired(displayTimeMillis: Double) {
         let speedMultiplier = layoutStrategy.speedMultiplier
+        var expiredIDs = Set<Int>()
         activeDanmaku.removeAll { active in
             let elapsed = displayTimeMillis - active.animStartDisplayTimeMillis
             guard elapsed >= 0 else { return false }
             let mode = BiliDanmakuMode.from(active.item.mode) ?? .scroll
+            let expired: Bool
             switch mode {
             case .bottom, .top:
-                return elapsed > Double(fixedDanmakuDurationMs) * Double(speedMultiplier)
+                expired = elapsed > Double(fixedDanmakuDurationMs) * Double(speedMultiplier)
             case .scroll, .reverseScroll:
-                return elapsed > Double(active.scrollDurationMs)
+                expired = elapsed > Double(active.scrollDurationMs)
             }
+            if expired { expiredIDs.insert(active.item.id) }
+            return expired
         }
+        spawnedIDs.subtract(expiredIDs)
     }
 
     private func rebuildDrawFrames() {

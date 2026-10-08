@@ -2366,6 +2366,14 @@ private struct VideoPlayerSection: View {
         )
     }
 
+    private var activeEpisodeTitle: String {
+        guard let pages = model.detail?.pages else { return "" }
+        return pages.first(where: { page in
+            page.cid == model.activeCID
+                && (page.bvid.isEmpty || page.bvid == model.displayVideo.bvid)
+        })?.title ?? ""
+    }
+
     var body: some View {
         ZStack {
             playerContentStack
@@ -2467,6 +2475,7 @@ private struct VideoPlayerSection: View {
                 if isFullscreen, let fullscreenTitle {
                     VideoFullscreenTitleBar(
                         title: fullscreenTitle,
+                        episodeTitle: activeEpisodeTitle,
                         authorName: model.displayVideo.authorName
                     )
                         .opacity(chromeState.showsControls ? 1 : 0)
@@ -2480,6 +2489,10 @@ private struct VideoPlayerSection: View {
                         player: player,
                         videoShot: model.videoShot,
                         videoRefererURL: URL(string: "https://www.bilibili.com/video/\(model.displayVideo.bvid)"),
+                        episodePages: model.detail?.pages ?? [],
+                        activeEpisodeCID: model.activeCID,
+                        activeEpisodeBvid: model.displayVideo.bvid,
+                        onEpisodeSelect: { part in Task { await model.selectPart(part) } },
                         danmakuVisible: model.danmakuVisible,
                         onDanmakuToggle: model.toggleDanmakuVisible,
                         onDanmakuRightClick: { model.showDanmakuSettings = true },
@@ -2769,6 +2782,7 @@ private extension View {
 
 private struct VideoFullscreenTitleBar: View {
     let title: String
+    let episodeTitle: String
     let authorName: String
 
     var body: some View {
@@ -2780,6 +2794,15 @@ private struct VideoFullscreenTitleBar: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                     .shadow(color: .black.opacity(0.45), radius: 8, y: 2)
+
+                if !episodeTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(episodeTitle)
+                        .font(.system(size: 30, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .shadow(color: .black.opacity(0.45), radius: 8, y: 2)
+                }
 
                 if !authorName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     Text("@\(authorName)")
@@ -2800,6 +2823,10 @@ private struct VideoControlCapsule: View {
     @ObservedObject var player: VideoPlaybackEngine
     let videoShot: BiliVideoShot?
     let videoRefererURL: URL?
+    var episodePages: [BiliVideoPage] = []
+    var activeEpisodeCID: Int64 = 0
+    var activeEpisodeBvid = ""
+    var onEpisodeSelect: (BiliVideoPage) -> Void = { _ in }
     let danmakuVisible: Bool
     let onDanmakuToggle: () -> Void
     let onDanmakuRightClick: () -> Void
@@ -2814,6 +2841,7 @@ private struct VideoControlCapsule: View {
     @State private var isPlaybackRateButtonHovered = false
     @State private var isPlaybackRatePopupHovered = false
     @State private var playbackRateDismissTask: Task<Void, Never>?
+    @State private var isEpisodeMenuPresented = false
 
     private var progress: Double {
         if let dragProgress { return dragProgress }
@@ -2897,6 +2925,30 @@ private struct VideoControlCapsule: View {
                     )
                     .equatable()
 
+                    if episodePages.count > 1 {
+                        Text("选集")
+                            .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
+                            .videoControlHoverForeground()
+                            .frame(width: 44, height: 44, alignment: .center)
+                            .contentShape(Rectangle())
+                            .overlay {
+                                VideoPartMenuPressOverlay(
+                                    pages: episodePages,
+                                    activeCID: activeEpisodeCID,
+                                    activeBvid: activeEpisodeBvid,
+                                    onSelect: onEpisodeSelect,
+                                    opensOnHover: true,
+                                    onMenuVisibilityChange: { isPresented in
+                                        isEpisodeMenuPresented = isPresented
+                                        if isPresented { hoverProgress = nil }
+                                    }
+                                )
+                            }
+                            .onHover { hovering in
+                                if hovering { onInteraction() }
+                        }
+                    }
+
                     Button(action: {
                         onInteraction()
                         presentPlaybackRateMenu()
@@ -2937,7 +2989,9 @@ private struct VideoControlCapsule: View {
         .modifier(VideoControlCapsuleChrome())
         .overlay(alignment: .topLeading) {
             GeometryReader { proxy in
-                if let hoverProgress {
+                if let hoverProgress,
+                   !isEpisodeMenuPresented,
+                   !isPlaybackRateMenuPresented {
                     let previewAspectRatio = VideoScrubPreviewLayout.aspectRatio(
                         videoShot: videoShot,
                         playerAspectRatio: player.displayAspectRatio
@@ -3056,6 +3110,7 @@ private struct VideoControlCapsule: View {
     private func presentPlaybackRateMenu() {
         playbackRateDismissTask?.cancel()
         guard !isPlaybackRateMenuPresented else { return }
+        hoverProgress = nil
         isPlaybackRateMenuPresented = true
         onSpeedMenuVisibilityChanged(true)
     }

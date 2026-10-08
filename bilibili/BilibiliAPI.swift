@@ -1801,8 +1801,8 @@ actor BilibiliAPI {
             return key
         }
 
-            throw APIError.message("无法获取 WBI 密钥")
-        }
+        throw APIError.message("无法获取 WBI 密钥")
+    }
 
     private func loadPersistedGuestBuvid() {
         guard guestBuvid3 == nil, guestBuvid4 == nil else { return }
@@ -1831,7 +1831,8 @@ actor BilibiliAPI {
               let http = response as? HTTPURLResponse,
               (200..<300).contains(http.statusCode),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let code = root["code"] as? Int, code == 0,
+              // Guest responses use -101 but still include the WBI signing keys.
+              let code = root["code"] as? Int, code == 0 || code == -101,
               let payload = root["data"] as? [String: Any],
               let wbi = payload["wbi_img"] as? [String: Any],
               let img = wbi["img_url"] as? String,

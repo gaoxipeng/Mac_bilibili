@@ -268,21 +268,21 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20260928;
+				CURRENT_PROJECT_VERSION = 20261008;
 				DEVELOPMENT_TEAM = G3S97FGQT6;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = bilibili/Info.plist;
-				INFOPLIST_KEY_CFBundleShortVersionString = 20260928;
-				INFOPLIST_KEY_CFBundleVersion = 20260928;
+					INFOPLIST_KEY_CFBundleShortVersionString = 20261008;
+					INFOPLIST_KEY_CFBundleVersion = 20261008;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 20260928;
+				MARKETING_VERSION = 20261008;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"$(SRCROOT)/bilibili/Vendor/MPVCoreAudioPatched.o",
@@ -309,21 +309,21 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 20260928;
+				CURRENT_PROJECT_VERSION = 20261008;
 				DEVELOPMENT_TEAM = G3S97FGQT6;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = bilibili/Info.plist;
-				INFOPLIST_KEY_CFBundleShortVersionString = 20260928;
-				INFOPLIST_KEY_CFBundleVersion = 20260928;
+					INFOPLIST_KEY_CFBundleShortVersionString = 20261008;
+					INFOPLIST_KEY_CFBundleVersion = 20261008;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 20260928;
+				MARKETING_VERSION = 20261008;
 				OTHER_LDFLAGS = (
 					"$(inherited)",
 					"$(SRCROOT)/bilibili/Vendor/MPVCoreAudioPatched.o",

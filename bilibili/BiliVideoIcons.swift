@@ -198,9 +198,11 @@ struct VideoPartMenuPressOverlay: NSViewRepresentable {
     let activeCID: Int64
     let activeBvid: String
     let onSelect: (BiliVideoPage) -> Void
+    var opensOnHover = false
+    var onMenuVisibilityChange: (Bool) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onSelect: onSelect)
+        Coordinator(onSelect: onSelect, onMenuVisibilityChange: onMenuVisibilityChange)
     }
 
     func makeNSView(context: Context) -> VideoPartMenuPressView {
@@ -209,27 +211,81 @@ struct VideoPartMenuPressOverlay: NSViewRepresentable {
             coordinator: context.coordinator,
             pages: pages,
             activeCID: activeCID,
-            activeBvid: activeBvid
+            activeBvid: activeBvid,
+            opensOnHover: opensOnHover
         )
         return view
     }
 
     func updateNSView(_ nsView: VideoPartMenuPressView, context: Context) {
         context.coordinator.onSelect = onSelect
+        context.coordinator.onMenuVisibilityChange = onMenuVisibilityChange
         nsView.configure(
             coordinator: context.coordinator,
             pages: pages,
             activeCID: activeCID,
-            activeBvid: activeBvid
+            activeBvid: activeBvid,
+            opensOnHover: opensOnHover
         )
     }
 
-    final class Coordinator: NSObject {
+    @MainActor
+    final class Coordinator: NSObject, NSMenuDelegate {
         var pages: [BiliVideoPage] = []
         var onSelect: (BiliVideoPage) -> Void
+        var onMenuVisibilityChange: (Bool) -> Void
+        private var dismissTask: Task<Void, Never>?
+        weak var anchorView: NSView?
+        var isMenuPresented = false
 
-        init(onSelect: @escaping (BiliVideoPage) -> Void) {
+        init(
+            onSelect: @escaping (BiliVideoPage) -> Void,
+            onMenuVisibilityChange: @escaping (Bool) -> Void
+        ) {
             self.onSelect = onSelect
+            self.onMenuVisibilityChange = onMenuVisibilityChange
+        }
+
+        func menuWillOpen(_ menu: NSMenu) {
+            isMenuPresented = true
+            onMenuVisibilityChange(true)
+            dismissTask?.cancel()
+            dismissTask = Task { @MainActor [weak self, weak menu] in
+                var outsideSince: TimeInterval?
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .milliseconds(50))
+                    guard !Task.isCancelled, let self, let menu else { return }
+
+                    let mouseLocation = NSEvent.mouseLocation
+                    let isOverAnchor: Bool = {
+                        guard let anchorView, let window = anchorView.window else { return false }
+                        let anchorBounds = anchorView.convert(anchorView.bounds, to: nil)
+                        return window.convertToScreen(anchorBounds).contains(mouseLocation)
+                    }()
+                    let isOverMenu = menu.items
+                        .compactMap { $0.view?.window?.frame }
+                        .contains { $0.contains(mouseLocation) }
+
+                    if isOverAnchor || isOverMenu {
+                        outsideSince = nil
+                    } else {
+                        let now = ProcessInfo.processInfo.systemUptime
+                        if let outsideSince, now - outsideSince >= 0.18 {
+                            dismissTask = nil
+                            menu.cancelTracking()
+                            return
+                        }
+                        outsideSince = outsideSince ?? now
+                    }
+                }
+            }
+        }
+
+        func menuDidClose(_ menu: NSMenu) {
+            isMenuPresented = false
+            dismissTask?.cancel()
+            dismissTask = nil
+            onMenuVisibilityChange(false)
         }
 
         @objc func handleSelect(_ sender: NSMenuItem) {
@@ -250,10 +306,18 @@ private final class EpisodeMenuItemRowView: NSView {
     private let durationLabel: NSTextField
     private let menuWidth: CGFloat
     private let durationColumnWidth: CGFloat
+    private let isSelected: Bool
 
-    init(title: String, duration: String?, width: CGFloat, durationColumnWidth: CGFloat) {
+    init(
+        title: String,
+        duration: String?,
+        width: CGFloat,
+        durationColumnWidth: CGFloat,
+        isSelected: Bool
+    ) {
         self.menuWidth = width
         self.durationColumnWidth = durationColumnWidth
+        self.isSelected = isSelected
         titleLabel = NSTextField(wrappingLabelWithString: title)
         durationLabel = NSTextField(labelWithString: duration ?? "")
         super.init(frame: NSRect(x: 0, y: 0, width: width, height: 24))
@@ -295,7 +359,7 @@ private final class EpisodeMenuItemRowView: NSView {
         if enclosingMenuItem?.isHighlighted == true {
             let background = bounds.insetBy(dx: 4, dy: 1)
             let path = NSBezierPath(roundedRect: background, xRadius: 4, yRadius: 4)
-            NSColor.selectedContentBackgroundColor.setFill()
+            NSColor(BiliTheme.pink).withAlphaComponent(0.22).setFill()
             path.fill()
         }
         super.draw(dirtyRect)
@@ -354,10 +418,10 @@ private final class EpisodeMenuItemRowView: NSView {
     private func updateAppearance() {
         let highlighted = enclosingMenuItem?.isHighlighted == true
         if highlighted {
-            titleLabel.textColor = .selectedMenuItemTextColor
+            titleLabel.textColor = NSColor(BiliTheme.pink)
             durationLabel.textColor = .selectedMenuItemTextColor
         } else {
-            titleLabel.textColor = .labelColor
+            titleLabel.textColor = isSelected ? .systemBlue : .labelColor
             durationLabel.textColor = .secondaryLabelColor
         }
     }
@@ -367,6 +431,7 @@ private final class EpisodeMenuItemRowView: NSView {
 final class VideoPartMenuPressView: NSView {
     private let actionMenu = NSMenu()
     private weak var coordinator: VideoPartMenuPressOverlay.Coordinator?
+    private var opensOnHover = false
 
     override var isOpaque: Bool { false }
 
@@ -378,6 +443,21 @@ final class VideoPartMenuPressView: NSView {
         true
     }
 
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect],
+            owner: self
+        ))
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        guard opensOnHover, !actionMenu.items.isEmpty else { return }
+        BiliMenuPopUpAnchor.popUp(actionMenu, in: self)
+    }
+
     override func mouseDown(with event: NSEvent) {
         guard !actionMenu.items.isEmpty else { return }
         BiliMenuPopUpAnchor.popUp(actionMenu, in: self)
@@ -387,10 +467,15 @@ final class VideoPartMenuPressView: NSView {
         coordinator: VideoPartMenuPressOverlay.Coordinator,
         pages: [BiliVideoPage],
         activeCID: Int64,
-        activeBvid: String
+        activeBvid: String,
+        opensOnHover: Bool = false
     ) {
         self.coordinator = coordinator
+        self.opensOnHover = opensOnHover
+        coordinator.anchorView = self
         coordinator.pages = pages
+        guard !coordinator.isMenuPresented else { return }
+        actionMenu.delegate = coordinator
 
         actionMenu.removeAllItems()
         actionMenu.autoenablesItems = false
@@ -409,6 +494,8 @@ final class VideoPartMenuPressView: NSView {
         actionMenu.minimumWidth = menuWidth
 
         for (index, part) in pages.enumerated() {
+            let isSelected = part.cid == activeCID
+                && (part.bvid.isEmpty || part.bvid == activeBvid)
             let item = NSMenuItem(
                 title: "",
                 action: #selector(VideoPartMenuPressOverlay.Coordinator.handleSelect(_:)),
@@ -418,7 +505,8 @@ final class VideoPartMenuPressView: NSView {
                 title: episodeMainTitle(for: part),
                 duration: part.duration > 0 ? part.duration.episodeMenuDurationText : nil,
                 width: menuWidth,
-                durationColumnWidth: durationColumnWidth
+                durationColumnWidth: durationColumnWidth,
+                isSelected: isSelected
             )
             let rowSize = rowView.fittingSize
             rowView.frame = NSRect(x: 0, y: 0, width: rowSize.width, height: rowSize.height)
@@ -426,8 +514,7 @@ final class VideoPartMenuPressView: NSView {
             item.target = coordinator
             item.tag = index
             item.isEnabled = true
-            if part.cid == activeCID
-                && (part.bvid.isEmpty || part.bvid == activeBvid) {
+            if isSelected {
                 item.state = .on
             }
             actionMenu.addItem(item)

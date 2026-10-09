@@ -86,6 +86,7 @@ final class DanmakuRenderNSView: NSView {
     private var configuredEnabled = false
     private var configuredActive = true
     private var appliedFaceMaskGeneration: UInt64 = .max
+    private var renderedPlaybackRate: Float = 1
     private var scrollingContainer: CALayer?
     private var fixedContainer: CALayer?
     private let faceMaskLayer = CAShapeLayer()
@@ -364,6 +365,8 @@ final class DanmakuRenderNSView: NSView {
         }
 
         let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let playbackRate = max(0.1, playbackEngine?.playbackRate ?? 1)
+        let playbackRateChanged = abs(playbackRate - renderedPlaybackRate) > 0.001
         var visibleIDs = Set<Int>()
         visibleIDs.reserveCapacity(frames.count)
         var newFrames: [DanmakuDrawFrame] = []
@@ -376,11 +379,19 @@ final class DanmakuRenderNSView: NSView {
         }
 
         let staleIDs = textLayers.keys.filter { !visibleIDs.contains($0) }
-        guard !newFrames.isEmpty || !staleIDs.isEmpty else { return }
+        guard !newFrames.isEmpty || !staleIDs.isEmpty || playbackRateChanged else { return }
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         for frame in newFrames {
-            renderNewLayer(frame: frame, contentsScale: scale)
+            renderNewLayer(frame: frame, contentsScale: scale, playbackRate: playbackRate)
+        }
+        if playbackRateChanged {
+            for frame in frames where frame.isScrolling && !newFrames.contains(where: { $0.id == frame.id }) {
+                guard let layer = textLayers[frame.id]?.layer else { continue }
+                layer.removeAnimation(forKey: "danmaku-scroll-x")
+                addScrollAnimation(to: layer, frame: frame, playbackRate: playbackRate)
+            }
+            renderedPlaybackRate = playbackRate
         }
         for id in staleIDs {
             textLayers[id]?.layer.removeFromSuperlayer()
@@ -506,7 +517,7 @@ final class DanmakuRenderNSView: NSView {
         }
     }
 
-    private func renderNewLayer(frame: DanmakuDrawFrame, contentsScale: CGFloat) {
+    private func renderNewLayer(frame: DanmakuDrawFrame, contentsScale: CGFloat, playbackRate: Float) {
         let created = CALayer()
         created.actions = [
             "position": NSNull(),
@@ -524,7 +535,7 @@ final class DanmakuRenderNSView: NSView {
         ensureDanmakuContainers()
         (frame.isScrolling ? scrollingContainer : fixedContainer)?.addSublayer(created)
         if frame.isScrolling {
-            addScrollAnimation(to: created, frame: frame)
+            addScrollAnimation(to: created, frame: frame, playbackRate: playbackRate)
         }
         textLayers[frame.id] = DanmakuTextLayerState(layer: created)
     }
@@ -539,7 +550,7 @@ final class DanmakuRenderNSView: NSView {
         layer.actions = ["position": NSNull(), "bounds": NSNull(), "frame": NSNull(), "contents": NSNull()]
     }
 
-    private func addScrollAnimation(to textLayer: CALayer, frame: DanmakuDrawFrame) {
+    private func addScrollAnimation(to textLayer: CALayer, frame: DanmakuDrawFrame, playbackRate: Float) {
         let remainingMillis = frame.durationMillis - frame.elapsedMillis
         guard remainingMillis > 16 else { return }
         let startX = frame.x + textLayer.bounds.width / 2
@@ -549,7 +560,7 @@ final class DanmakuRenderNSView: NSView {
         let animation = CABasicAnimation(keyPath: "position.x")
         animation.fromValue = startX
         animation.toValue = endX
-        animation.duration = remainingMillis / 1000
+        animation.duration = remainingMillis / 1000 / Double(max(0.1, playbackRate))
         animation.timingFunction = CAMediaTimingFunction(name: .linear)
         animation.isRemovedOnCompletion = false
         animation.fillMode = .forwards

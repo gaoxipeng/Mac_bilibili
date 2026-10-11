@@ -830,6 +830,7 @@ enum JSONParser {
 
     nonisolated static func parseVideoDetail(from object: Any) -> BiliVideoDetail? {
         let data = dictionary(object)["data"] as? [String: Any] ?? dictionary(object)
+        let ugcSeason = data["ugc_season"] as? [String: Any] ?? [:]
         let rawPages = data["pages"] as? [[String: Any]] ?? []
         let multiPartPages = parseVideoPages(from: data["pages"])
         let pages = multiPartPages.isEmpty
@@ -864,6 +865,7 @@ enum JSONParser {
         let pubdate = int64(data, "pubdate")
         return BiliVideoDetail(
             video: video,
+            ugcSeasonTitle: string(ugcSeason, "title").htmlStripped,
             publishTime: pubdate > 0 ? Date(timeIntervalSince1970: TimeInterval(pubdate)) : nil,
             replyCount: int64(stat, "reply"),
             coinCount: int64(stat, "coin"),

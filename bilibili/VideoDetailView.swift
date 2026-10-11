@@ -523,6 +523,7 @@ final class VideoDetailModel: ObservableObject {
                     cid: video.cid,
                     publishTime: video.publishTime
                 ),
+                ugcSeasonTitle: current.ugcSeasonTitle,
                 publishTime: current.publishTime,
                 replyCount: current.replyCount,
                 coinCount: max(0, current.coinCount + coinDelta),
@@ -533,6 +534,7 @@ final class VideoDetailModel: ObservableObject {
         } else {
             current = BiliVideoDetail(
                 video: video,
+                ugcSeasonTitle: current.ugcSeasonTitle,
                 publishTime: current.publishTime,
                 replyCount: current.replyCount,
                 coinCount: max(0, current.coinCount + coinDelta),
@@ -774,6 +776,7 @@ final class VideoDetailModel: ObservableObject {
     private func applyBangumiDetail(context: BiliPGCEpisodeContext, loaded: BiliVideoDetail) -> BiliVideoDetail {
         BiliVideoDetail(
             video: mergeVideoWithPGCContext(loaded.video, context: context),
+            ugcSeasonTitle: loaded.ugcSeasonTitle,
             publishTime: loaded.publishTime,
             replyCount: loaded.replyCount,
             coinCount: loaded.coinCount,
@@ -2374,6 +2377,17 @@ private struct VideoPlayerSection: View {
         })?.title ?? ""
     }
 
+    private var activeEpisodeSubtitle: String {
+        let episodeTitle = activeEpisodeTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !episodeTitle.isEmpty, let detail = model.detail else { return episodeTitle }
+        let videoTitle = model.displayVideo.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let seasonTitle = detail.ugcSeasonTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !seasonTitle.isEmpty, episodeTitle == videoTitle {
+            return "合集：\(seasonTitle)"
+        }
+        return episodeTitle
+    }
+
     var body: some View {
         ZStack {
             playerContentStack
@@ -2475,7 +2489,7 @@ private struct VideoPlayerSection: View {
                 if isFullscreen, let fullscreenTitle {
                     VideoFullscreenTitleBar(
                         title: fullscreenTitle,
-                        episodeTitle: activeEpisodeTitle,
+                        episodeTitle: activeEpisodeSubtitle,
                         authorName: model.displayVideo.authorName
                     )
                         .opacity(chromeState.showsControls ? 1 : 0)

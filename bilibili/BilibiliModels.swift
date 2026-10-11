@@ -598,6 +598,7 @@ nonisolated struct BiliPGCEpisodeContext: Sendable {
 
 struct BiliVideoDetail: Hashable, Sendable {
     let video: BiliVideo
+    let ugcSeasonTitle: String
     let publishTime: Date?
     let replyCount: Int64
     let coinCount: Int64

@@ -1108,6 +1108,7 @@ actor BilibiliAPI {
         let mergedVideo = mergePgcContextToVideo(context: context, base: loaded.video)
         return BiliVideoDetail(
             video: mergedVideo,
+            ugcSeasonTitle: loaded.ugcSeasonTitle,
             publishTime: loaded.publishTime,
             replyCount: loaded.replyCount,
             coinCount: loaded.coinCount,

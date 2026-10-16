@@ -298,7 +298,7 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
         // full-resolution playback or the 120 Hz compositor.
         if let faceMaskAnalyzer, faceMaskAnalyzer.isEnabled {
             let now = CACurrentMediaTime()
-            if now - lastFaceMaskSampleTime >= 1.0 / 8.0 {
+            if now - lastFaceMaskSampleTime >= 1.0 / 12.0 {
                 lastFaceMaskSampleTime = now
                 submitFaceMaskSample(
                     analyzer: faceMaskAnalyzer,
@@ -335,21 +335,39 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
         height: Int,
         bytesPerRow: Int
     ) {
-        let sampleWidth = min(320, width)
+        let sampleWidth = min(512, width)
         let sampleHeight = max(1, Int((Double(height) * Double(sampleWidth) / Double(width)).rounded()))
         let sampleBytesPerRow = sampleWidth * 4
         var sample = Data(count: sampleHeight * sampleBytesPerRow)
         sample.withUnsafeMutableBytes { destination in
             guard let destinationBase = destination.baseAddress else { return }
             for row in 0..<sampleHeight {
-                let sourceRow = min(height - 1, row * height / sampleHeight)
-                let source = buffer.advanced(by: sourceRow * bytesPerRow)
+                let sourceY0 = min(height - 1, row * height / sampleHeight)
+                let sourceY1 = min(height, max(sourceY0 + 1, (row + 1) * height / sampleHeight))
                 let destinationRow = destinationBase.advanced(by: row * sampleBytesPerRow)
                 for column in 0..<sampleWidth {
-                    let sourceColumn = min(width - 1, column * width / sampleWidth)
-                    let sourcePixel = source.advanced(by: sourceColumn * 4)
+                    let sourceX0 = min(width - 1, column * width / sampleWidth)
+                    let sourceX1 = min(width, max(sourceX0 + 1, (column + 1) * width / sampleWidth))
                     let destinationPixel = destinationRow.advanced(by: column * 4)
-                    memcpy(destinationPixel, sourcePixel, 4)
+                    var blue = 0
+                    var green = 0
+                    var red = 0
+                    var count = 0
+                    for sourceY in sourceY0..<sourceY1 {
+                        let sourceRow = buffer.advanced(by: sourceY * bytesPerRow)
+                        for sourceX in sourceX0..<sourceX1 {
+                            let pixel = sourceRow.advanced(by: sourceX * 4).assumingMemoryBound(to: UInt8.self)
+                            blue += Int(pixel[0])
+                            green += Int(pixel[1])
+                            red += Int(pixel[2])
+                            count += 1
+                        }
+                    }
+                    let output = destinationPixel.assumingMemoryBound(to: UInt8.self)
+                    output[0] = UInt8(blue / max(1, count))
+                    output[1] = UInt8(green / max(1, count))
+                    output[2] = UInt8(red / max(1, count))
+                    output[3] = 255
                 }
             }
         }

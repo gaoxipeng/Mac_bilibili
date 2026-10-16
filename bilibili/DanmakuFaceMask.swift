@@ -35,6 +35,7 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
     private var analysisPending = false
     private var consecutiveMisses = 0
     private var enabled = true
+    private var mode: DanmakuAvoidanceMode = .face
 
     var isEnabled: Bool {
         lock.lock()
@@ -43,16 +44,19 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         return value
     }
 
-    func setEnabled(_ enabled: Bool) {
+    func setMode(_ mode: DanmakuAvoidanceMode) {
         lock.lock()
-        self.enabled = enabled
-        if !enabled {
-            faces.removeAll(keepingCapacity: true)
-            trackedFaces.removeAll(keepingCapacity: true)
-            consecutiveMisses = 0
-            inputGeneration &+= 1
-            generation &+= 1
+        guard self.mode != mode else {
+            lock.unlock()
+            return
         }
+        self.mode = mode
+        enabled = mode != .off
+        faces.removeAll(keepingCapacity: true)
+        trackedFaces.removeAll(keepingCapacity: true)
+        consecutiveMisses = 0
+        inputGeneration &+= 1
+        generation &+= 1
         lock.unlock()
     }
 
@@ -66,6 +70,7 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         }
         analysisPending = true
         let inputGeneration = self.inputGeneration
+        let mode = self.mode
         lock.unlock()
 
         queue.async { [weak self] in
@@ -92,17 +97,26 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
                 orientation: .up,
                 options: [:]
             )
-            try? handler.perform([faceRequest, personRequest])
+            if mode == .face {
+                try? handler.perform([faceRequest, personRequest])
+            } else {
+                try? handler.perform([personRequest])
+            }
             let personMask = personRequest.results?.first?.pixelBuffer
-            let detected = (faceRequest.results ?? []).compactMap { observation -> DetectedFace? in
-                let box = observation.boundingBox
-                // Only use the segmented head silhouette. If segmentation
-                // cannot provide a reliable contour, leave this face unmasked
-                // instead of substituting a coarse landmark/ellipse shape.
-                guard let contour = self.headSegmentationContour(around: box, pixelBuffer: personMask) else {
-                    return nil
-                }
-                return DetectedFace(boundingBox: box, contour: contour)
+            let detected: [DetectedFace]
+            switch mode {
+            case .off:
+                detected = []
+            case .face:
+                detected = (faceRequest.results ?? []).compactMap { observation in
+                        let box = observation.boundingBox
+                        guard let contour = self.headSegmentationContour(around: box, pixelBuffer: personMask) else {
+                            return nil
+                        }
+                        return DetectedFace(boundingBox: box, contour: contour)
+                    }
+            case .person:
+                detected = self.personSegmentationShapes(pixelBuffer: personMask)
             }
             self.lock.lock()
             let stableDetected: [DetectedFace]
@@ -151,6 +165,93 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         return result
     }
 
+    /// Finds each foreground person component and traces its full-height
+    /// silhouette for the person-avoidance mode.
+    private func personSegmentationShapes(pixelBuffer: CVPixelBuffer?) -> [DetectedFace] {
+        guard let pixelBuffer else { return [] }
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        guard let baseAddress = CVPixelBufferGetBaseAddress(pixelBuffer) else { return [] }
+        let width = CVPixelBufferGetWidth(pixelBuffer)
+        let height = CVPixelBufferGetHeight(pixelBuffer)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        guard width > 1, height > 1 else { return [] }
+
+        let pixelCount = width * height
+        var foreground = [Bool](repeating: false, count: pixelCount)
+        for y in 0..<height {
+            let row = baseAddress.advanced(by: y * bytesPerRow).assumingMemoryBound(to: UInt8.self)
+            let rowStart = y * width
+            for x in 0..<width {
+                foreground[rowStart + x] = row[x] >= 96
+            }
+        }
+
+        let minimumComponentSize = max(24, pixelCount / 12_000)
+        var visited = [Bool](repeating: false, count: pixelCount)
+        var shapes: [DetectedFace] = []
+        for seed in 0..<pixelCount where foreground[seed] && !visited[seed] {
+            var component = [seed]
+            component.reserveCapacity(256)
+            visited[seed] = true
+            var cursor = 0
+            while cursor < component.count {
+                let current = component[cursor]
+                cursor += 1
+                let x = current % width
+                let y = current / width
+                for offsetY in -1...1 {
+                    let nextY = y + offsetY
+                    guard nextY >= 0, nextY < height else { continue }
+                    for offsetX in -1...1 where offsetX != 0 || offsetY != 0 {
+                        let nextX = x + offsetX
+                        guard nextX >= 0, nextX < width else { continue }
+                        let next = nextY * width + nextX
+                        guard foreground[next], !visited[next] else { continue }
+                        visited[next] = true
+                        component.append(next)
+                    }
+                }
+            }
+            guard component.count >= minimumComponentSize else { continue }
+
+            var leftByRow = [Int](repeating: width, count: height)
+            var rightByRow = [Int](repeating: -1, count: height)
+            var minX = width
+            var maxX = 0
+            var minY = height
+            var maxY = 0
+            for index in component {
+                let x = index % width
+                let y = index / width
+                leftByRow[y] = min(leftByRow[y], x)
+                rightByRow[y] = max(rightByRow[y], x)
+                minX = min(minX, x)
+                maxX = max(maxX, x)
+                minY = min(minY, y)
+                maxY = max(maxY, y)
+            }
+
+            var leftEdge: [CGPoint] = []
+            var rightEdge: [CGPoint] = []
+            for y in minY...maxY where rightByRow[y] >= leftByRow[y] {
+                let normalizedY = 1 - CGFloat(y) / CGFloat(height - 1)
+                leftEdge.append(CGPoint(x: CGFloat(leftByRow[y]) / CGFloat(width - 1), y: normalizedY))
+                rightEdge.append(CGPoint(x: CGFloat(rightByRow[y]) / CGFloat(width - 1), y: normalizedY))
+            }
+            guard leftEdge.count >= 2 else { continue }
+            let contour = smoothEdge(leftEdge) + smoothEdge(rightEdge).reversed()
+            let box = CGRect(
+                x: CGFloat(minX) / CGFloat(width - 1),
+                y: 1 - CGFloat(maxY) / CGFloat(height - 1),
+                width: CGFloat(maxX - minX) / CGFloat(width - 1),
+                height: CGFloat(maxY - minY) / CGFloat(height - 1)
+            )
+            shapes.append(DetectedFace(boundingBox: box, contour: contour))
+        }
+        return shapes
+    }
+
     /// Traces a head-shaped envelope from the upper-person segmentation mask.
     /// The ROI spans from above the forehead to the lower face and stays narrow
     /// enough to avoid pulling shoulders into the contour.
@@ -165,32 +266,111 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
         let bytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
-        let minX = max(0, face.minX - face.width * 0.42)
-        let maxX = min(1, face.maxX + face.width * 0.42)
-        let minY = max(0, face.minY - face.height * 0.08)
-        let maxY = min(1, face.maxY + face.height * 0.82)
+        // Face rectangles omit hair by design, especially behind a profile.
+        // Use a wider ROI, then keep only the connected person-mask component
+        // containing this face so nearby people/background aren't swept in.
+        let minX = max(0, face.minX - face.width * 1.6)
+        let maxX = min(1, face.maxX + face.width * 1.6)
+        // Extend below the detected face box so a low-confidence jaw/chin is
+        // not cut off at the detector's rectangle boundary.
+        let minY = max(0, face.minY - face.height * 0.28)
+        let maxY = min(1, face.maxY + face.height * 1.10)
         let x0 = max(0, Int((minX * CGFloat(width - 1)).rounded(.down)))
         let x1 = min(width - 1, Int((maxX * CGFloat(width - 1)).rounded(.up)))
+        let y0 = max(0, Int(((1 - maxY) * CGFloat(height - 1)).rounded(.down)))
+        let y1 = min(height - 1, Int(((1 - minY) * CGFloat(height - 1)).rounded(.up)))
+        guard x1 > x0, y1 > y0 else { return nil }
+
+        let roiWidth = x1 - x0 + 1
+        let roiHeight = y1 - y0 + 1
+        var foreground = [Bool](repeating: false, count: roiWidth * roiHeight)
+        for localY in 0..<roiHeight {
+            let pixelY = y0 + localY
+            let row = baseAddress.advanced(by: pixelY * bytesPerRow).assumingMemoryBound(to: UInt8.self)
+            let normalizedY = 1 - CGFloat(pixelY) / CGFloat(max(1, height - 1))
+            let distanceBelowFace = face.minY - normalizedY
+            let threshold: UInt8 = (-face.height * 0.12...face.height * 0.35).contains(distanceBelowFace)
+                ? 64
+                : 96
+            for localX in 0..<roiWidth {
+                foreground[localY * roiWidth + localX] = row[x0 + localX] >= threshold
+            }
+        }
+
+        // Anchor the flood fill inside the detected face. This prevents a
+        // neighboring person's mask from extending the back-of-head edge.
+        let faceX0 = max(x0, Int((face.minX * CGFloat(width - 1)).rounded(.down)))
+        let faceX1 = min(x1, Int((face.maxX * CGFloat(width - 1)).rounded(.up)))
+        let faceY0 = max(y0, Int(((1 - face.maxY) * CGFloat(height - 1)).rounded(.down)))
+        let faceY1 = min(y1, Int(((1 - face.minY) * CGFloat(height - 1)).rounded(.up)))
+        let anchorX = min(x1, max(x0, Int((face.midX * CGFloat(width - 1)).rounded())))
+        let anchorY = min(y1, max(y0, Int(((1 - face.midY) * CGFloat(height - 1)).rounded())))
+        var seed: Int?
+        var nearestDistance = Int.max
+        if faceX0 <= faceX1, faceY0 <= faceY1 {
+            for pixelY in faceY0...faceY1 {
+                for pixelX in faceX0...faceX1 {
+                    let localX = pixelX - x0
+                    let localY = pixelY - y0
+                    let index = localY * roiWidth + localX
+                    guard foreground[index] else { continue }
+                    let dx = pixelX - anchorX
+                    let dy = pixelY - anchorY
+                    let distance = dx * dx + dy * dy
+                    if distance < nearestDistance {
+                        seed = index
+                        nearestDistance = distance
+                    }
+                }
+            }
+        }
+        guard let seed else { return nil }
+
+        var component = [Bool](repeating: false, count: foreground.count)
+        var queue = [seed]
+        component[seed] = true
+        var queueIndex = 0
+        while queueIndex < queue.count {
+            let current = queue[queueIndex]
+            queueIndex += 1
+            let currentX = current % roiWidth
+            let currentY = current / roiWidth
+            for offsetY in -1...1 {
+                let nextY = currentY + offsetY
+                guard nextY >= 0, nextY < roiHeight else { continue }
+                for offsetX in -1...1 where offsetX != 0 || offsetY != 0 {
+                    let nextX = currentX + offsetX
+                    guard nextX >= 0, nextX < roiWidth else { continue }
+                    let next = nextY * roiWidth + nextX
+                    guard foreground[next], !component[next] else { continue }
+                    component[next] = true
+                    queue.append(next)
+                }
+            }
+        }
+
         var leftEdge: [CGPoint] = []
         var rightEdge: [CGPoint] = []
-        leftEdge.reserveCapacity(96)
-        rightEdge.reserveCapacity(96)
-        for y in stride(from: 0, to: height, by: 1) {
-            let normalizedY = 1 - CGFloat(y) / CGFloat(max(1, height - 1))
-            guard normalizedY >= minY, normalizedY <= maxY else { continue }
-            let row = baseAddress.advanced(by: y * bytesPerRow).assumingMemoryBound(to: UInt8.self)
+        leftEdge.reserveCapacity(roiHeight)
+        rightEdge.reserveCapacity(roiHeight)
+        for localY in 0..<roiHeight {
             var first: Int?
             var last: Int?
-            var foregroundCount = 0
-            for x in stride(from: x0, through: x1, by: 1) where row[x] >= 128 {
-                if first == nil { first = x }
-                last = x
-                foregroundCount += 1
+            for localX in 0..<roiWidth where component[localY * roiWidth + localX] {
+                if first == nil { first = localX }
+                last = localX
             }
-            guard foregroundCount >= 3, let first, let last, last > first else { continue }
-            let normalized = 1 - CGFloat(y) / CGFloat(max(1, height - 1))
-            leftEdge.append(CGPoint(x: CGFloat(first) / CGFloat(max(1, width - 1)), y: normalized))
-            rightEdge.append(CGPoint(x: CGFloat(last) / CGFloat(max(1, width - 1)), y: normalized))
+            guard let first, let last else { continue }
+            let pixelY = y0 + localY
+            let normalizedY = 1 - CGFloat(pixelY) / CGFloat(max(1, height - 1))
+            leftEdge.append(CGPoint(
+                x: CGFloat(x0 + first) / CGFloat(max(1, width - 1)),
+                y: normalizedY
+            ))
+            rightEdge.append(CGPoint(
+                x: CGFloat(x0 + last) / CGFloat(max(1, width - 1)),
+                y: normalizedY
+            ))
         }
         guard leftEdge.count >= 6 else { return nil }
         // Lightly smooth row-to-row mask noise while preserving the silhouette.

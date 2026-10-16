@@ -408,7 +408,7 @@ final class DanmakuRenderNSView: NSView {
         defer { CATransaction.commit() }
         ensureDanmakuContainers()
         guard let scrollingContainer else { return }
-        guard settings.smartFaceAvoidanceEnabled else {
+        guard settings.avoidanceMode != .off else {
             scrollingContainer.mask = nil
             return
         }

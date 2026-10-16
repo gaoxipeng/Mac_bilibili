@@ -348,12 +348,6 @@ private struct DetailFloatingChrome: View {
         )
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .allowsHitTesting(showsActiveChrome || showsFloatingBackButton || canExitSearchResults || showsDefaultRefreshChrome)
-        .animation(.easeOut(duration: 0.26), value: showsFloatingBackButton)
-        .animation(.easeOut(duration: 0.26), value: canGoBack)
-        .animation(.easeOut(duration: 0.26), value: detailChrome?.title)
-        .animation(.easeOut(duration: 0.26), value: profileChrome?.name)
-        .animation(.easeOut(duration: 0.26), value: relationChrome?.hostName)
-        .animation(.easeOut(duration: 0.26), value: model.activeFloatingChromeKind)
     }
 
     @ViewBuilder
@@ -371,12 +365,6 @@ private struct DetailFloatingChrome: View {
         )
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .allowsHitTesting(showsActiveChrome || showsFloatingBackButton || canExitSearchResults || showsDefaultRefreshChrome)
-        .animation(.easeOut(duration: 0.26), value: showsFloatingBackButton)
-        .animation(.easeOut(duration: 0.26), value: canGoBack)
-        .animation(.easeOut(duration: 0.26), value: detailChrome?.title)
-        .animation(.easeOut(duration: 0.26), value: profileChrome?.name)
-        .animation(.easeOut(duration: 0.26), value: relationChrome?.hostName)
-        .animation(.easeOut(duration: 0.26), value: model.activeFloatingChromeKind)
     }
 
     @ViewBuilder

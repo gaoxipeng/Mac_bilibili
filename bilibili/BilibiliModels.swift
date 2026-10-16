@@ -892,12 +892,28 @@ nonisolated enum DanmakuSpeedLevel: Int, CaseIterable, Sendable {
     }
 }
 
+nonisolated enum DanmakuAvoidanceMode: Int, CaseIterable, Identifiable, Sendable {
+    case off
+    case face
+    case person
+
+    var id: Int { rawValue }
+
+    var label: String {
+        switch self {
+        case .off: "关"
+        case .face: "防挡脸"
+        case .person: "防挡人形"
+        }
+    }
+}
+
 nonisolated struct DanmakuSettings: Equatable, Sendable {
     var displayAreaPercent: Int
     var opacityPercent: Int
     var fontSizePercent: Int
     var speedLevel: DanmakuSpeedLevel
-    var smartFaceAvoidanceEnabled: Bool
+    var avoidanceMode: DanmakuAvoidanceMode
 
     static let displayAreaOptions = [10, 25, 50, 75, 100]
 
@@ -906,13 +922,13 @@ nonisolated struct DanmakuSettings: Equatable, Sendable {
         opacityPercent: Int = 100,
         fontSizePercent: Int = 100,
         speedLevel: DanmakuSpeedLevel = .medium,
-        smartFaceAvoidanceEnabled: Bool = true
+        avoidanceMode: DanmakuAvoidanceMode = .face
     ) {
         self.displayAreaPercent = displayAreaPercent
         self.opacityPercent = opacityPercent
         self.fontSizePercent = fontSizePercent
         self.speedLevel = speedLevel
-        self.smartFaceAvoidanceEnabled = smartFaceAvoidanceEnabled
+        self.avoidanceMode = avoidanceMode
     }
 
     var displayAreaIndex: Int {

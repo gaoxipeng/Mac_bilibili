@@ -4,3 +4,4 @@ release/*.zip
 *.xcuserstate
 xcuserdata/
 perf-traces/
+build_release/

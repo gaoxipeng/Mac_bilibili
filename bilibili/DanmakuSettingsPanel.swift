@@ -61,11 +61,9 @@ struct DanmakuSettingsOverlay: View {
                         }
                     )
                 }
-                DanmakuSettingToggleRow(
-                    title: "智能防挡脸",
-                    isOn: settings.smartFaceAvoidanceEnabled,
-                    onChange: { onSettingsChange(settings.with(smartFaceAvoidanceEnabled: $0)) }
-                )
+                DanmakuAvoidanceCapsule(selection: settings.avoidanceMode) { mode in
+                    onSettingsChange(settings.with(avoidanceMode: mode))
+                }
             }
             .padding(22)
             .frame(minWidth: 470, maxWidth: 470)
@@ -80,28 +78,104 @@ struct DanmakuSettingsOverlay: View {
     }
 }
 
-private struct DanmakuSettingToggleRow: View {
-    let title: String
-    let isOn: Bool
-    let onChange: (Bool) -> Void
+private struct DanmakuAvoidanceCapsule: View {
+    let selection: DanmakuAvoidanceMode
+    let onChange: (DanmakuAvoidanceMode) -> Void
 
     var body: some View {
         HStack(alignment: .center, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(DanmakuSettingsChrome.title)
-                Text(isOn ? "已开启" : "已关闭")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(DanmakuSettingsChrome.value)
-            }
-            .frame(width: 116, alignment: .leading)
+            Text("智能防遮挡")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundStyle(DanmakuSettingsChrome.title)
+                .frame(width: 116, alignment: .leading)
 
-            Toggle("", isOn: Binding(get: { isOn }, set: onChange))
-                .labelsHidden()
-                .toggleStyle(.switch)
-                .tint(Color(red: 0, green: 174 / 255, blue: 236 / 255))
-                .frame(maxWidth: .infinity, alignment: .trailing)
+            DanmakuAvoidanceSwitch(selection: selection, onChange: onChange)
+                .frame(maxWidth: .infinity)
+                .frame(height: 34)
+        }
+    }
+}
+
+/// Three positions with the same inset white thumb / colored track proportions as a switch.
+private struct DanmakuAvoidanceSwitch: View {
+    let selection: DanmakuAvoidanceMode
+    let onChange: (DanmakuAvoidanceMode) -> Void
+
+    @State private var isPressed = false
+    @State private var dragX: CGFloat?
+
+    private let inset: CGFloat = 3
+    private let modes = DanmakuAvoidanceMode.allCases
+
+    var body: some View {
+        GeometryReader { proxy in
+            let trackWidth = max(1, proxy.size.width - inset * 2)
+            let segmentWidth = trackWidth / CGFloat(modes.count)
+            let index = modes.firstIndex(of: selection) ?? 0
+            let restingX = inset + CGFloat(index) * segmentWidth
+            let thumbX = dragX.map {
+                min(max($0 - segmentWidth / 2, inset), proxy.size.width - inset - segmentWidth)
+            } ?? restingX
+
+            ZStack(alignment: .leading) {
+                Capsule()
+                    .fill(selection == .off
+                        ? Color.black.opacity(0.22)
+                        : Color(red: 0, green: 174 / 255, blue: 236 / 255))
+
+                Capsule()
+                    .fill(.white.opacity(isPressed ? 0.3 : 1))
+                    .glassEffect(.clear.interactive(), in: .capsule)
+                    .shadow(color: .black.opacity(0.14), radius: 2, y: 1)
+                    .frame(width: segmentWidth, height: proxy.size.height - inset * 2)
+                    .offset(x: thumbX)
+                    .animation(.smooth(duration: 0.35), value: thumbX)
+                    .animation(.easeInOut(duration: 0.25), value: isPressed)
+
+                HStack(spacing: 0) {
+                    ForEach(modes) { mode in
+                        Text(mode.label)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(mode == selection ? DanmakuSettingsChrome.title : .white.opacity(0.92))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+                .padding(.horizontal, inset)
+                .allowsHitTesting(false)
+            }
+            .contentShape(Capsule())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        isPressed = true
+                        dragX = value.location.x
+                        select(at: value.location.x, segmentWidth: segmentWidth)
+                    }
+                    .onEnded { value in
+                        select(at: value.location.x, segmentWidth: segmentWidth)
+                        dragX = nil
+                        isPressed = false
+                    }
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("智能防遮挡")
+            .accessibilityValue(selection.label)
+            .accessibilityAdjustableAction { direction in
+                let index = modes.firstIndex(of: selection) ?? 0
+                switch direction {
+                case .increment: onChange(modes[min(index + 1, modes.count - 1)])
+                case .decrement: onChange(modes[max(index - 1, 0)])
+                @unknown default: break
+                }
+            }
+        }
+    }
+
+    private func select(at x: CGFloat, segmentWidth: CGFloat) {
+        let index = min(modes.count - 1, max(0, Int((x - inset) / max(1, segmentWidth))))
+        guard modes[index] != selection else { return }
+        withAnimation(.smooth(duration: 0.35)) {
+            onChange(modes[index])
         }
     }
 }
@@ -287,14 +361,14 @@ private extension DanmakuSettings {
         opacityPercent: Int? = nil,
         fontSizePercent: Int? = nil,
         speedLevel: DanmakuSpeedLevel? = nil,
-        smartFaceAvoidanceEnabled: Bool? = nil
+        avoidanceMode: DanmakuAvoidanceMode? = nil
     ) -> DanmakuSettings {
         DanmakuSettings(
             displayAreaPercent: displayAreaPercent ?? self.displayAreaPercent,
             opacityPercent: opacityPercent ?? self.opacityPercent,
             fontSizePercent: fontSizePercent ?? self.fontSizePercent,
             speedLevel: speedLevel ?? self.speedLevel,
-            smartFaceAvoidanceEnabled: smartFaceAvoidanceEnabled ?? self.smartFaceAvoidanceEnabled
+            avoidanceMode: avoidanceMode ?? self.avoidanceMode
         )
     }
 }

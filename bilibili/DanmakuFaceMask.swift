@@ -1,5 +1,7 @@
+import CoreML
 import CoreVideo
 import Foundation
+import OSLog
 import Vision
 
 /// Low-resolution, local face analysis for the danmaku compositor.
@@ -23,10 +25,16 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         var contour: [CGPoint]
     }
 
-    private let queue = DispatchQueue(
+    // Different players can overlap briefly while navigating. Keep Vision's
+    // model work serialized across analyzers as well as across video frames.
+    private static let queue = DispatchQueue(
         label: "bilibili.danmaku-face-mask",
         qos: .utility
     )
+    private static let logger = Logger(subsystem: "gaoxipeng.bilibili", category: "DanmakuVision")
+    // Accessed only on the shared analysis queue.
+    private var requests: (generation: UInt64, face: VNDetectFaceRectanglesRequest, person: VNGeneratePersonSegmentationRequest)?
+    private var reportedAnalysisError = false
     private let lock = NSLock()
     private var generation: UInt64 = 0
     private var inputGeneration: UInt64 = 0
@@ -61,7 +69,11 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
     }
 
     func submit(data: Data, width: Int, height: Int, bytesPerRow: Int) {
-        guard width > 1, height > 1, bytesPerRow >= width * 4 else { return }
+        guard width > 1, height > 1,
+              width <= Int.max / 4,
+              bytesPerRow >= width * 4,
+              height <= Int.max / bytesPerRow,
+              data.count >= height * bytesPerRow else { return }
 
         lock.lock()
         guard enabled, !analysisPending else {
@@ -73,7 +85,7 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         let mode = self.mode
         lock.unlock()
 
-        queue.async { [weak self] in
+        Self.queue.async { [weak self] in
             guard let self else { return }
             defer {
                 self.lock.lock()
@@ -81,71 +93,112 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
                 self.lock.unlock()
             }
 
-            guard let pixelBuffer = self.makePixelBuffer(
-                data: data,
-                width: width,
-                height: height,
-                bytesPerRow: bytesPerRow
-            ) else { return }
-
-            let faceRequest = VNDetectFaceRectanglesRequest()
-            let personRequest = VNGeneratePersonSegmentationRequest()
-            personRequest.qualityLevel = .accurate
-            personRequest.outputPixelFormat = kCVPixelFormatType_OneComponent8
-            let handler = VNImageRequestHandler(
-                cvPixelBuffer: pixelBuffer,
-                orientation: .up,
-                options: [:]
-            )
-            if mode == .face {
-                try? handler.perform([faceRequest, personRequest])
-            } else {
-                try? handler.perform([personRequest])
-            }
-            let personMask = personRequest.results?.first?.pixelBuffer
-            let detected: [DetectedFace]
-            switch mode {
-            case .off:
-                detected = []
-            case .face:
-                detected = (faceRequest.results ?? []).compactMap { observation in
-                        let box = observation.boundingBox
-                        guard let contour = self.headSegmentationContour(around: box, pixelBuffer: personMask) else {
-                            return nil
-                        }
-                        return DetectedFace(boundingBox: box, contour: contour)
-                    }
-            case .person:
-                detected = self.personSegmentationShapes(pixelBuffer: personMask)
-            }
-            self.lock.lock()
-            let stableDetected: [DetectedFace]
-            if detected.isEmpty, !self.trackedFaces.isEmpty, self.consecutiveMisses < 1 {
-                // Ignore one transient missed analysis, but at 8 Hz retain the
-                // old contour for no more than roughly 125 ms.
-                self.consecutiveMisses += 1
-                stableDetected = self.trackedFaces
-            } else {
-                self.consecutiveMisses = 0
-                stableDetected = detected
-            }
-            self.lock.unlock()
-            let smoothed = self.smooth(stableDetected)
-
-            self.lock.lock()
-            guard self.inputGeneration == inputGeneration, self.enabled else {
+            // Bound Objective-C / Vision temporaries to one frame rather than
+            // letting them accumulate during a long playback session.
+            autoreleasepool {
+                self.lock.lock()
+                let isCurrent = self.enabled && self.inputGeneration == inputGeneration
                 self.lock.unlock()
-                return
-            }
-            self.faces = smoothed.map {
-                Face(
-                    boundingBox: $0.boundingBox,
-                    contour: $0.contour
+                guard isCurrent else { return }
+
+                guard let pixelBuffer = self.makePixelBuffer(
+                    data: data,
+                    width: width,
+                    height: height,
+                    bytesPerRow: bytesPerRow
+                ) else { return }
+
+                let faceRequest: VNDetectFaceRectanglesRequest
+                let personRequest: VNGeneratePersonSegmentationRequest
+                let handler = VNImageRequestHandler(
+                    cvPixelBuffer: pixelBuffer,
+                    orientation: .up,
+                    options: [:]
                 )
+                do {
+                    let requests = try self.analysisRequests(for: inputGeneration)
+                    faceRequest = requests.face
+                    personRequest = requests.person
+                    // Hold the input, requests and handler through synchronous
+                    // completion of Vision's internally dispatched detector work.
+                    try withExtendedLifetime((pixelBuffer, handler, faceRequest, personRequest)) {
+                        try handler.perform(mode == .face ? [faceRequest, personRequest] : [personRequest])
+                    }
+                    self.reportedAnalysisError = false
+                } catch {
+                    if !self.reportedAnalysisError {
+                        Self.logger.error("Danmaku analysis skipped: \(error.localizedDescription, privacy: .public)")
+                        self.reportedAnalysisError = true
+                    }
+                    return
+                }
+                let personMask = personRequest.results?.first?.pixelBuffer
+                let detected: [DetectedFace]
+                switch mode {
+                case .off:
+                    detected = []
+                case .face:
+                    detected = (faceRequest.results ?? []).compactMap { observation in
+                            let box = observation.boundingBox
+                            guard let contour = self.headSegmentationContour(around: box, pixelBuffer: personMask) else {
+                                return nil
+                            }
+                            return DetectedFace(boundingBox: box, contour: contour)
+                        }
+                case .person:
+                    detected = self.personSegmentationShapes(pixelBuffer: personMask)
+                }
+                self.lock.lock()
+                defer { self.lock.unlock() }
+                // Check before modifying *any* tracking state. Reset/mode changes
+                // may happen while Vision is processing an older frame.
+                guard self.inputGeneration == inputGeneration, self.enabled else { return }
+                let stableDetected: [DetectedFace]
+                if detected.isEmpty, !self.trackedFaces.isEmpty, self.consecutiveMisses < 1 {
+                    // Ignore one transient missed analysis (one 12 Hz sample).
+                    self.consecutiveMisses += 1
+                    stableDetected = self.trackedFaces
+                } else {
+                    self.consecutiveMisses = 0
+                    stableDetected = detected
+                }
+                let smoothed = self.smooth(stableDetected, previous: self.trackedFaces)
+                self.trackedFaces = smoothed
+                self.faces = smoothed.map {
+                    Face(
+                        boundingBox: $0.boundingBox,
+                        contour: $0.contour
+                    )
+                }
+                self.generation &+= 1
             }
-            self.generation &+= 1
-            self.lock.unlock()
         }
+    }
+
+    /// Select only devices advertised by Vision, without entering the ANE
+    /// pixel-buffer copy path implicated in the macOS 27.2 crash report.
+    private func analysisRequests(for generation: UInt64) throws -> (face: VNDetectFaceRectanglesRequest, person: VNGeneratePersonSegmentationRequest) {
+        if let requests, requests.generation == generation {
+            return (requests.face, requests.person)
+        }
+        let person = VNGeneratePersonSegmentationRequest()
+        person.qualityLevel = .accurate
+        person.outputPixelFormat = kCVPixelFormatType_OneComponent8
+        let stages = try person.supportedComputeStageDevices
+        guard stages[.main] != nil else {
+            throw NSError(domain: "DanmakuVision", code: 1, userInfo: [NSLocalizedDescriptionKey: "No supported segmentation compute stage"])
+        }
+        for (stage, devices) in stages {
+            let gpu = devices.first { if case .gpu = $0 { return true }; return false }
+            let cpu = devices.first { if case .cpu = $0 { return true }; return false }
+            guard let device = gpu ?? cpu else {
+                throw NSError(domain: "DanmakuVision", code: 2, userInfo: [NSLocalizedDescriptionKey: "No supported GPU/CPU device for segmentation"])
+            }
+            person.setComputeDevice(device, for: stage)
+        }
+        let face = VNDetectFaceRectanglesRequest()
+        requests = (generation, face, person)
+        return (face, person)
     }
 
     func reset() {
@@ -390,10 +443,7 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         }
     }
 
-    private func smooth(_ detected: [DetectedFace]) -> [DetectedFace] {
-        lock.lock()
-        let previous = trackedFaces
-        lock.unlock()
+    private func smooth(_ detected: [DetectedFace], previous: [DetectedFace]) -> [DetectedFace] {
 
         let alpha: CGFloat = 0.34
         var result: [DetectedFace] = []
@@ -422,9 +472,6 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
             }
         }
 
-        lock.lock()
-        trackedFaces = result
-        lock.unlock()
         return result
     }
 
@@ -463,6 +510,8 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
             height,
             kCVPixelFormatType_32BGRA,
             [
+                kCVPixelBufferIOSurfacePropertiesKey: [:] as CFDictionary,
+                kCVPixelBufferMetalCompatibilityKey: true,
                 kCVPixelBufferCGImageCompatibilityKey: true,
                 kCVPixelBufferCGBitmapContextCompatibilityKey: true,
             ] as CFDictionary,
@@ -470,15 +519,15 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         )
         guard status == kCVReturnSuccess, let pixelBuffer else { return nil }
 
-        CVPixelBufferLockBaseAddress(pixelBuffer, [])
+        guard CVPixelBufferLockBaseAddress(pixelBuffer, []) == kCVReturnSuccess else { return nil }
         defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
         guard let destination = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
         let destinationBytesPerRow = CVPixelBufferGetBytesPerRow(pixelBuffer)
+        guard destinationBytesPerRow >= width * 4 else { return nil }
         data.withUnsafeBytes { source in
             guard let sourceBase = source.baseAddress else { return }
             for row in 0..<height {
                 let sourceOffset = row * bytesPerRow
-                guard sourceOffset + width * 4 <= data.count else { return }
                 memcpy(
                     destination.advanced(by: row * destinationBytesPerRow),
                     sourceBase.advanced(by: sourceOffset),

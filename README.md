@@ -2,7 +2,7 @@
 
 一款面向 macOS 的哔哩哔哩第三方客户端，使用 SwiftUI 构建，注重原生桌面体验与视频播放能力。
 
-**当前版本：20261022**
+**当前版本：20261022.1**
 
 ## 功能概览
 
@@ -29,10 +29,10 @@
 
 ### 直接下载（推荐）
 
-前往 [Releases](https://github.com/gaoxipeng/Mac_bilibili/releases) 下载最新 `bilibili-20261022-macOS.zip`，解压后将 `bilibili.app` 拖入「应用程序」即可。
+前往 [Releases](https://github.com/gaoxipeng/Mac_bilibili/releases) 下载最新 `bilibili-20261022.1-macOS.zip`，解压后将 `bilibili.app` 拖入「应用程序」即可。
 
-> 当前安装包未签名/未公证。若 macOS 提示无法打开，请在「系统设置 → 隐私与安全性」中允许运行。
-> 由于这是未经过 Apple Developer ID 公证的个人分享版本，首次运行前请在终端执行：
+> 当前安装包使用固定 Apple Development 证书签名，尚未经过 Developer ID 公证。若 macOS 提示无法打开，请在「系统设置 → 隐私与安全性」中允许运行。
+> 由于这是未经过 Apple Developer ID 公证的个人分享版本，若首次运行被系统拦截，可在终端执行：
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/bilibili.app
@@ -92,3 +92,13 @@ Mac_bilibili/
 ## 许可证
 
 暂未指定开源许可证。如需二次分发或商用，请先与仓库维护者联系。
+
+## 发布打包
+
+Release 使用固定证书签名，避免每次更新的 ad-hoc 哈希改变导致钥匙串重复授权。先构建 Release，再执行：
+
+```bash
+python3 scripts/package-release.py --identity '<本机 Apple Development 或 Developer ID 证书 SHA-1>'
+```
+
+脚本验证签名并生成 `release/bilibili-版本号-macOS.zip`；不要再将应用主程序改签为 ad-hoc。公开分发建议使用 Developer ID 并完成公证。旧版钥匙串权限无法静默迁移时，需要重新登录哔哩哔哩一次，不需要在后台输入电脑密码。

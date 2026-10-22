@@ -297,6 +297,9 @@ final class AppModel: ObservableObject {
         guard !didLoadInitialData else { return }
         didLoadInitialData = true
         account = accountStore.load()
+        if accountStore.needsLoginRecovery {
+            loginMessage = "旧版登录信息的钥匙串权限已失效，请重新登录哔哩哔哩一次"
+        }
         restoreHomeFeedFromCacheIfNeeded()
         restoreMineSpaceFromCacheIfNeeded()
         Task { await api.warmUp(credential: account?.credential) }
@@ -997,7 +1000,7 @@ final class AppModel: ObservableObject {
                 credential: credential
             )
             self.account = savedAccount
-            accountStore.save(savedAccount)
+            let accountPersisted = accountStore.save(savedAccount)
             if let mid = Int64(savedAccount.uid), mid > 0 {
                 mineSpaceCache = profileSpaceStore.read(mid: mid)
             } else {
@@ -1005,7 +1008,9 @@ final class AppModel: ObservableObject {
             }
             await api.invalidateWBICache()
             await api.warmUp(credential: savedAccount.credential)
-            if credential.accessKey.isEmpty {
+            if !accountPersisted {
+                loginMessage = "已登录，但暂时无法保存到钥匙串；重启后可能需要重新登录"
+            } else if credential.accessKey.isEmpty {
                 loginMessage = "已登录 \(savedAccount.name)，accessKey 交换失败：\(exchangeResult.status.summary)"
             } else {
                 loginMessage = "已登录 \(savedAccount.name)"

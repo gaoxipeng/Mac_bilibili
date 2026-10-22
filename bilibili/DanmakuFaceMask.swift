@@ -1,4 +1,3 @@
-import CoreML
 import CoreVideo
 import Foundation
 import OSLog
@@ -32,8 +31,6 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         qos: .utility
     )
     private static let logger = Logger(subsystem: "gaoxipeng.bilibili", category: "DanmakuVision")
-    // Accessed only on the shared analysis queue.
-    private var requests: (generation: UInt64, face: VNDetectFaceRectanglesRequest, person: VNGeneratePersonSegmentationRequest)?
     private var reportedAnalysisError = false
     private let lock = NSLock()
     private var generation: UInt64 = 0
@@ -116,7 +113,7 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
                     options: [:]
                 )
                 do {
-                    let requests = try self.analysisRequests(for: inputGeneration)
+                    let requests = self.analysisRequests()
                     faceRequest = requests.face
                     personRequest = requests.person
                     // Hold the input, requests and handler through synchronous
@@ -175,29 +172,13 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         }
     }
 
-    /// Select only devices advertised by Vision, without entering the ANE
-    /// pixel-buffer copy path implicated in the macOS 27.2 crash report.
-    private func analysisRequests(for generation: UInt64) throws -> (face: VNDetectFaceRectanglesRequest, person: VNGeneratePersonSegmentationRequest) {
-        if let requests, requests.generation == generation {
-            return (requests.face, requests.person)
-        }
+    /// Keep Vision's default device selection, matching the original detection
+    /// path, while retaining validated buffers and generation isolation.
+    private func analysisRequests() -> (face: VNDetectFaceRectanglesRequest, person: VNGeneratePersonSegmentationRequest) {
         let person = VNGeneratePersonSegmentationRequest()
         person.qualityLevel = .accurate
         person.outputPixelFormat = kCVPixelFormatType_OneComponent8
-        let stages = try person.supportedComputeStageDevices
-        guard stages[.main] != nil else {
-            throw NSError(domain: "DanmakuVision", code: 1, userInfo: [NSLocalizedDescriptionKey: "No supported segmentation compute stage"])
-        }
-        for (stage, devices) in stages {
-            let gpu = devices.first { if case .gpu = $0 { return true }; return false }
-            let cpu = devices.first { if case .cpu = $0 { return true }; return false }
-            guard let device = gpu ?? cpu else {
-                throw NSError(domain: "DanmakuVision", code: 2, userInfo: [NSLocalizedDescriptionKey: "No supported GPU/CPU device for segmentation"])
-            }
-            person.setComputeDevice(device, for: stage)
-        }
         let face = VNDetectFaceRectanglesRequest()
-        requests = (generation, face, person)
         return (face, person)
     }
 

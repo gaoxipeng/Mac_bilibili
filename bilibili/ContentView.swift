@@ -197,6 +197,13 @@ struct ContentView: View {
                     navigationPath = NavigationPath()
                     return
                 }
+                if model.selectedSection == .home {
+                    Task {
+                        guard !model.isSectionLoading(.home) else { return }
+                        await model.refreshHome()
+                    }
+                    return
+                }
                 // Re-tapping the sidebar avatar on「我的」should also refresh the
                 // floating header (avatar / ID), not only when leaving and returning.
                 if model.selectedSection == .mine {

@@ -220,6 +220,7 @@ final class VideoPlaybackEngine: ObservableObject {
             videoURL: stream.videoURL,
             fallbackVideoURLs: stream.videoFallbackURLs,
             audioURL: stream.audioURL,
+            audioFallbackURLs: stream.audioFallbackURLs,
             headers: headers,
             start: max(0, startSeconds)
         )
@@ -619,6 +620,7 @@ final class VideoPlaybackEngine: ObservableObject {
                     videoURL: stream.videoURL,
                     fallbackVideoURLs: stream.videoFallbackURLs,
                     audioURL: stream.audioURL,
+                    audioFallbackURLs: stream.audioFallbackURLs,
                     headers: playbackHeaders,
                     start: resumeSeconds
                 )

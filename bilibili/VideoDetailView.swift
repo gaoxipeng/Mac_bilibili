@@ -671,6 +671,7 @@ final class VideoDetailModel: ObservableObject {
                 videoURL: stream.videoURL,
                 videoFallbackURLs: stream.videoFallbackURLs,
                 audioURL: stream.audioURL,
+                audioFallbackURLs: stream.audioFallbackURLs,
                 aid: displayVideo.aid > 0 ? displayVideo.aid : stream.aid,
                 cid: cid,
                 lastPlayTimeMilliseconds: stream.lastPlayTimeMilliseconds,

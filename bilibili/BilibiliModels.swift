@@ -623,6 +623,7 @@ struct BiliPlayStream: Hashable, Sendable {
     let videoURL: String
     let videoFallbackURLs: [String]
     let audioURL: String?
+    let audioFallbackURLs: [String]
     let aid: Int64
     let cid: Int64
     let lastPlayTimeMilliseconds: Int64
@@ -632,6 +633,7 @@ struct BiliPlayStream: Hashable, Sendable {
         videoURL: String,
         videoFallbackURLs: [String] = [],
         audioURL: String?,
+        audioFallbackURLs: [String] = [],
         aid: Int64,
         cid: Int64,
         lastPlayTimeMilliseconds: Int64 = 0,
@@ -640,6 +642,8 @@ struct BiliPlayStream: Hashable, Sendable {
         self.videoURL = videoURL
         self.videoFallbackURLs = videoFallbackURLs.filter { !$0.isEmpty && $0 != videoURL }
         self.audioURL = audioURL
+        var seenAudioURLs = Set([audioURL].compactMap { $0 })
+        self.audioFallbackURLs = audioFallbackURLs.filter { !$0.isEmpty && seenAudioURLs.insert($0).inserted }
         self.aid = aid
         self.cid = cid
         self.lastPlayTimeMilliseconds = max(0, lastPlayTimeMilliseconds)

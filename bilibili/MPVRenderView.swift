@@ -405,7 +405,10 @@ final class MPVRenderView: NSView {
     private var metalRenderer: MPVSoftwareMetalRenderer?
     private var isConfigured = false
     private var mpvCoreReady = false
-    private var pendingAudioURL: String?
+    private var remainingAudioURLs: [String] = []
+    private var pendingAudioCommandID: UInt64?
+    private var nextAudioCommandID: UInt64 = 0
+    private var loadGeneration: UInt64 = 0
     private var remainingVideoURLs: [String] = []
     private var loadOptions: [String] = []
     private var currentFileLoaded = false
@@ -522,11 +525,15 @@ final class MPVRenderView: NSView {
         metalRenderer?.resumeAfterDisplayWake()
     }
 
-    func load(videoURL: String, fallbackVideoURLs: [String] = [], audioURL: String?, headers: [String: String], start: Double = 0) throws {
+    func load(videoURL: String, fallbackVideoURLs: [String] = [], audioURL: String?, audioFallbackURLs: [String] = [], headers: [String: String], start: Double = 0) throws {
         try ensureMPVCore()
         guard mpv != nil else { throw APIError.message("libmpv 初始化失败") }
-        setString("http-header-fields", headers.map { "\($0.key): \($0.value)" }.joined(separator: ","))
-        pendingAudioURL = audioURL
+        try setHTTPHeaders(headers)
+        cancelPendingAudioLoad()
+        loadGeneration &+= 1
+        var seenAudioURLs = Set<String>()
+        remainingAudioURLs = ([audioURL].compactMap { $0 } + audioFallbackURLs)
+            .filter { !$0.isEmpty && seenAudioURLs.insert($0).inserted }
         remainingVideoURLs = fallbackVideoURLs.filter { !$0.isEmpty && $0 != videoURL }
         loadOptions = start > 0 ? ["start=\(start)"] : []
         currentFileLoaded = false
@@ -538,7 +545,7 @@ final class MPVRenderView: NSView {
 
     private func submitLoad(videoURL: String) throws {
         let result = command("loadfile", [videoURL, "replace", "-1", loadOptions.joined(separator: ",")])
-        Self.playbackLogger.notice("loadfile host=\(URL(string: videoURL)?.host ?? "invalid", privacy: .public) audio=\(self.pendingAudioURL != nil, privacy: .public) result=\(result, privacy: .public)")
+        Self.playbackLogger.notice("loadfile host=\(URL(string: videoURL)?.host ?? "invalid", privacy: .public) audio=\(!self.remainingAudioURLs.isEmpty, privacy: .public) result=\(result, privacy: .public)")
         guard result >= 0 else {
             throw APIError.message("mpv 无法提交播放任务：\(String(cString: mpv_error_string(result)))")
         }
@@ -688,6 +695,8 @@ final class MPVRenderView: NSView {
     }
 
     func shutdown() {
+        cancelPendingAudioLoad()
+        loadGeneration &+= 1
         let retainedContext = callbackContext
         callbackContext = nil
         guard let handle = mpv else {
@@ -784,6 +793,9 @@ final class MPVRenderView: NSView {
         // can reject its first layout attempt; mpv's automatic AO path retries
         // successfully, whereas pinning `ao=coreaudio` leaves playback silent.
         setOption("audio-channels", "stereo")
+        // A dead DASH audio CDN must time out so another supplied URL can be
+        // tried. Audio is opened asynchronously and never blocks the UI.
+        setOption("network-timeout", "8")
         guard mpv_initialize(handle) >= 0 else {
             metalRenderer = nil
             mpv_destroy(handle)
@@ -940,18 +952,32 @@ final class MPVRenderView: NSView {
                 }
             default: break
             }
-        case MPV_EVENT_FILE_LOADED:
-            // Defer load-side commands so they run after this drain returns.
+        case MPV_EVENT_COMMAND_REPLY:
+            let requestID = event.reply_userdata
+            let error = event.error
+            let generation = loadGeneration
             DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
+                guard let self, generation == self.loadGeneration,
+                      self.pendingAudioCommandID == requestID else { return }
+                self.pendingAudioCommandID = nil
+                if error < 0 {
+                    Self.playbackLogger.error("audio-add failed error=\(error, privacy: .public) remaining=\(self.remainingAudioURLs.count, privacy: .public)")
+                    self.loadNextAudioTrack()
+                } else {
+                    Self.playbackLogger.notice("audio-add ready ao=\(self.getString("current-ao") ?? "unknown", privacy: .public)")
+                    self.remainingAudioURLs.removeAll()
+                }
+            }
+        case MPV_EVENT_FILE_LOADED:
+            let generation = loadGeneration
+            // Defer client commands until this event drain has returned.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, generation == self.loadGeneration else { return }
                 self.currentFileLoaded = true
                 let layerBound = self.layer === self.metalLayer
                 Self.playbackLogger.notice("FILE_LOADED vo=\(self.getString("current-vo") ?? "unknown", privacy: .public) metalLayer=\(layerBound, privacy: .public) drawable=\(Int(self.metalLayer.drawableSize.width), privacy: .public)x\(Int(self.metalLayer.drawableSize.height), privacy: .public)")
-                if let audioURL = self.pendingAudioURL {
-                    // DASH 的音轨是独立资源。audio-file 是启动选项，运行期修改并不会
-                    // 稳定地附着到当前文件；必须等主视频加载完成后显式加入并选中音轨。
-                    self.pendingAudioURL = nil
-                    self.command("audio-add", [audioURL, "select"])
+                if !self.remainingAudioURLs.isEmpty {
+                    self.loadNextAudioTrack()
                 }
                 self.setDouble("panscan", 0)
                 self.setDouble("video-zoom", 0)
@@ -988,6 +1014,36 @@ final class MPVRenderView: NSView {
                 }
             }
         default: break
+        }
+    }
+
+    private func cancelPendingAudioLoad() {
+        if let mpv, let requestID = pendingAudioCommandID {
+            mpv_abort_async_command(mpv, requestID)
+        }
+        pendingAudioCommandID = nil
+        remainingAudioURLs.removeAll()
+    }
+
+    private func loadNextAudioTrack() {
+        guard currentFileLoaded, pendingAudioCommandID == nil else { return }
+        guard !remainingAudioURLs.isEmpty else {
+            onError?("音轨加载失败，已尝试备用节点，请重新播放")
+            return
+        }
+        let url = remainingAudioURLs.removeFirst()
+        nextAudioCommandID &+= 1
+        let requestID = nextAudioCommandID
+        pendingAudioCommandID = requestID
+        let result = commandAsync("audio-add", [url, "select"], requestID: requestID)
+        Self.playbackLogger.notice("audio-add queued host=\(URL(string: url)?.host ?? "invalid", privacy: .public) result=\(result, privacy: .public)")
+        if result < 0 {
+            pendingAudioCommandID = nil
+            let generation = loadGeneration
+            DispatchQueue.main.async { [weak self] in
+                guard let self, generation == self.loadGeneration else { return }
+                self.loadNextAudioTrack()
+            }
         }
     }
 
@@ -1051,6 +1107,34 @@ final class MPVRenderView: NSView {
         mpv_set_property_string(mpv, name, value)
     }
 
+    private func setHTTPHeaders(_ headers: [String: String]) throws {
+        guard let mpv else { throw APIError.message("libmpv 初始化失败") }
+        // This option is a string list. Passing CSV splits commas inside the
+        // User-Agent (and other header values), producing malformed requests.
+        let strings = headers.sorted { $0.key < $1.key }.map { strdup("\($0.key): \($0.value)") }
+        defer { strings.forEach { free($0) } }
+        var nodes = strings.map { string -> mpv_node in
+            var node = mpv_node()
+            node.format = MPV_FORMAT_STRING
+            node.u.string = string
+            return node
+        }
+        let result = nodes.withUnsafeMutableBufferPointer { buffer in
+            var list = mpv_node_list()
+            list.num = Int32(buffer.count)
+            list.values = buffer.baseAddress
+            return withUnsafeMutablePointer(to: &list) { pointer in
+                var root = mpv_node()
+                root.format = MPV_FORMAT_NODE_ARRAY
+                root.u.list = pointer
+                return mpv_set_property(mpv, "http-header-fields", MPV_FORMAT_NODE, &root)
+            }
+        }
+        guard result >= 0 else {
+            throw APIError.message("播放器无法设置媒体请求头")
+        }
+    }
+
     private func setFlag(_ name: String, _ value: Bool) {
         guard let mpv else { return }
         var raw: Int32 = value ? 1 : 0
@@ -1088,6 +1172,17 @@ final class MPVRenderView: NSView {
         guard let mpv, let value = mpv_get_property_string(mpv, name) else { return nil }
         defer { mpv_free(value) }
         return String(cString: value)
+    }
+
+    @discardableResult
+    private func commandAsync(_ name: String, _ args: [String], requestID: UInt64) -> Int32 {
+        guard let mpv else { return Int32(MPV_ERROR_UNINITIALIZED.rawValue) }
+        let pointers = ([name] + args).map { strdup($0) }
+        defer { pointers.forEach { free($0) } }
+        var arguments: [UnsafePointer<CChar>?] = pointers.map { pointer in
+            pointer.map { UnsafePointer<CChar>($0) }
+        } + [nil]
+        return mpv_command_async(mpv, requestID, &arguments)
     }
 
     @discardableResult

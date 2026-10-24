@@ -810,6 +810,7 @@ final class AppModel: ObservableObject {
                 videoURL: stream.videoURL,
                 videoFallbackURLs: stream.videoFallbackURLs,
                 audioURL: stream.audioURL,
+                audioFallbackURLs: stream.audioFallbackURLs,
                 aid: aid,
                 cid: cid,
                 lastPlayTimeMilliseconds: stream.lastPlayTimeMilliseconds,

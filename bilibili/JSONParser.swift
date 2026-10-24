@@ -1071,6 +1071,7 @@ enum JSONParser {
                 videoURL: durlStream.videoURL,
                 videoFallbackURLs: durlStream.videoFallbackURLs,
                 audioURL: durlStream.audioURL,
+                audioFallbackURLs: durlStream.audioFallbackURLs,
                 aid: durlStream.aid,
                 cid: durlStream.cid,
                 lastPlayTimeMilliseconds: lastPlayTime,
@@ -1081,11 +1082,13 @@ enum JSONParser {
         if let dash = data["dash"] as? [String: Any],
            let videoURLs = pickStreamURLs(from: dash, type: "video"),
            let videoURL = videoURLs.first {
-            let audioURL = pickStreamURL(from: dash, type: "audio")
+            let audioURLs = pickStreamURLs(from: dash, type: "audio") ?? []
+            let audioURL = audioURLs.first
             let dashStream = BiliPlayStream(
                 videoURL: videoURL,
                 videoFallbackURLs: Array(videoURLs.dropFirst()),
                 audioURL: audioURL,
+                audioFallbackURLs: Array(audioURLs.dropFirst()),
                 aid: 0,
                 cid: 0,
                 lastPlayTimeMilliseconds: lastPlayTime,
@@ -1101,6 +1104,7 @@ enum JSONParser {
                 videoURL: durlStream.videoURL,
                 videoFallbackURLs: durlStream.videoFallbackURLs,
                 audioURL: durlStream.audioURL,
+                audioFallbackURLs: durlStream.audioFallbackURLs,
                 aid: durlStream.aid,
                 cid: durlStream.cid,
                 lastPlayTimeMilliseconds: lastPlayTime,
@@ -1111,11 +1115,13 @@ enum JSONParser {
         if let dash = data["dash"] as? [String: Any],
            let videoURLs = pickStreamURLs(from: dash, type: "video"),
            let videoURL = videoURLs.first {
-            let audioURL = pickStreamURL(from: dash, type: "audio")
+            let audioURLs = pickStreamURLs(from: dash, type: "audio") ?? []
+            let audioURL = audioURLs.first
             return BiliPlayStream(
                 videoURL: videoURL,
                 videoFallbackURLs: Array(videoURLs.dropFirst()),
                 audioURL: audioURL,
+                audioFallbackURLs: Array(audioURLs.dropFirst()),
                 aid: 0,
                 cid: 0,
                 lastPlayTimeMilliseconds: lastPlayTime,
@@ -1236,7 +1242,7 @@ enum JSONParser {
             ? streams.enumerated().sorted { lhs, rhs in
                 let leftMCDN = isMCDNBaseURL(lhs.element)
                 let rightMCDN = isMCDNBaseURL(rhs.element)
-                return leftMCDN == rightMCDN ? lhs.offset < rhs.offset : leftMCDN
+                return leftMCDN == rightMCDN ? lhs.offset < rhs.offset : !leftMCDN
             }.map(\.element)
             : streams
         let rawCandidates = orderedStreams.flatMap {

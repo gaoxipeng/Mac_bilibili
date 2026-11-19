@@ -32,7 +32,7 @@ enum DanmakuPlayerPreferences {
                 : defaults.integer(forKey: opacityKey).clamped(to: 10...100),
             fontSizePercent: defaults.object(forKey: fontSizeKey) == nil
                 ? 100
-                : defaults.integer(forKey: fontSizeKey).clamped(to: 50...170),
+                : defaults.integer(forKey: fontSizeKey).clamped(to: DanmakuSettings.fontSizeRange),
             speedLevel: defaults.object(forKey: speedKey) == nil
                 ? .medium
                 : DanmakuSpeedLevel.fromIndex(defaults.integer(forKey: speedKey)),

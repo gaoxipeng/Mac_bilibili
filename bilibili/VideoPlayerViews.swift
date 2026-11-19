@@ -148,6 +148,13 @@ final class PlayerClipContainerView: NSView {
         }
     }
 
+    func adoptPreparedMPVView(_ view: MPVRenderView, replacing previous: MPVRenderView) {
+        guard mpvView === previous, view.superview === self else { return }
+        mpvView = view
+        previous.removeFromSuperview()
+        registerHostRole()
+    }
+
     func attachMPVView(_ view: MPVRenderView) {
         if mpvView === view, view.superview === self {
             updatePlaybackSubviewFrames()

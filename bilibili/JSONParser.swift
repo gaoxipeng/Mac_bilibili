@@ -885,11 +885,14 @@ enum JSONParser {
         }
     }
 
-    nonisolated static func parseOnlineCount(from object: Any) -> Int64 {
-        let data = dictionary(object)["data"] as? [String: Any] ?? [:]
+    nonisolated static func parseOnlineCount(from object: Any) -> String? {
+        guard let data = dictionary(object)["data"] as? [String: Any] else { return nil }
+        let visibility = data["show_switch"] as? [String: Any]
+        if let visible = visibility?["total"], !boolish(visible) { return nil }
         let total = data["total"] as? [String: Any] ?? data
-        let count = int64(total, "total").ifZero(int64(total, "count"))
-        return max(0, count)
+        let value = string(total, "total").trimmingCharacters(in: .whitespacesAndNewlines)
+        // The server can return a display value such as "10万+".
+        return value.isEmpty ? nil : value
     }
 
     nonisolated static func parseVideoReqUser(from data: [String: Any]) -> BiliVideoRelation {
@@ -1066,6 +1069,17 @@ enum JSONParser {
     private nonisolated static func parsePlayStreamPayload(from data: [String: Any]) -> BiliPlayStream? {
         let lastPlayTime = int64(data, "last_play_time", "lastPlayTime")
         let lastPlayCID = int64(data, "last_play_cid", "lastPlayCid")
+        let dash = data["dash"] as? [String: Any] ?? [:]
+        let videos = dash["video"] as? [[String: Any]] ?? []
+        let grouped = Dictionary(grouping: videos) { Int(int64($0, "id")) }
+        let qualityURLs = grouped.filter { $0.key > 0 }.compactMapValues { group in
+            pickStreamURLs(from: ["video": group], type: "video")
+        }
+        let preferredURLs = pickStreamURLs(from: dash, type: "video") ?? []
+        let quality = preferredURLs.first.flatMap { url in
+            qualityURLs.first { $0.value.contains(url) }?.key
+        } ?? 0
+        let videoURLs = qualityURLs[quality] ?? preferredURLs
         if let durlStream = parseDurlStream(from: data), durlStream.isAVPlayerCompatible {
             return BiliPlayStream(
                 videoURL: durlStream.videoURL,
@@ -1075,13 +1089,12 @@ enum JSONParser {
                 aid: durlStream.aid,
                 cid: durlStream.cid,
                 lastPlayTimeMilliseconds: lastPlayTime,
-                lastPlayCID: lastPlayCID
+                lastPlayCID: lastPlayCID,
+                quality: Int(int64(data, "quality"))
             )
         }
 
-        if let dash = data["dash"] as? [String: Any],
-           let videoURLs = pickStreamURLs(from: dash, type: "video"),
-           let videoURL = videoURLs.first {
+        if let videoURL = videoURLs.first {
             let audioURLs = pickStreamURLs(from: dash, type: "audio") ?? []
             let audioURL = audioURLs.first
             let dashStream = BiliPlayStream(
@@ -1092,7 +1105,8 @@ enum JSONParser {
                 aid: 0,
                 cid: 0,
                 lastPlayTimeMilliseconds: lastPlayTime,
-                lastPlayCID: lastPlayCID
+                lastPlayCID: lastPlayCID,
+                quality: quality, qualityURLs: qualityURLs
             )
             if dashStream.isAVPlayerCompatible {
                 return dashStream
@@ -1108,13 +1122,12 @@ enum JSONParser {
                 aid: durlStream.aid,
                 cid: durlStream.cid,
                 lastPlayTimeMilliseconds: lastPlayTime,
-                lastPlayCID: lastPlayCID
+                lastPlayCID: lastPlayCID,
+                quality: Int(int64(data, "quality"))
             )
         }
 
-        if let dash = data["dash"] as? [String: Any],
-           let videoURLs = pickStreamURLs(from: dash, type: "video"),
-           let videoURL = videoURLs.first {
+        if let videoURL = videoURLs.first {
             let audioURLs = pickStreamURLs(from: dash, type: "audio") ?? []
             let audioURL = audioURLs.first
             return BiliPlayStream(
@@ -1125,7 +1138,8 @@ enum JSONParser {
                 aid: 0,
                 cid: 0,
                 lastPlayTimeMilliseconds: lastPlayTime,
-                lastPlayCID: lastPlayCID
+                lastPlayCID: lastPlayCID,
+                quality: quality, qualityURLs: qualityURLs
             )
         }
 

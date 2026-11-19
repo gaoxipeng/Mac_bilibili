@@ -49,6 +49,12 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         return value
     }
 
+    var currentMode: DanmakuAvoidanceMode {
+        lock.lock()
+        defer { lock.unlock() }
+        return mode
+    }
+
     func setMode(_ mode: DanmakuAvoidanceMode) {
         lock.lock()
         guard self.mode != mode else {

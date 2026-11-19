@@ -59,24 +59,31 @@ struct DanmakuLayoutMetrics: Sendable, Equatable {
         settings.displayAreaPercent
     }
 
-    func effectiveFontSizePercent(from settings: DanmakuSettings) -> Int {
-        let userPercent = settings.fontSizePercent.clamped(to: 50...170)
-        let multiplier = Self.baselineFontSizeMultiplier(for: mode)
-        return Int((Double(userPercent) * multiplier).rounded()).clamped(to: 50...170)
-    }
-
     func fontSize(itemFontSize: Int, settings: DanmakuSettings) -> CGFloat {
-        let fontSizePercent = effectiveFontSizePercent(from: settings)
+        let range = DanmakuSettings.fontSizeRange
+        let userPercent = settings.fontSizePercent.clamped(to: range)
+        let scale: CGFloat
+        let minimum: CGFloat
+        let maximum: CGFloat
         switch mode {
         case .inline:
-            let scale = min(1.35, max(0.75, layoutHeight / 210))
-            let size = CGFloat(itemFontSize) * 0.52 * scale * CGFloat(fontSizePercent) / 100
-            return min(28, max(10, size))
+            scale = min(1.35, max(0.75, layoutHeight / 210))
+            minimum = 10
+            maximum = 42
         case .fullscreen:
-            let scale = min(2.0, max(1.08, layoutHeight / 280))
-            let size = CGFloat(itemFontSize) * 0.52 * scale * CGFloat(fontSizePercent) / 100
-            return min(44, max(14, size))
+            scale = min(2.0, max(1.08, layoutHeight / 280))
+            minimum = 14
+            maximum = 65
         }
+
+        let base = CGFloat(itemFontSize) * 0.52 * scale
+        let multiplier = Self.baselineFontSizeMultiplier(for: mode)
+        let lower = min(maximum, max(minimum, base * CGFloat((Double(range.lowerBound) * multiplier).rounded()) / 100))
+        let upper = min(maximum, max(minimum, base * CGFloat(range.upperBound) / 100))
+        // Clamp the endpoint sizes, then spread that usable size range across
+        // the slider. Clamping each step independently creates a plateau.
+        let progress = CGFloat(userPercent - range.lowerBound) / CGFloat(range.upperBound - range.lowerBound)
+        return lower + (upper - lower) * progress
     }
 }
 

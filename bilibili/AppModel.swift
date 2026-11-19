@@ -814,7 +814,8 @@ final class AppModel: ObservableObject {
                 aid: aid,
                 cid: cid,
                 lastPlayTimeMilliseconds: stream.lastPlayTimeMilliseconds,
-                lastPlayCID: stream.lastPlayCID
+                lastPlayCID: stream.lastPlayCID,
+                quality: stream.quality, qualityURLs: stream.qualityURLs
             )
             playURLs[playbackID] = resolved
             return resolved

@@ -1095,7 +1095,8 @@ actor BilibiliAPI {
             aid: stream.aid,
             cid: cid > 0 ? cid : stream.cid,
             lastPlayTimeMilliseconds: stream.lastPlayTimeMilliseconds,
-            lastPlayCID: stream.lastPlayCID
+            lastPlayCID: stream.lastPlayCID,
+            quality: stream.quality, qualityURLs: stream.qualityURLs
         )
         return stream
     }
@@ -1300,10 +1301,10 @@ actor BilibiliAPI {
         aid: Int64,
         cid: Int64,
         credential: BilibiliCredential? = nil
-    ) async -> Int64 {
-        guard !bvid.isEmpty, cid > 0 else { return 0 }
+    ) async throws -> String? {
+        guard !bvid.isEmpty, cid > 0 else { return nil }
         let referer = "https://www.bilibili.com/video/\(bvid)"
-        guard let json = try? await self.json(
+        let json = try await self.json(
             url: "https://api.bilibili.com/x/player/online/total",
             params: [
                 "bvid": bvid,
@@ -1311,10 +1312,9 @@ actor BilibiliAPI {
                 "cid": "\(cid)"
             ],
             credential: credential,
-            referer: referer
-        ) else {
-            return 0
-        }
+            referer: referer,
+            cachePolicy: .reloadIgnoringLocalCacheData
+        )
         return JSONParser.parseOnlineCount(from: json)
     }
 
@@ -1640,7 +1640,8 @@ actor BilibiliAPI {
             aid: stream.aid,
             cid: cid,
             lastPlayTimeMilliseconds: stream.lastPlayTimeMilliseconds,
-            lastPlayCID: stream.lastPlayCID
+            lastPlayCID: stream.lastPlayCID,
+            quality: stream.quality, qualityURLs: stream.qualityURLs
         )
         return stream
     }
@@ -1965,7 +1966,8 @@ actor BilibiliAPI {
         referer: String = BilibiliEndpoints.home,
         extraHeaders: [String: String] = [:],
         wbiEncoded: Bool = false,
-        skipWarmUp: Bool = false
+        skipWarmUp: Bool = false,
+        cachePolicy: URLRequest.CachePolicy = .useProtocolCachePolicy
     ) async throws -> Any {
         if !skipWarmUp {
             await warmUp(credential: credential)
@@ -1973,7 +1975,7 @@ actor BilibiliAPI {
 
         let requestURL = try requestURL(base: url, params: params, wbiEncoded: wbiEncoded)
 
-        var request = URLRequest(url: requestURL)
+        var request = URLRequest(url: requestURL, cachePolicy: cachePolicy)
         request.timeoutInterval = 20
         request.setValue(BilibiliEndpoints.userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue(referer, forHTTPHeaderField: "Referer")

@@ -183,7 +183,6 @@ struct DynamicDetailView: View {
             viewCount: 0,
             danmakuCount: 0,
             publishTime: model.item.publishDate,
-            onlineCount: 0,
             webURL: URL(string: model.referer),
             authorFaceURL: model.item.authorFaceURL,
             authorName: model.item.authorName.ifEmpty("用户"),

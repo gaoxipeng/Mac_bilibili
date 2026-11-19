@@ -87,10 +87,12 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
     private var displayAvailable = true
     private var context: OpaquePointer?
     private var callbackOwner: Unmanaged<MPVSoftwareMetalRenderer>?
+    private var discardsFrames = false
     private var drawPending = false
     private var wantsDraw = false
     private var stopped = false
     private var lastFrameSubmissionUptime = CACurrentMediaTime()
+    private var hasSubmittedFrame = false
     private var lastFaceMaskSampleTime = 0.0
     private let faceMaskAnalyzer: DanmakuFaceMaskAnalyzer?
 
@@ -225,8 +227,24 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
         return value
     }
 
+    func discardFrames() {
+        queue.async { [weak self] in self?.discardsFrames = true }
+        requestDraw()
+    }
+
     private func draw() {
         guard isDisplayAvailable, let context else { return }
+        if discardsFrames {
+            var skip: Int32 = 1
+            withUnsafeMutablePointer(to: &skip) { pointer in
+                var params = [
+                    mpv_render_param(type: MPV_RENDER_PARAM_SKIP_RENDERING, data: pointer),
+                    mpv_render_param(type: MPV_RENDER_PARAM_INVALID, data: nil),
+                ]
+                _ = mpv_render_context_render(context, &params)
+            }
+            return
+        }
         guard let drawable = layer.nextDrawable() else { return }
         let width = drawable.texture.width
         let height = drawable.texture.height
@@ -322,9 +340,16 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
         return max(0, CACurrentMediaTime() - lastSubmission)
     }
 
+    var submittedFrameTime: TimeInterval {
+        progressLock.lock()
+        defer { progressLock.unlock() }
+        return hasSubmittedFrame ? lastFrameSubmissionUptime : 0
+    }
+
     private func markFrameSubmissionProgress() {
         progressLock.lock()
         lastFrameSubmissionUptime = CACurrentMediaTime()
+        hasSubmittedFrame = true
         progressLock.unlock()
     }
 
@@ -578,9 +603,33 @@ final class MPVRenderView: NSView {
             _ = command("seek", ["0", "relative+exact"])
         }
     }
+    var audioPlaybackTime: Double? {
+        let time = getDouble("audio-pts")
+        return time.isFinite ? time : nil
+    }
+
+    private var isRetainedAudioSource = false
+
+    func retainAudioWithoutPresentingVideo() {
+        isRetainedAudioSource = true
+        stopRenderWatchdog()
+        metalRenderer?.discardFrames()
+    }
+
+    func preparedPlaybackTime(after frameTime: TimeInterval, requiresAudio: Bool) -> Double? {
+        guard currentFileLoaded, !getFlag("seeking"), !getFlag("paused-for-cache"),
+              let renderer = metalRenderer, renderer.submittedFrameTime > frameTime else { return nil }
+        if requiresAudio {
+            guard getString("current-ao") != nil, getDouble("audio-params/samplerate") > 0 else { return nil }
+        }
+        let time = getDouble("time-pos")
+        return time.isFinite && time >= 0 ? time : nil
+    }
+
     func seek(to seconds: Double) { command("seek", [String(max(0, seconds)), "absolute+exact"]) }
 
     private func startRenderWatchdog() {
+        guard !isRetainedAudioSource else { return }
         guard renderWatchdog == nil else { return }
         let timer = DispatchSource.makeTimerSource(queue: .main)
         timer.schedule(

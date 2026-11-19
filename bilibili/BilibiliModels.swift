@@ -628,6 +628,8 @@ struct BiliPlayStream: Hashable, Sendable {
     let cid: Int64
     let lastPlayTimeMilliseconds: Int64
     let lastPlayCID: Int64
+    let quality: Int
+    let qualityURLs: [Int: [String]]
 
     nonisolated init(
         videoURL: String,
@@ -637,8 +639,12 @@ struct BiliPlayStream: Hashable, Sendable {
         aid: Int64,
         cid: Int64,
         lastPlayTimeMilliseconds: Int64 = 0,
-        lastPlayCID: Int64 = 0
+        lastPlayCID: Int64 = 0,
+        quality: Int = 0,
+        qualityURLs: [Int: [String]] = [:]
     ) {
+        self.quality = quality
+        self.qualityURLs = qualityURLs
         self.videoURL = videoURL
         self.videoFallbackURLs = videoFallbackURLs.filter { !$0.isEmpty && $0 != videoURL }
         self.audioURL = audioURL
@@ -648,6 +654,33 @@ struct BiliPlayStream: Hashable, Sendable {
         self.cid = cid
         self.lastPlayTimeMilliseconds = max(0, lastPlayTimeMilliseconds)
         self.lastPlayCID = max(0, lastPlayCID)
+    }
+
+    nonisolated static func qualityLabel(_ id: Int) -> String {
+        switch id {
+        case 127: "8K"
+        case 126: "杜比视界"
+        case 125: "HDR"
+        case 120: "4K"
+        case 116: "1080P60"
+        case 112: "1080P+"
+        case 80: "1080P"
+        case 74: "720P60"
+        case 64: "720P"
+        case 32: "480P"
+        case 16: "360P"
+        case 6: "240P"
+        default: "清晰度 \(id)"
+        }
+    }
+
+    nonisolated func selectingQuality(_ id: Int) -> Self? {
+        if id == quality { return self }
+        guard let urls = qualityURLs[id], let url = urls.first else { return nil }
+        return Self(videoURL: url, videoFallbackURLs: Array(urls.dropFirst()),
+                    audioURL: audioURL, audioFallbackURLs: audioFallbackURLs,
+                    aid: aid, cid: cid, lastPlayTimeMilliseconds: lastPlayTimeMilliseconds,
+                    lastPlayCID: lastPlayCID, quality: id, qualityURLs: qualityURLs)
     }
 
     nonisolated func resumeSeconds(for targetCID: Int64, durationSeconds: Int) -> Int {
@@ -913,6 +946,7 @@ nonisolated enum DanmakuAvoidanceMode: Int, CaseIterable, Identifiable, Sendable
 }
 
 nonisolated struct DanmakuSettings: Equatable, Sendable {
+    static let fontSizeRange = 50...250
     var displayAreaPercent: Int
     var opacityPercent: Int
     var fontSizePercent: Int

@@ -30,7 +30,7 @@ final class VideoPlaybackEngine: ObservableObject {
     @Published var scrubPreviewTime: Double?
 
     private var player: AVPlayer?
-    let renderView = MPVRenderView(frame: .zero)
+    @Published private(set) var renderView = MPVRenderView(frame: .zero)
     private var pictureInPictureStream: BiliPlayStream?
     private var pictureInPictureStreamLoader: (() async throws -> BiliPlayStream)?
     private var playbackHeaders: [String: String] = [:]
@@ -65,6 +65,13 @@ final class VideoPlaybackEngine: ObservableObject {
     private var preparedPictureInPictureItem: AVPlayerItem?
     @Published private(set) var isPictureInPicturePreparing = false
     private var streamRefreshLoader: (() async throws -> BiliPlayStream)?
+    @Published private(set) var videoQuality = 0
+    @Published private(set) var availableVideoQualities: [Int] = []
+    @Published private(set) var isSwitchingVideoQuality = false
+    @Published private(set) var videoQualityError: String?
+    private var videoQualityTask: Task<Void, Never>?
+    private var retainedQualityAudio: MPVRenderView?
+
     private var streamRefreshTask: Task<Void, Never>?
     private var pauseStartedAt: CFTimeInterval?
     private var streamLoadedAt = Date.distantPast
@@ -98,6 +105,11 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     init() {
+        bindRenderView(renderView)
+        installRemoteCommands()
+    }
+
+    private func bindRenderView(_ renderView: MPVRenderView) {
         renderView.onTimeChanged = { [weak self] value in
             guard let self, !isScrubbing, !isPictureInPictureActive else { return }
             preciseMPVTime = value
@@ -117,14 +129,16 @@ final class VideoPlaybackEngine: ObservableObject {
             isPlaying = !paused
             updateNowPlayingInfo()
         }
-        renderView.onSpeedChanged = { [weak self] speed in
-            guard let self, speed.isFinite else { return }
+        renderView.onSpeedChanged = { [weak self, weak renderView] speed in
+            guard let self, let renderView, self.renderView === renderView,
+                  speed.isFinite else { return }
             guard abs(speed - playbackRate) > 0.001 else { return }
             // mpv may reset speed while an audio track or replacement file is
             // attached. Restore the selected rate as soon as it is observed.
-            DispatchQueue.main.async { [weak self] in
-                guard let self, abs(speed - playbackRate) > 0.001 else { return }
-                applyPlaybackRate(playbackRate)
+            DispatchQueue.main.async { [weak self, weak renderView] in
+                guard let self, let renderView, self.renderView === renderView,
+                      abs(speed - playbackRate) > 0.001 else { return }
+                renderView.setSpeed(playbackRate)
             }
         }
         renderView.onVideoSizeChanged = { [weak self] size in
@@ -159,7 +173,6 @@ final class VideoPlaybackEngine: ObservableObject {
         renderView.onStreamFailure = { [weak self] in
             self?.refreshStreamAfterFailure() ?? false
         }
-        installRemoteCommands()
     }
 
     func configureNowPlaying(title: String, artist: String, artworkURL: URL?) {
@@ -229,6 +242,209 @@ final class VideoPlaybackEngine: ObservableObject {
         startPictureInPicturePrewarming()
     }
 
+    var videoQualityLabel: String {
+        if videoQuality > 0 { return BiliPlayStream.qualityLabel(videoQuality) }
+        let height = min(videoDisplaySize.width, videoDisplaySize.height)
+        return isReady && height >= 100 ? "\(Int(height.rounded()))P" : "清晰度"
+    }
+
+    func selectVideoQuality(_ quality: Int) {
+        guard isReady, quality != videoQuality, availableVideoQualities.contains(quality),
+              videoQualityTask == nil, streamRefreshTask == nil,
+              !isPictureInPictureActive, !isPictureInPicturePreparing,
+              let loader = streamRefreshLoader else { return }
+
+        isSwitchingVideoQuality = true
+        videoQualityError = nil
+        videoQualityTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                if !Task.isCancelled {
+                    videoQualityTask = nil
+                    isSwitchingVideoQuality = false
+                }
+            }
+            do {
+                let source = try await loader()
+                try Task.checkCancellation()
+                guard let stream = source.selectingQuality(quality) else {
+                    throw APIError.message("当前无法使用该清晰度，请选择其他档位")
+                }
+                try await handoffVideoQuality(to: stream)
+            } catch {
+                guard !Task.isCancelled else { return }
+                videoQualityError = error.localizedDescription
+            }
+        }
+    }
+
+    private func handoffVideoQuality(to stream: BiliPlayStream) async throws {
+        let previous = renderView
+        guard let host = previous.superview as? PlayerClipContainerView else {
+            throw APIError.message("播放器尚未准备好")
+        }
+        let candidate = MPVRenderView(frame: previous.frame)
+        candidate.faceMaskAnalyzer.setMode(.off)
+        var preparationError: String?
+        candidate.onError = { preparationError = $0 }
+        candidate.onEnded = { preparationError = "新清晰度的视频流已结束" }
+        host.addSubview(candidate, positioned: .below, relativeTo: previous)
+        var didSwitch = false
+        defer {
+            if !didSwitch {
+                candidate.removeFromSuperview()
+                candidate.shutdown()
+            }
+        }
+
+        let deadline = CACurrentMediaTime() + 12
+        var lastRequest = CACurrentMediaTime()
+        var lead: Double = 0.6
+        var runningStart: Double?
+        var firstRunningAudioTime: Double?
+        let audioSource = retainedQualityAudio ?? previous
+        let requiresAudio = stream.audioURL != nil || audioSource.audioPlaybackTime != nil
+        func handoffClock() -> Double {
+            if isPlaying, let audioTime = audioSource.audioPlaybackTime { return audioTime }
+            return preciseCurrentTime
+        }
+        func targetTime() -> Double {
+            let target = max(0, handoffClock() + (isPlaying ? lead * Double(playbackRate) : 0))
+            return duration > 0 ? min(target, max(0, duration - 0.05)) : target
+        }
+        var target = targetTime()
+        try candidate.load(
+            videoURL: stream.videoURL,
+            fallbackVideoURLs: stream.videoFallbackURLs,
+            audioURL: stream.audioURL,
+            audioFallbackURLs: stream.audioFallbackURLs,
+            headers: playbackHeaders,
+            start: target
+        )
+        candidate.setVolume(0)
+        candidate.setMuted(false)
+        candidate.setSpeed(playbackRate)
+        candidate.setPaused(true)
+
+        while CACurrentMediaTime() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+            guard renderView === previous, previous.superview === host,
+                  !isPictureInPicturePreparing, !isPictureInPictureActive else {
+                throw CancellationError()
+            }
+            if let preparationError { throw APIError.message(preparationError) }
+            guard let preparedTime = candidate.preparedPlaybackTime(
+                after: lastRequest, requiresAudio: requiresAudio
+            ), !isScrubbing else { continue }
+            if runningStart == nil, abs(preparedTime - target) >= 0.15 { continue }
+
+            let delta = preparedTime - handoffClock()
+            if isPlaying, runningStart == nil, abs(delta) <= 0.08 {
+                candidate.setSpeed(playbackRate)
+                runningStart = preparedTime
+                firstRunningAudioTime = nil
+                lastRequest = CACurrentMediaTime()
+                candidate.setPaused(false)
+                continue
+            }
+            var audioIsRunning = !requiresAudio
+            if runningStart != nil, requiresAudio, let audioTime = candidate.audioPlaybackTime {
+                if let firstRunningAudioTime {
+                    audioIsRunning = audioTime > firstRunningAudioTime + 0.015
+                        && abs(audioTime - preparedTime) < 0.15
+                } else {
+                    firstRunningAudioTime = audioTime
+                }
+            }
+            let canHandoff = if let runningStart {
+                isPlaying && audioIsRunning && preparedTime > runningStart + 0.025 && abs(delta) <= 0.10
+            } else {
+                !isPlaying && abs(delta) <= 0.10
+            }
+            if canHandoff {
+                let wasPlaying = isPlaying
+                candidate.faceMaskAnalyzer.setMode(previous.faceMaskAnalyzer.currentMode)
+                candidate.setSpeed(playbackRate)
+                let retainPreviousAudio = requiresAudio && retainedQualityAudio == nil
+                bindRenderView(candidate)
+                previous.onTimeChanged = nil
+                previous.onDurationChanged = nil
+                previous.onPauseChanged = nil
+                previous.onSpeedChanged = nil
+                previous.onVideoSizeChanged = nil
+                previous.onReady = nil
+                previous.onEnded = nil
+                previous.onError = nil
+                previous.onStreamFailure = nil
+                if retainPreviousAudio {
+                    retainedQualityAudio = previous
+                    previous.retainAudioWithoutPresentingVideo()
+                    previous.onError = { [weak self, weak previous] _ in
+                        guard let self, let previous, retainedQualityAudio === previous else { return }
+                        releaseRetainedQualityAudio()
+                        applyVolume()
+                    }
+                }
+                if !wasPlaying { candidate.setPaused(true) }
+                renderView = candidate
+                host.adoptPreparedMPVView(candidate, replacing: previous)
+                didSwitch = true
+                recordStreamLifetime(stream)
+                streamRefreshAttempted = false
+                if !retainPreviousAudio {
+                    previous.setPaused(true)
+                    retireQualityRenderer(previous)
+                }
+                // Leave the original audio output and its volume untouched.
+                if retainedQualityAudio == nil { applyVolume() }
+                return
+            }
+            if let _ = runningStart {
+                if isPlaying, abs(delta) <= 0.15 { continue }
+                candidate.setPaused(true)
+                runningStart = nil
+            } else if delta >= -0.08, isPlaying,
+                      delta <= max(2, lead * Double(playbackRate) + 0.5) {
+                continue
+            }
+            do {
+                let elapsed = CACurrentMediaTime() - lastRequest
+                lead = min(2.0, max(0.25, elapsed + 0.2))
+                target = targetTime()
+                lastRequest = CACurrentMediaTime()
+                candidate.seek(to: target)
+            }
+        }
+        throw APIError.message("新清晰度缓冲超时，继续播放原清晰度")
+    }
+
+    private func retireQualityRenderer(_ renderer: MPVRenderView) {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(200))
+            renderer.shutdown()
+        }
+    }
+
+    private func releaseRetainedQualityAudio() {
+        guard let audio = retainedQualityAudio else { return }
+        retainedQualityAudio = nil
+        renderView.setSpeed(playbackRate)
+        audio.onError = nil
+        audio.setMuted(true)
+        audio.setPaused(true)
+        retireQualityRenderer(audio)
+    }
+
+    private func setPlaybackSurfacesPaused(_ paused: Bool) {
+        renderView.setPaused(paused)
+        retainedQualityAudio?.setPaused(paused)
+    }
+
+    private func seekPlaybackSurfaces(to seconds: Double) {
+        renderView.seek(to: seconds)
+        retainedQualityAudio?.seek(to: seconds)
+    }
+
     func setPlaybackRate(_ rate: Float) {
         guard rate.isFinite else { return }
         let normalized = VideoPlaybackRateOptions.values.min {
@@ -244,7 +460,7 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     func requestPictureInPicture() {
-        guard isReady else { return }
+        guard isReady, !isSwitchingVideoQuality else { return }
         if isPictureInPictureActive {
             pictureInPictureRequestID += 1
             return
@@ -301,7 +517,7 @@ final class VideoPlaybackEngine: ObservableObject {
             resumeMPVAfterPictureInPicture = isPlaying
             pauseStartedAt = CACurrentMediaTime()
             streamRefreshAttempted = false
-            renderView.setPaused(true)
+            setPlaybackSurfacesPaused(true)
             player?.isMuted = isMuted
             player?.volume = volume
             if resumeMPVAfterPictureInPicture {
@@ -312,7 +528,7 @@ final class VideoPlaybackEngine: ObservableObject {
             if let seconds = player?.currentTime().seconds, seconds.isFinite {
                 preciseMPVTime = seconds
                 currentTime = seconds
-                renderView.seek(to: seconds)
+                seekPlaybackSurfaces(to: seconds)
             }
             player?.pause()
             player = nil
@@ -322,7 +538,7 @@ final class VideoPlaybackEngine: ObservableObject {
             if shouldResumeMPV {
                 startPlayback()
             } else {
-                renderView.setPaused(true)
+                setPlaybackSurfacesPaused(true)
                 isPlaying = false
             }
             updateNowPlayingInfo()
@@ -332,7 +548,7 @@ final class VideoPlaybackEngine: ObservableObject {
             // 预播放，必须清除，否则会保留旧帧并占用后续画中画请求。
             player?.pause()
             player = nil
-            if isPlaying { renderView.setPaused(false) }
+            if isPlaying { setPlaybackSurfacesPaused(false) }
         }
         isPictureInPictureActive = isActive
     }
@@ -342,7 +558,7 @@ final class VideoPlaybackEngine: ObservableObject {
             pauseStartedAt = CACurrentMediaTime()
             streamRefreshAttempted = false
         }
-        renderView.setPaused(true)
+        setPlaybackSurfacesPaused(true)
         // Keep the temporary AVPlayer running while PiP is preparing/active;
         // pausing it here is a common reason startPictureInPicture fails.
         if !isPictureInPicturePreparing, !isPictureInPictureActive {
@@ -382,7 +598,7 @@ final class VideoPlaybackEngine: ObservableObject {
     func seek(to seconds: Double, resumeAfter: Bool = true) {
         guard isReady else { return }
         let time = CMTime(seconds: max(0, seconds), preferredTimescale: 600)
-        renderView.seek(to: seconds)
+        seekPlaybackSurfaces(to: seconds)
         player?.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
         preciseMPVTime = max(0, seconds)
         currentTime = preciseMPVTime
@@ -396,7 +612,7 @@ final class VideoPlaybackEngine: ObservableObject {
     func beginScrub(at seconds: Double) {
         isScrubbing = true
         scrubPreviewTime = seconds
-        renderView.setPaused(true)
+        setPlaybackSurfacesPaused(true)
         player?.pause()
         isPlaying = false
     }
@@ -430,8 +646,10 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     private func applyVolume() {
-        renderView.setMuted(isMuted)
-        renderView.setVolume(volume)
+        let audio = retainedQualityAudio ?? renderView
+        audio.setMuted(isMuted)
+        audio.setVolume(volume)
+        if retainedQualityAudio != nil { renderView.setVolume(0) }
         player?.volume = isMuted ? 0 : volume
     }
 
@@ -483,6 +701,13 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     func stop() {
+        releaseRetainedQualityAudio()
+        videoQualityTask?.cancel()
+        videoQualityTask = nil
+        isSwitchingVideoQuality = false
+        videoQualityError = nil
+        videoQuality = 0
+        availableVideoQualities = []
         streamRefreshTask?.cancel()
         streamRefreshTask = nil
         streamRefreshLoader = nil
@@ -513,7 +738,7 @@ final class VideoPlaybackEngine: ObservableObject {
         endObserver = nil
         player?.pause()
         player = nil
-        renderView.setPaused(true)
+        setPlaybackSurfacesPaused(true)
         isReady = false
         isPlaying = false
         preciseMPVTime = 0
@@ -572,7 +797,7 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     private func beginPlayback() {
-        renderView.setPaused(false)
+        setPlaybackSurfacesPaused(false)
         applyPlaybackRate(playbackRate)
         player?.play()
         player?.rate = playbackRate
@@ -602,11 +827,11 @@ final class VideoPlaybackEngine: ObservableObject {
 
     @discardableResult
     private func scheduleStreamRefresh(startAt seconds: Double) -> Bool {
-        guard streamRefreshTask == nil,
+        guard streamRefreshTask == nil, videoQualityTask == nil,
               let loader = streamRefreshLoader else { return false }
 
         let resumeSeconds = max(0, seconds.isFinite ? seconds : currentTime)
-        renderView.setPaused(true)
+        setPlaybackSurfacesPaused(true)
         isPlaying = false
         updateNowPlayingInfo()
 
@@ -614,8 +839,9 @@ final class VideoPlaybackEngine: ObservableObject {
             guard let self else { return }
             defer { streamRefreshTask = nil }
             do {
-                let stream = try await loader()
+                let source = try await loader()
                 guard !Task.isCancelled else { return }
+                let stream = source.selectingQuality(videoQuality) ?? source
                 try renderView.load(
                     videoURL: stream.videoURL,
                     fallbackVideoURLs: stream.videoFallbackURLs,
@@ -624,9 +850,10 @@ final class VideoPlaybackEngine: ObservableObject {
                     headers: playbackHeaders,
                     start: resumeSeconds
                 )
+                releaseRetainedQualityAudio()
                 recordStreamLifetime(stream)
                 applyVolume()
-                renderView.setPaused(false)
+                setPlaybackSurfacesPaused(false)
                 applyPlaybackRate(playbackRate)
                 isPlaying = true
                 pauseStartedAt = nil
@@ -643,6 +870,10 @@ final class VideoPlaybackEngine: ObservableObject {
     }
 
     private func recordStreamLifetime(_ stream: BiliPlayStream) {
+        videoQuality = stream.quality
+        availableVideoQualities = Set(stream.qualityURLs.keys)
+            .union(stream.quality > 0 ? [stream.quality] : [])
+            .sorted(by: >)
         streamLoadedAt = Date()
         let urls = [stream.videoURL, stream.audioURL].compactMap { $0 }
             + stream.videoFallbackURLs
@@ -666,6 +897,7 @@ final class VideoPlaybackEngine: ObservableObject {
 
     private func applyPlaybackRate(_ rate: Float, flushMPVBuffers: Bool = false) {
         renderView.setSpeed(rate, flushPlayback: flushMPVBuffers)
+        retainedQualityAudio?.setSpeed(rate, flushPlayback: flushMPVBuffers)
         guard let player else { return }
         // defaultRate keeps the selected value for the next play call. Updating
         // rate as well makes an already-running PiP player react immediately.

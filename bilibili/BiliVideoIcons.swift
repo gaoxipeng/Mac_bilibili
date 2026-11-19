@@ -296,6 +296,13 @@ struct VideoPartMenuPressOverlay: NSViewRepresentable {
     }
 }
 
+enum VideoOptionRowAppearance {
+    static let cornerRadius: CGFloat = 8
+    static let hoverFill = Color.white.opacity(0.14)
+    static let selectedFill = BiliTheme.pink.opacity(0.92)
+    static let hoverForeground = BiliTheme.pink
+}
+
 @MainActor
 private final class EpisodeMenuItemRowView: NSView {
     static let horizontalPadding: CGFloat = 12
@@ -356,10 +363,12 @@ private final class EpisodeMenuItemRowView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
-        if enclosingMenuItem?.isHighlighted == true {
+        let highlighted = enclosingMenuItem?.isHighlighted == true
+        if highlighted || isSelected {
             let background = bounds.insetBy(dx: 4, dy: 1)
-            let path = NSBezierPath(roundedRect: background, xRadius: 4, yRadius: 4)
-            NSColor(BiliTheme.pink).withAlphaComponent(0.22).setFill()
+            let radius = VideoOptionRowAppearance.cornerRadius
+            let path = NSBezierPath(roundedRect: background, xRadius: radius, yRadius: radius)
+            NSColor(highlighted ? VideoOptionRowAppearance.hoverFill : VideoOptionRowAppearance.selectedFill).setFill()
             path.fill()
         }
         super.draw(dirtyRect)
@@ -418,11 +427,12 @@ private final class EpisodeMenuItemRowView: NSView {
     private func updateAppearance() {
         let highlighted = enclosingMenuItem?.isHighlighted == true
         if highlighted {
-            titleLabel.textColor = NSColor(BiliTheme.pink)
-            durationLabel.textColor = .selectedMenuItemTextColor
+            let color = NSColor(VideoOptionRowAppearance.hoverForeground)
+            titleLabel.textColor = color
+            durationLabel.textColor = color
         } else {
-            titleLabel.textColor = isSelected ? .systemBlue : .labelColor
-            durationLabel.textColor = .secondaryLabelColor
+            titleLabel.textColor = isSelected ? .white : .labelColor
+            durationLabel.textColor = isSelected ? .white : .secondaryLabelColor
         }
     }
 }
@@ -502,7 +512,7 @@ final class VideoPartMenuPressView: NSView {
                 keyEquivalent: ""
             )
             let rowView = EpisodeMenuItemRowView(
-                title: episodeMainTitle(for: part),
+                title: part.episodeMenuTitle,
                 duration: part.duration > 0 ? part.duration.episodeMenuDurationText : nil,
                 width: menuWidth,
                 durationColumnWidth: durationColumnWidth,
@@ -532,7 +542,7 @@ final class VideoPartMenuPressView: NSView {
         var width: CGFloat = 260
 
         for part in pages {
-            let title = episodeMainTitle(for: part)
+            let title = part.episodeMenuTitle
             let titleWidth = (title as NSString).size(withAttributes: [.font: menuFont]).width
             width = max(width, titleWidth + horizontalChrome)
         }
@@ -540,10 +550,13 @@ final class VideoPartMenuPressView: NSView {
         return min(ceil(width), 460)
     }
 
-    private func episodeMainTitle(for part: BiliVideoPage) -> String {
-        let title = part.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let label = title.isEmpty ? "第\(part.page)话" : title
-        return "\(part.page)  \(label)"
+}
+
+extension BiliVideoPage {
+    var episodeMenuTitle: String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = trimmed.isEmpty ? "第\(page)话" : trimmed
+        return "\(page)  \(label)"
     }
 }
 

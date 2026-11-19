@@ -25,6 +25,7 @@ struct DanmakuOverlayView: NSViewRepresentable, Equatable {
         if lhs.isActive != rhs.isActive { return false }
         if lhs.settings != rhs.settings { return false }
         if lhs.layoutMode != rhs.layoutMode { return false }
+        if lhs.faceMaskAnalyzer !== rhs.faceMaskAnalyzer { return false }
         if !lhs.isPlaying, lhs.positionMs != rhs.positionMs { return false }
         return true
     }

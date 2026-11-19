@@ -55,7 +55,9 @@ final class VideoDetailModel: ObservableObject {
     @Published var authorFollowerCount: Int64 = 0
     @Published var authorRelation = BiliAuthorRelation()
     @Published var authorFollowLoading = false
-    @Published var onlineCount: Int64 = 0
+    @Published private(set) var onlineCount: String?
+    private var isRefreshingOnlineCount = false
+    private var onlineCountRequestID = 0
     @Published var videoTags: [String] = []
     @Published var videoActionLoading = false
     @Published var actionMessage: String?
@@ -135,7 +137,7 @@ final class VideoDetailModel: ObservableObject {
         authorLevel = 0
         authorFollowerCount = 0
         authorRelation = BiliAuthorRelation()
-        onlineCount = 0
+        resetOnlineCount()
         videoTags = []
         defer { isLoadingDetail = false }
 
@@ -276,19 +278,31 @@ final class VideoDetailModel: ObservableObject {
         }
     }
 
-    private func loadOnlineCount() async {
+    private func resetOnlineCount() {
+        onlineCountRequestID &+= 1
+        onlineCount = nil
+        isRefreshingOnlineCount = false
+    }
+
+    func loadOnlineCount() async {
         let video = displayVideo
         let cid = activeCID > 0 ? activeCID : video.cid
-        guard !video.bvid.isEmpty, cid > 0 else {
-            onlineCount = 0
-            return
+        guard !video.bvid.isEmpty, cid > 0, !isRefreshingOnlineCount else { return }
+        onlineCountRequestID &+= 1
+        let requestID = onlineCountRequestID
+        isRefreshingOnlineCount = true
+        defer {
+            if requestID == onlineCountRequestID { isRefreshingOnlineCount = false }
         }
-        onlineCount = await api.videoOnlineCount(
-            bvid: video.bvid,
-            aid: video.aid,
-            cid: cid,
-            credential: credential
-        )
+        do {
+            let count = try await api.videoOnlineCount(
+                bvid: video.bvid, aid: video.aid, cid: cid, credential: credential
+            )
+            guard requestID == onlineCountRequestID, !Task.isCancelled else { return }
+            onlineCount = count
+        } catch {
+            // Keep the last value until the next successful refresh.
+        }
     }
 
     private func loadVideoTags() async {
@@ -568,6 +582,7 @@ final class VideoDetailModel: ObservableObject {
         let generation = lifecycleGeneration
         if part.epid > 0, part.epid != activeEpid {
             activeEpid = part.epid
+            resetOnlineCount()
             activeCID = part.cid
             isLoadingDetail = true
             defer { isLoadingDetail = false }
@@ -592,6 +607,7 @@ final class VideoDetailModel: ObservableObject {
         }
 
         if !part.bvid.isEmpty, part.bvid != displayVideo.bvid {
+            resetOnlineCount()
             activeCID = part.cid
             isLoadingDetail = true
             defer { isLoadingDetail = false }
@@ -617,6 +633,7 @@ final class VideoDetailModel: ObservableObject {
         }
 
         guard part.cid != activeCID else { return }
+        resetOnlineCount()
         activeCID = part.cid
         await loadPlayback()
         guard isLifecycleActive(generation) else { return }
@@ -675,7 +692,8 @@ final class VideoDetailModel: ObservableObject {
                 aid: displayVideo.aid > 0 ? displayVideo.aid : stream.aid,
                 cid: cid,
                 lastPlayTimeMilliseconds: stream.lastPlayTimeMilliseconds,
-                lastPlayCID: stream.lastPlayCID
+                lastPlayCID: stream.lastPlayCID,
+                quality: stream.quality, qualityURLs: stream.qualityURLs
             )
             let cookieHeader = await api.httpCookieHeader(credential: credential)
             guard isLifecycleActive(generation), !Task.isCancelled else { return }
@@ -1027,7 +1045,7 @@ final class VideoDetailModel: ObservableObject {
         authorLevel = 0
         authorFollowerCount = 0
         authorRelation = BiliAuthorRelation()
-        onlineCount = 0
+        resetOnlineCount()
         videoTags = []
     }
 
@@ -1191,12 +1209,36 @@ final class VideoDetailModel: ObservableObject {
     }
 }
 
+struct VideoOnlineCountSource: Equatable {
+    weak var model: VideoDetailModel?
+    private let id: ObjectIdentifier
+
+    init(_ model: VideoDetailModel) {
+        self.model = model
+        id = ObjectIdentifier(model)
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.id == rhs.id }
+}
+
+private struct VideoOnlineCountLabel: View {
+    @ObservedObject var model: VideoDetailModel
+
+    var body: some View {
+        if let count = model.onlineCount {
+            Text("\(count) 人在看")
+                .font(.body)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
 struct VideoDetailChromeInfo: Equatable {
     let title: String
     let viewCount: Int64
     let danmakuCount: Int64
     let publishTime: Date?
-    let onlineCount: Int64
+    let onlineCountSource: VideoOnlineCountSource?
     let webURL: URL?
     let authorFaceURL: URL?
     let authorName: String?
@@ -1207,7 +1249,7 @@ struct VideoDetailChromeInfo: Equatable {
         viewCount: Int64,
         danmakuCount: Int64,
         publishTime: Date?,
-        onlineCount: Int64,
+        onlineCountSource: VideoOnlineCountSource? = nil,
         webURL: URL?,
         authorFaceURL: URL? = nil,
         authorName: String? = nil,
@@ -1217,7 +1259,7 @@ struct VideoDetailChromeInfo: Equatable {
         self.viewCount = viewCount
         self.danmakuCount = danmakuCount
         self.publishTime = publishTime
-        self.onlineCount = onlineCount
+        self.onlineCountSource = onlineCountSource
         self.webURL = webURL
         self.authorFaceURL = authorFaceURL
         self.authorName = authorName
@@ -1302,13 +1344,11 @@ struct VideoDetailChromeHeaderView: View {
                     iconSize: 20,
                     font: .body
                 )
+                if let model = info.onlineCountSource?.model {
+                    VideoOnlineCountLabel(model: model)
+                }
                 if let publishTime = info.publishTime {
                     Text(publishTime.numericDateString)
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                }
-                if info.onlineCount > 0 {
-                    Text("\(info.onlineCount.compactCount) 人在看")
                         .font(.body)
                         .foregroundStyle(.secondary)
                 }
@@ -1443,6 +1483,19 @@ struct VideoDetailView: View {
             model.applyPrefetchedStream(appModel.cachedPlayStream(for: model.seedVideo))
             await model.load()
         }
+        .task(id: model.seedVideo.id) {
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: .seconds(30))
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled else { return }
+                if !model.isLoadingDetail {
+                    await model.loadOnlineCount()
+                }
+            }
+        }
         .onAppear {
             publishesFloatingChrome = true
             publishVideoFloatingChrome()
@@ -1507,7 +1560,6 @@ struct VideoDetailView: View {
         }
         .onChange(of: model.displayVideo.viewCount) { _, _ in updateFloatingChrome() }
         .onChange(of: model.displayVideo.danmakuCount) { _, _ in updateFloatingChrome() }
-        .onChange(of: model.onlineCount) { _, _ in updateFloatingChrome() }
         .onChange(of: model.detail?.publishTime) { _, _ in updateFloatingChrome() }
         .onChange(of: model.needsLoginPrompt) { _, needsLogin in
             if needsLogin {
@@ -2022,7 +2074,7 @@ struct VideoDetailView: View {
             viewCount: model.displayVideo.viewCount,
             danmakuCount: model.displayVideo.danmakuCount,
             publishTime: model.detail?.publishTime,
-            onlineCount: model.onlineCount,
+            onlineCountSource: VideoOnlineCountSource(model),
             webURL: model.displayVideo.webURL
         )
     }
@@ -2389,6 +2441,9 @@ private struct VideoPlayerSection: View {
         return episodeTitle
     }
 
+    @State private var isControlMenuPresented = false
+    @State private var playerViewportHeight: CGFloat = 0
+
     var body: some View {
         ZStack {
             playerContentStack
@@ -2409,10 +2464,15 @@ private struct VideoPlayerSection: View {
             syncChromeVisibility()
         }
         .overlay {
-            VideoScrollWheelMonitor(player: player)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if !model.showDanmakuSettings && !isControlMenuPresented {
+                VideoScrollWheelMonitor(player: player)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .frame(width: isFullscreen ? nil : fittedSize.width, height: isFullscreen ? nil : fittedSize.height)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+            playerViewportHeight = $0
+        }
         .animation(visualState.isReady ? .easeOut(duration: 0.2) : nil, value: visualState.displayAspectRatio)
         .onChange(of: chromeState.showsControls) { _, visible in
             guard isFullscreen else { return }
@@ -2461,31 +2521,31 @@ private struct VideoPlayerSection: View {
             if visualState.isPictureInPictureActive {
                 Color.black
             }
-            VideoPlayerClickOverlay(
-                onSingleClick: {
-                    chromeState.revealControls()
-                    player.togglePlayback()
-                },
-                onDoubleClick: {
-                    chromeState.revealControls()
-                    onToggleFullscreen?()
-                },
-                onActivity: { chromeState.revealControls() }
-            )
+            if !model.showDanmakuSettings {
+                VideoPlayerClickOverlay(
+                    onSingleClick: {
+                        syncChromeVisibility()
+                        player.togglePlayback()
+                    },
+                    onDoubleClick: {
+                        syncChromeVisibility()
+                        onToggleFullscreen?()
+                    },
+                    onActivity: { syncChromeVisibility() }
+                )
+            }
         }
     }
 
     @ViewBuilder
     private var playerChromeOverlay: some View {
-        ZStack {
-            if model.showDanmakuSettings {
-                DanmakuSettingsOverlay(
-                    settings: model.danmakuSettings,
-                    onSettingsChange: model.updateDanmakuSettings,
-                    onDismiss: { model.showDanmakuSettings = false }
-                )
-            }
-
+        if model.showDanmakuSettings {
+            DanmakuSettingsOverlay(
+                settings: model.danmakuSettings,
+                onSettingsChange: model.updateDanmakuSettings,
+                onDismiss: { model.showDanmakuSettings = false }
+            )
+        } else {
             VStack(spacing: 0) {
                 if isFullscreen, let fullscreenTitle {
                     VideoFullscreenTitleBar(
@@ -2499,7 +2559,7 @@ private struct VideoPlayerSection: View {
 
                 Spacer()
 
-                if !model.showDanmakuSettings, chromeState.showsControls {
+                if chromeState.showsControls {
                     VideoControlCapsule(
                         player: player,
                         videoShot: model.videoShot,
@@ -2508,21 +2568,21 @@ private struct VideoPlayerSection: View {
                         activeEpisodeCID: model.activeCID,
                         activeEpisodeBvid: model.displayVideo.bvid,
                         onEpisodeSelect: { part in Task { await model.selectPart(part) } },
+                        episodeMenuMaxHeight: max(44, playerViewportHeight
+                            - (isFullscreen ? VideoControlLayout.fullscreenBottomInset : VideoControlLayout.inlineBottomInset)
+                            - VideoControlLayout.capsuleHeight - 36),
                         danmakuVisible: model.danmakuVisible,
                         onDanmakuToggle: model.toggleDanmakuVisible,
                         onDanmakuRightClick: { model.showDanmakuSettings = true },
-                        onInteraction: { chromeState.revealControls() },
-                        onSpeedMenuVisibilityChanged: { presented in
-                            if presented {
-                                chromeState.showControlsPersistently()
-                            } else {
-                                chromeState.revealControls()
-                            }
+                        onInteraction: { syncChromeVisibility() },
+                        onOptionsMenuVisibilityChanged: { presented in
+                            isControlMenuPresented = presented
+                            chromeState.revealControls(scheduleAutoHide: !presented)
                         }
                     )
                     .transition(.opacity)
                     .padding(.horizontal, 16)
-                    .padding(.bottom, isFullscreen ? 32 : 28)
+                    .padding(.bottom, isFullscreen ? VideoControlLayout.fullscreenBottomInset : VideoControlLayout.inlineBottomInset)
                 }
             }
             .animation(.easeInOut(duration: 0.28), value: chromeState.showsControls)
@@ -2535,7 +2595,7 @@ private struct VideoPlayerSection: View {
     }
 
     private func syncChromeVisibility() {
-        chromeState.revealControls()
+        chromeState.revealControls(scheduleAutoHide: !isControlMenuPresented)
     }
 
     private var keyboardHandlers: VideoPlayerKeyboardHandlers {
@@ -2546,7 +2606,7 @@ private struct VideoPlayerSection: View {
                     && !model.showDanmakuSettings
                     && VideoPlayerKeyboardRouting.shouldHandleInVideoDetail()
             },
-            onInteraction: { chromeState.revealControls() },
+            onInteraction: { syncChromeVisibility() },
             onTogglePlayback: { player.togglePlayback() },
             onSeekBackward: { player.seek(by: -5) },
             onSeekForward: { player.seek(by: 5) },
@@ -2699,24 +2759,25 @@ private final class VideoPlayerClickView: NSView {
 }
 
 private enum VideoControlLayout {
-    static let capsuleHeight: CGFloat = 62
+    static let capsuleHeight: CGFloat = 72
     static let horizontalPadding: CGFloat = 16
-    static let verticalPadding: CGFloat = 13
-    static let itemSpacing: CGFloat = 12
+    static let verticalPadding: CGFloat = 8
+    static let itemSpacing: CGFloat = 14
     // Reserve space for the longest normal time label (hh:mm:ss). A fixed
     // width prevents the whole control row from shifting as digits change.
     // Wide enough for hh:mm:ss without wrapping on long videos.
-    static let timeWidth: CGFloat = 78
-    static let speedMinWidth: CGFloat = 42
-    static let trailingControlSpacing: CGFloat = 12
-    static let pictureInPictureButtonSize: CGFloat = 50
-    static let pictureInPictureIconSize: CGFloat = 26
-    static let playIconSize: CGFloat = 22
-    static let playButtonSize: CGFloat = 42
-    static let danmakuFontSize: CGFloat = 20
-    static let danmakuButtonSize: CGFloat = 44
+    static let timeWidth: CGFloat = 88
+    static let controlSize: CGFloat = 54
+    static let pictureInPictureButtonSize: CGFloat = controlSize
+    static let pictureInPictureIconSize: CGFloat = 30
+    static let playIconSize: CGFloat = 25
+    static let playButtonSize: CGFloat = controlSize
+    static let danmakuFontSize: CGFloat = 22
+    static let danmakuButtonSize: CGFloat = controlSize
     static let progressLineWidth: CGFloat = 6
-    static let chromeHitTestClearance: CGFloat = 80
+    static let inlineBottomInset: CGFloat = 28
+    static let fullscreenBottomInset: CGFloat = 32
+    static let chromeHitTestClearance = capsuleHeight + fullscreenBottomInset
 }
 
 private enum VideoScrubPreviewLayout {
@@ -2842,21 +2903,26 @@ private struct VideoControlCapsule: View {
     var activeEpisodeCID: Int64 = 0
     var activeEpisodeBvid = ""
     var onEpisodeSelect: (BiliVideoPage) -> Void = { _ in }
+    var episodeMenuMaxHeight: CGFloat = 244
     let danmakuVisible: Bool
     let onDanmakuToggle: () -> Void
     let onDanmakuRightClick: () -> Void
     var onInteraction: () -> Void = {}
-    var onSpeedMenuVisibilityChanged: (Bool) -> Void = { _ in }
+    var onOptionsMenuVisibilityChanged: (Bool) -> Void = { _ in }
 
     @State private var dragProgress: Double?
     @State private var displayedProgress: Double = 0
     @State private var hoverProgress: Double?
     @State private var capsuleWidth: CGFloat = 1
-    @State private var isPlaybackRateMenuPresented = false
-    @State private var isPlaybackRateButtonHovered = false
-    @State private var isPlaybackRatePopupHovered = false
-    @State private var playbackRateDismissTask: Task<Void, Never>?
-    @State private var isEpisodeMenuPresented = false
+    private enum OptionsMenu { case rate, quality, episodes }
+    @State private var optionsMenu: OptionsMenu?
+    @State private var qualityButtonCenter: CGFloat = 0
+    @State private var episodeButtonCenter: CGFloat = 0
+    @State private var rateButtonCenter: CGFloat = 0
+    @Namespace private var capsuleCoordinates
+    @State private var hoveredOptionsButton: OptionsMenu?
+    @State private var isOptionsPopupHovered = false
+    @State private var optionsDismissTask: Task<Void, Never>?
 
     private var progress: Double {
         if let dragProgress { return dragProgress }
@@ -2911,6 +2977,7 @@ private struct VideoControlCapsule: View {
                             width: VideoControlLayout.playButtonSize,
                             height: VideoControlLayout.playButtonSize
                         )
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
 
@@ -2929,7 +2996,7 @@ private struct VideoControlCapsule: View {
                 Spacer(minLength: 0)
                     .allowsHitTesting(false)
 
-                HStack(spacing: VideoControlLayout.trailingControlSpacing) {
+                HStack(spacing: VideoControlLayout.itemSpacing) {
                     PictureInPictureControlButton(
                         isActive: player.isPictureInPictureActive,
                         isEnabled: pictureInPictureEnabled,
@@ -2941,48 +3008,66 @@ private struct VideoControlCapsule: View {
                     .equatable()
 
                     if episodePages.count > 1 {
-                        Text("选集")
-                            .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
-                            .videoControlHoverForeground()
-                            .frame(width: 44, height: 44, alignment: .center)
-                            .contentShape(Rectangle())
-                            .overlay {
-                                VideoPartMenuPressOverlay(
-                                    pages: episodePages,
-                                    activeCID: activeEpisodeCID,
-                                    activeBvid: activeEpisodeBvid,
-                                    onSelect: onEpisodeSelect,
-                                    opensOnHover: true,
-                                    onMenuVisibilityChange: { isPresented in
-                                        isEpisodeMenuPresented = isPresented
-                                        if isPresented { hoverProgress = nil }
-                                    }
-                                )
-                            }
-                            .onHover { hovering in
-                                if hovering { onInteraction() }
+                        Button {
+                            onInteraction()
+                            presentOptionsMenu(.episodes)
+                        } label: {
+                            Text("选集")
+                                .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
+                                .videoControlHoverForeground()
+                                .frame(width: VideoControlLayout.controlSize, height: VideoControlLayout.controlSize)
+                                .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .onHover { updateOptionsButtonHover(.episodes, hovering: $0) }
+                        .onGeometryChange(for: CGFloat.self) {
+                            $0.frame(in: .named(capsuleCoordinates)).midX
+                        } action: { episodeButtonCenter = $0 }
+                    }
+
+                    if player.isReady {
+                        let canSwitch = player.availableVideoQualities.count > 1
+                            && !player.isSwitchingVideoQuality
+                            && !player.isPictureInPictureActive
+                            && !player.isPictureInPicturePreparing
+                        Button {
+                            onInteraction()
+                            presentOptionsMenu(.quality)
+                        } label: {
+                            Text(player.isSwitchingVideoQuality ? "切换中" : player.videoQualityLabel)
+                                .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
+                                .videoControlHoverForeground(isEnabled: canSwitch)
+                                .frame(minWidth: VideoControlLayout.controlSize, minHeight: VideoControlLayout.controlSize)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canSwitch)
+                        .help(player.videoQualityError ?? (canSwitch ? "切换清晰度" : "当前清晰度"))
+                        .onHover { hovering in
+                            updateOptionsButtonHover(.quality, hovering: hovering, enabled: canSwitch)
+                        }
+                        .onGeometryChange(for: CGFloat.self) {
+                            $0.frame(in: .named(capsuleCoordinates)).midX
+                        } action: { qualityButtonCenter = $0 }
                     }
 
                     Button(action: {
                         onInteraction()
-                        presentPlaybackRateMenu()
+                        presentOptionsMenu(.rate)
                     }) {
                         Text(player.playbackRateLabel)
                             .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
-                            .frame(minWidth: VideoControlLayout.speedMinWidth, alignment: .center)
                             .videoControlHoverForeground()
+                            .frame(minWidth: VideoControlLayout.controlSize, minHeight: VideoControlLayout.controlSize)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .onHover { hovering in
-                        isPlaybackRateButtonHovered = hovering
-                        if hovering {
-                            onInteraction()
-                            presentPlaybackRateMenu()
-                        } else {
-                            schedulePlaybackRateMenuDismissal()
-                        }
+                        updateOptionsButtonHover(.rate, hovering: hovering)
                     }
+                    .onGeometryChange(for: CGFloat.self) {
+                        $0.frame(in: .named(capsuleCoordinates)).midX
+                    } action: { rateButtonCenter = $0 }
 
                     Text(formatTime(max(0, player.duration - positionTime)))
                         .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
@@ -3000,13 +3085,13 @@ private struct VideoControlCapsule: View {
             .padding(.vertical, VideoControlLayout.verticalPadding)
         }
         .frame(height: VideoControlLayout.capsuleHeight)
+        .coordinateSpace(name: capsuleCoordinates)
         .clipShape(Capsule(style: .continuous))
         .modifier(VideoControlCapsuleChrome())
         .overlay(alignment: .topLeading) {
             GeometryReader { proxy in
                 if let hoverProgress,
-                   !isEpisodeMenuPresented,
-                   !isPlaybackRateMenuPresented {
+                   optionsMenu == nil {
                     let previewAspectRatio = VideoScrubPreviewLayout.aspectRatio(
                         videoShot: videoShot,
                         playerAspectRatio: player.displayAspectRatio
@@ -3031,36 +3116,62 @@ private struct VideoControlCapsule: View {
             .allowsHitTesting(false)
         }
         .overlay(alignment: .bottomTrailing) {
-            if isPlaybackRateMenuPresented {
-                VideoPlaybackRatePopup(
-                    selectedRate: player.playbackRate,
-                    onHoverChange: { hovering in
-                        isPlaybackRatePopupHovered = hovering
-                        if hovering {
-                            hoverProgress = nil
-                            playbackRateDismissTask?.cancel()
-                        } else {
-                            schedulePlaybackRateMenuDismissal()
-                        }
-                    },
-                    onSelect: { rate in
-                        player.setPlaybackRate(rate)
-                        dismissPlaybackRateMenu()
-                        onInteraction()
+            if let optionsMenu {
+                Group {
+                    switch optionsMenu {
+                    case .rate:
+                        VideoControlOptionsPopup(
+                            values: VideoPlaybackRateOptions.values,
+                            selected: player.playbackRate,
+                            label: VideoPlaybackRateOptions.label(for:),
+                            onHoverChange: updateOptionsPopupHover,
+                            onSelect: { rate in
+                                player.setPlaybackRate(rate)
+                                dismissOptionsMenu()
+                                onInteraction()
+                            }
+                        )
+                    case .episodes:
+                        VideoControlOptionsPopup(
+                            values: episodePages,
+                            selected: episodePages.first {
+                                $0.cid == activeEpisodeCID && ($0.bvid.isEmpty || $0.bvid == activeEpisodeBvid)
+                            },
+                            width: episodePopupWidth,
+                            scrollHeightLimit: episodeMenuMaxHeight,
+                            label: { $0.episodeMenuTitle },
+                            detailLabel: { $0.duration > 0 ? formatTime(Double($0.duration)) : nil },
+                            onHoverChange: updateOptionsPopupHover,
+                            onSelect: { episode in
+                                dismissOptionsMenu()
+                                onInteraction()
+                                onEpisodeSelect(episode)
+                            }
+                        )
+                    case .quality:
+                        VideoControlOptionsPopup(
+                            values: player.availableVideoQualities,
+                            selected: player.videoQuality,
+                            width: qualityPopupWidth,
+                            label: BiliPlayStream.qualityLabel,
+                            onHoverChange: updateOptionsPopupHover,
+                            onSelect: { quality in
+                                player.selectVideoQuality(quality)
+                                dismissOptionsMenu()
+                                onInteraction()
+                            }
+                        )
                     }
-                )
+                }
                 .offset(
-                    x: -VideoControlLayout.horizontalPadding,
+                    x: optionsMenuOffset(optionsMenu),
                     y: -(VideoControlLayout.capsuleHeight + 10)
                 )
-                .transition(
-                    .scale(scale: 0.92, anchor: .bottomTrailing)
-                        .combined(with: .opacity)
-                )
+                .transition(.scale(scale: 0.92, anchor: .bottomTrailing).combined(with: .opacity))
                 .zIndex(20)
             }
         }
-        .animation(.easeOut(duration: 0.16), value: isPlaybackRateMenuPresented)
+        .animation(.easeOut(duration: 0.16), value: optionsMenu)
         .onChange(of: progress) { _, newValue in
             if player.isScrubbing || !player.isPlaying {
                 displayedProgress = newValue
@@ -3074,7 +3185,7 @@ private struct VideoControlCapsule: View {
             displayedProgress = progress
         }
         .onDisappear {
-            playbackRateDismissTask?.cancel()
+            dismissOptionsMenu()
         }
         .onHover { hovering in
             if hovering {
@@ -3122,31 +3233,72 @@ private struct VideoControlCapsule: View {
         min(1, max(0, Double(x / max(totalWidth, 1))))
     }
 
-    private func presentPlaybackRateMenu() {
-        playbackRateDismissTask?.cancel()
-        guard !isPlaybackRateMenuPresented else { return }
-        hoverProgress = nil
-        isPlaybackRateMenuPresented = true
-        onSpeedMenuVisibilityChanged(true)
+    private var episodePopupWidth: CGFloat { min(460, capsuleWidth) }
+    private let qualityPopupWidth: CGFloat = 156
+
+    private func optionsMenuOffset(_ menu: OptionsMenu) -> CGFloat {
+        let center = switch menu {
+        case .rate: rateButtonCenter
+        case .quality: qualityButtonCenter
+        case .episodes: episodeButtonCenter
+        }
+        let width = switch menu {
+        case .rate: VideoControlOptionsPopup<Int>.verticalWidth
+        case .quality: qualityPopupWidth
+        case .episodes: episodePopupWidth
+        }
+        return max(min(0, width - capsuleWidth), min(0, center - capsuleWidth + width / 2))
     }
 
-    private func schedulePlaybackRateMenuDismissal() {
-        playbackRateDismissTask?.cancel()
-        playbackRateDismissTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(180))
-            guard !Task.isCancelled,
-                  !isPlaybackRateButtonHovered,
-                  !isPlaybackRatePopupHovered else { return }
-            dismissPlaybackRateMenu()
+    private func updateOptionsButtonHover(_ menu: OptionsMenu, hovering: Bool, enabled: Bool = true) {
+        if hovering && enabled {
+            hoveredOptionsButton = menu
+            onInteraction()
+            presentOptionsMenu(menu)
+        } else {
+            if hoveredOptionsButton == menu { hoveredOptionsButton = nil }
+            if optionsMenu == menu { scheduleOptionsMenuDismissal() }
         }
     }
 
-    private func dismissPlaybackRateMenu() {
-        playbackRateDismissTask?.cancel()
-        playbackRateDismissTask = nil
-        guard isPlaybackRateMenuPresented else { return }
-        isPlaybackRateMenuPresented = false
-        onSpeedMenuVisibilityChanged(false)
+    private func updateOptionsPopupHover(_ hovering: Bool) {
+        guard optionsMenu != nil, isOptionsPopupHovered != hovering else { return }
+        isOptionsPopupHovered = hovering
+        if hovering {
+            hoverProgress = nil
+            optionsDismissTask?.cancel()
+        } else {
+            scheduleOptionsMenuDismissal()
+        }
+    }
+
+    private func presentOptionsMenu(_ menu: OptionsMenu) {
+        optionsDismissTask?.cancel()
+        guard optionsMenu != menu else { return }
+        isOptionsPopupHovered = false
+        hoverProgress = nil
+        optionsMenu = menu
+        onOptionsMenuVisibilityChanged(true)
+    }
+
+    private func scheduleOptionsMenuDismissal() {
+        optionsDismissTask?.cancel()
+        optionsDismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled,
+                  hoveredOptionsButton != optionsMenu,
+                  !isOptionsPopupHovered else { return }
+            dismissOptionsMenu()
+        }
+    }
+
+    private func dismissOptionsMenu() {
+        optionsDismissTask?.cancel()
+        optionsDismissTask = nil
+        guard optionsMenu != nil else { return }
+        optionsMenu = nil
+        isOptionsPopupHovered = false
+        onOptionsMenuVisibilityChanged(false)
     }
 
     private func formatTime(_ seconds: Double) -> String {
@@ -3199,14 +3351,22 @@ private struct PictureInPictureControlButton: View, Equatable {
 }
 
 private struct VideoControlCapsuleChrome: ViewModifier {
+    var cornerRadius: CGFloat? = nil
+
     func body(content: Content) -> some View {
-        content
-            .glassEffect(.clear, in: .capsule)
-        .overlay {
-            Capsule(style: .continuous)
-                .strokeBorder(BiliTheme.videoControlBorder, lineWidth: 0.5)
+        let shape = if let cornerRadius {
+            AnyShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        } else {
+            AnyShape(Capsule(style: .continuous))
         }
-        .shadow(color: .black.opacity(0.22), radius: 10, x: 0, y: 3)
+
+        content
+            .glassEffect(.clear, in: shape)
+            .overlay {
+                shape.stroke(BiliTheme.videoControlBorder, lineWidth: 0.5)
+                    .allowsHitTesting(false)
+            }
+            .shadow(color: .black.opacity(0.22), radius: 10, x: 0, y: 3)
     }
 }
 
@@ -3385,40 +3545,107 @@ private func formatVideoShotTime(_ seconds: Double) -> String {
         : String(format: "%d:%02d", minutes, remainder)
 }
 
-private struct VideoPlaybackRatePopup: View {
-    let selectedRate: Float
+private struct VideoControlOptionsPopup<Value: Hashable>: View {
+    static var verticalWidth: CGFloat { 110 }
+
+    let values: [Value]
+    let selected: Value?
+    var width: CGFloat = 110
+    var scrollHeightLimit: CGFloat? = nil
+    private var scrollable: Bool { scrollHeightLimit != nil }
+    let label: (Value) -> String
+    var detailLabel: ((Value) -> String?)? = nil
     let onHoverChange: (Bool) -> Void
-    let onSelect: (Float) -> Void
+    let onSelect: (Value) -> Void
 
-    @State private var hoveredRate: Float?
+    @State private var hoveredRate: Value?
+    @State private var contentHeight: CGFloat = 0
+    @State private var scrollPosition = ScrollPosition(idType: Value.self)
+    @State private var scrollMetrics = CGPoint.zero
+    @State private var hoveredScrollEdge: ScrollEdge?
 
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(VideoPlaybackRateOptions.values, id: \.self) { rate in
-                let isSelected = abs(rate - selectedRate) < 0.001
+    private enum ScrollEdge: Equatable {
+        case top, bottom
+    }
+
+    private func canScroll(_ edge: ScrollEdge) -> Bool {
+        edge == .top ? scrollMetrics.x > 1 : scrollMetrics.x < scrollMetrics.y - 1
+    }
+
+    private func scroll(_ edge: ScrollEdge, by distance: CGFloat) {
+        let next = scrollMetrics.x + (edge == .top ? -distance : distance)
+        scrollPosition.scrollTo(y: min(scrollMetrics.y, max(0, next)))
+    }
+
+    private func scrollArrow(_ edge: ScrollEdge) -> some View {
+        let available = canScroll(edge)
+        let label = edge == .top ? "向上滚动选集" : "向下滚动选集"
+        return Button {
+            scroll(edge, by: 44)
+        } label: {
+            Image(systemName: edge == .top ? "chevron.up" : "chevron.down")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(hoveredScrollEdge == edge ? VideoOptionRowAppearance.hoverForeground : .white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 18)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .opacity(available ? 1 : 0)
+        .allowsHitTesting(available)
+        .accessibilityHidden(!available)
+        .accessibilityLabel(label)
+        .onHover { hovering in
+            if hovering && available {
+                hoveredScrollEdge = edge
+            } else if hoveredScrollEdge == edge {
+                hoveredScrollEdge = nil
+            }
+        }
+    }
+
+    private var rows: some View {
+        VStack(spacing: 4) {
+            ForEach(values, id: \.self) { rate in
+                let isSelected = rate == selected
                 Button {
                     onSelect(rate)
                 } label: {
-                    Text(VideoPlaybackRateOptions.label(for: rate))
-                        .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
+                    HStack(spacing: 8) {
+                        Text(label(rate))
+                            .lineLimit(scrollable ? nil : 1)
+                            .fixedSize(horizontal: false, vertical: scrollable)
+                            .multilineTextAlignment(.leading)
+                            .layoutPriority(1)
+                        if let detail = detailLabel?(rate) {
+                            Spacer(minLength: 0)
+                            Text(detail).monospacedDigit()
+                                .fixedSize()
+                        }
+                    }
+                        .font(scrollable ? .system(size: 18) : .system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
                         .foregroundStyle(
                             hoveredRate == rate
-                                ? BiliTheme.pink
+                                ? VideoOptionRowAppearance.hoverForeground
                                 : .white.opacity(isSelected ? 1 : 0.86)
                         )
                         .videoControlSoftShadow()
-                        .frame(width: 56, height: 44)
+                        .padding(.horizontal, scrollable ? 10 : 0)
+                        .padding(.vertical, scrollable ? 6 : 0)
+                        .frame(minHeight: 44)
+                        .frame(width: max(1, width - 16), alignment: scrollable ? .leading : .center)
                         .background {
-                            Capsule(style: .continuous)
+                            RoundedRectangle(cornerRadius: VideoOptionRowAppearance.cornerRadius, style: .continuous)
                                 .fill(
                                     hoveredRate == rate
-                                        ? .white.opacity(0.14)
-                                        : (isSelected ? BiliTheme.pink.opacity(0.92) : .clear)
+                                        ? VideoOptionRowAppearance.hoverFill
+                                        : (isSelected ? VideoOptionRowAppearance.selectedFill : .clear)
                                 )
                         }
                 }
+                .id(rate)
                 .buttonStyle(.plain)
-                .contentShape(Capsule(style: .continuous))
+                .contentShape(RoundedRectangle(cornerRadius: VideoOptionRowAppearance.cornerRadius, style: .continuous))
                 .onHover { hovering in
                     withAnimation(.easeOut(duration: 0.12)) {
                         hoveredRate = hovering ? rate : nil
@@ -3426,11 +3653,66 @@ private struct VideoPlaybackRatePopup: View {
                 }
             }
         }
+    }
+
+    var body: some View {
+        Group {
+            if let scrollHeightLimit {
+                let hasOverflow = contentHeight > scrollHeightLimit
+                VStack(spacing: 0) {
+                    if hasOverflow { scrollArrow(.top) }
+                    ScrollView {
+                        rows
+                            .scrollTargetLayout()
+                            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+                    }
+                    .scrollIndicators(.never, axes: [.vertical, .horizontal])
+                    .scrollPosition($scrollPosition)
+                    .onScrollGeometryChange(for: CGPoint.self) { geometry in
+                        let limit = max(0, geometry.contentSize.height + geometry.contentInsets.top
+                            + geometry.contentInsets.bottom - geometry.containerSize.height)
+                        let offset = geometry.contentOffset.y + geometry.contentInsets.top
+                        return CGPoint(x: min(limit, max(0, offset)), y: limit)
+                    } action: { _, metrics in
+                        scrollMetrics = metrics
+                        if let edge = hoveredScrollEdge, !canScroll(edge) { hoveredScrollEdge = nil }
+                    }
+                    .frame(
+                        width: max(1, width - 16),
+                        height: hasOverflow ? max(1, scrollHeightLimit - 36)
+                            : (contentHeight > 0 ? contentHeight : scrollHeightLimit)
+                    )
+                    .onAppear {
+                        if let selected { scrollPosition.scrollTo(id: selected, anchor: .center) }
+                    }
+                    if hasOverflow { scrollArrow(.bottom) }
+                }
+                .task(id: hoveredScrollEdge) {
+                    guard let edge = hoveredScrollEdge else { return }
+                    while !Task.isCancelled, canScroll(edge) {
+                        scroll(edge, by: 7)
+                        do {
+                            try await Task.sleep(for: .milliseconds(35))
+                        } catch {
+                            return
+                        }
+                    }
+                }
+            } else {
+                rows
+            }
+        }
         .padding(.horizontal, 8)
-        .frame(height: VideoControlLayout.capsuleHeight)
-        .modifier(VideoControlCapsuleChrome())
-        .contentShape(Capsule(style: .continuous))
-        .onHover(perform: onHoverChange)
+        .padding(.vertical, 8)
+        .fixedSize()
+        .modifier(VideoControlCapsuleChrome(cornerRadius: 16))
+        .contentShape(Rectangle())
+        .onContinuousHover { phase in
+            switch phase {
+            case .active: onHoverChange(true)
+            case .ended: onHoverChange(false)
+            }
+        }
     }
 }
 

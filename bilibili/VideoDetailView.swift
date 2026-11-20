@@ -3123,6 +3123,7 @@ private struct VideoControlCapsule: View {
                         VideoControlOptionsPopup(
                             values: VideoPlaybackRateOptions.values,
                             selected: player.playbackRate,
+                            width: optionsMenuWidth(.rate),
                             label: VideoPlaybackRateOptions.label(for:),
                             onHoverChange: updateOptionsPopupHover,
                             onSelect: { rate in
@@ -3137,7 +3138,7 @@ private struct VideoControlCapsule: View {
                             selected: episodePages.first {
                                 $0.cid == activeEpisodeCID && ($0.bvid.isEmpty || $0.bvid == activeEpisodeBvid)
                             },
-                            width: episodePopupWidth,
+                            width: optionsMenuWidth(.episodes),
                             scrollHeightLimit: episodeMenuMaxHeight,
                             label: { $0.episodeMenuTitle },
                             detailLabel: { $0.duration > 0 ? formatTime(Double($0.duration)) : nil },
@@ -3152,7 +3153,7 @@ private struct VideoControlCapsule: View {
                         VideoControlOptionsPopup(
                             values: player.availableVideoQualities,
                             selected: player.videoQuality,
-                            width: qualityPopupWidth,
+                            width: optionsMenuWidth(.quality),
                             label: BiliPlayStream.qualityLabel,
                             onHoverChange: updateOptionsPopupHover,
                             onSelect: { quality in
@@ -3233,8 +3234,32 @@ private struct VideoControlCapsule: View {
         min(1, max(0, Double(x / max(totalWidth, 1))))
     }
 
-    private var episodePopupWidth: CGFloat { min(460, capsuleWidth) }
-    private let qualityPopupWidth: CGFloat = 156
+    private func optionsMenuWidth(_ menu: OptionsMenu) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: menu == .episodes ? 18 : VideoControlLayout.danmakuFontSize,
+                                     weight: menu == .episodes ? .regular : .bold)
+        func measured(_ text: String) -> CGFloat {
+            text.components(separatedBy: .newlines).map {
+                ($0 as NSString).size(withAttributes: [.font: font]).width
+            }.max() ?? 0
+        }
+        let contentWidth: CGFloat = switch menu {
+        case .rate:
+            VideoPlaybackRateOptions.values.map { measured(VideoPlaybackRateOptions.label(for: $0)) }.max() ?? 0
+        case .quality:
+            player.availableVideoQualities.map { measured(BiliPlayStream.qualityLabel($0)) }.max() ?? 0
+        case .episodes:
+            episodePages.map { episode in
+                let duration = episode.duration > 0 ? formatTime(Double(episode.duration)) : ""
+                return measured(episode.episodeMenuTitle)
+                    + (duration.isEmpty ? 0 : measured(duration) + 8)
+            }.max() ?? 0
+        }
+        // Include row padding and glass margins; keep long episode titles
+        // within the player so they can wrap instead of clipping.
+        let padding: CGFloat = menu == .episodes ? 44 : 40
+        let limit = menu == .episodes ? min(720, capsuleWidth) : capsuleWidth
+        return min(max(1, limit), max(72, ceil(contentWidth + padding)))
+    }
 
     private func optionsMenuOffset(_ menu: OptionsMenu) -> CGFloat {
         let center = switch menu {
@@ -3242,11 +3267,7 @@ private struct VideoControlCapsule: View {
         case .quality: qualityButtonCenter
         case .episodes: episodeButtonCenter
         }
-        let width = switch menu {
-        case .rate: VideoControlOptionsPopup<Int>.verticalWidth
-        case .quality: qualityPopupWidth
-        case .episodes: episodePopupWidth
-        }
+        let width = optionsMenuWidth(menu)
         return max(min(0, width - capsuleWidth), min(0, center - capsuleWidth + width / 2))
     }
 
@@ -3546,11 +3567,9 @@ private func formatVideoShotTime(_ seconds: Double) -> String {
 }
 
 private struct VideoControlOptionsPopup<Value: Hashable>: View {
-    static var verticalWidth: CGFloat { 110 }
-
     let values: [Value]
     let selected: Value?
-    var width: CGFloat = 110
+    let width: CGFloat
     var scrollHeightLimit: CGFloat? = nil
     private var scrollable: Bool { scrollHeightLimit != nil }
     let label: (Value) -> String

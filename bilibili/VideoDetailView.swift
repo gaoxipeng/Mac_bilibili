@@ -2762,7 +2762,7 @@ private enum VideoControlLayout {
     static let capsuleHeight: CGFloat = 72
     static let horizontalPadding: CGFloat = 16
     static let verticalPadding: CGFloat = 8
-    static let itemSpacing: CGFloat = 14
+    static let itemSpacing: CGFloat = 22
     // Reserve space for the longest normal time label (hh:mm:ss). A fixed
     // width prevents the whole control row from shifting as digits change.
     // Wide enough for hh:mm:ss without wrapping on long videos.
@@ -2935,6 +2935,14 @@ private struct VideoControlCapsule: View {
         player.isScrubbing ? (player.scrubPreviewTime ?? player.preciseCurrentTime) : player.preciseCurrentTime
     }
 
+    private var timeSlotWidth: CGFloat {
+        // Both time slots use the video's total-duration digit count, so
+        // crossing a minute/hour boundary never moves adjacent controls.
+        let sample = formatTime(player.duration).map { $0.isNumber ? "8" : String($0) }.joined()
+        let font = NSFont.monospacedDigitSystemFont(ofSize: VideoControlLayout.danmakuFontSize, weight: .bold)
+        return max(VideoControlLayout.timeWidth, ceil((sample as NSString).size(withAttributes: [.font: font]).width) + 4)
+    }
+
     private var pictureInPictureEnabled: Bool {
         AVPictureInPictureController.isPictureInPictureSupported() && player.isReady
     }
@@ -2963,7 +2971,7 @@ private struct VideoControlCapsule: View {
                     .allowsTightening(true)
                     .foregroundStyle(.white)
                     .videoControlSoftShadow()
-                    .frame(width: VideoControlLayout.timeWidth, alignment: .leading)
+                    .frame(width: timeSlotWidth, alignment: .leading)
                     .allowsHitTesting(false)
 
                 Button(action: {
@@ -3077,7 +3085,7 @@ private struct VideoControlCapsule: View {
                         .allowsTightening(true)
                         .foregroundStyle(.white)
                         .videoControlSoftShadow()
-                        .frame(width: VideoControlLayout.timeWidth, alignment: .trailing)
+                        .frame(width: timeSlotWidth, alignment: .trailing)
                         .allowsHitTesting(false)
                 }
             }

@@ -953,7 +953,7 @@ nonisolated struct DanmakuSettings: Equatable, Sendable {
     var speedLevel: DanmakuSpeedLevel
     var avoidanceMode: DanmakuAvoidanceMode
 
-    static let displayAreaOptions = [10, 25, 50, 75, 100]
+    static let displayAreaOptions = Array(stride(from: 10, through: 100, by: 10))
 
     init(
         displayAreaPercent: Int = 100,
@@ -970,7 +970,9 @@ nonisolated struct DanmakuSettings: Equatable, Sendable {
     }
 
     var displayAreaIndex: Int {
-        Self.displayAreaOptions.firstIndex(of: displayAreaPercent) ?? (Self.displayAreaOptions.count - 1)
+        Self.displayAreaOptions.indices.min {
+            abs(Self.displayAreaOptions[$0] - displayAreaPercent) < abs(Self.displayAreaOptions[$1] - displayAreaPercent)
+        } ?? (Self.displayAreaOptions.count - 1)
     }
 
     func withDisplayAreaIndex(_ index: Int) -> DanmakuSettings {

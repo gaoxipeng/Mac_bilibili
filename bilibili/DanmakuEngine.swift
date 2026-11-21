@@ -536,8 +536,8 @@ private struct DanmakuLayoutStrategy {
         fixedSpawnSpreadMillis: 220,
         densityKeepRatio: 1,
         minimumTrackLineHeight: 24,
-        lineHeightMultiplier: 1.36,
-        lineHeightPadding: 6,
+        lineHeightMultiplier: 1.20,
+        lineHeightPadding: 4,
         maxTrackCount: 18
     )
 
@@ -550,16 +550,16 @@ private struct DanmakuLayoutStrategy {
             fixedSpawnSpreadMillis = 220
             densityKeepRatio = metrics.layoutHeight < 220 ? 0.94 : 0.98
             minimumTrackLineHeight = 24
-            lineHeightMultiplier = 1.38
-            lineHeightPadding = 7
+            lineHeightMultiplier = 1.20
+            lineHeightPadding = 4
             maxTrackCount = 24
         case .fullscreen:
             spawnSpreadMillis = width > 1_600 ? 780 : 680
             fixedSpawnSpreadMillis = 320
             densityKeepRatio = 1
             minimumTrackLineHeight = 34
-            lineHeightMultiplier = 1.34
-            lineHeightPadding = 8
+            lineHeightMultiplier = 1.18
+            lineHeightPadding = 5
             maxTrackCount = 44
         }
     }

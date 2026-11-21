@@ -23,8 +23,9 @@ enum DanmakuPlayerPreferences {
 
     static func readDanmakuSettings() -> DanmakuSettings {
         let savedArea = defaults.integer(forKey: displayAreaKey)
-        let displayArea = DanmakuSettings.displayAreaOptions.first(where: { $0 == savedArea })
-            ?? DanmakuSettings.displayAreaOptions.last!
+        let displayArea = savedArea > 0
+            ? (DanmakuSettings.displayAreaOptions.min { abs($0 - savedArea) < abs($1 - savedArea) } ?? 100)
+            : 100
         return DanmakuSettings(
             displayAreaPercent: displayArea,
             opacityPercent: defaults.object(forKey: opacityKey) == nil

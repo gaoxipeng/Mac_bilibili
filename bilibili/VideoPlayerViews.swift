@@ -82,6 +82,7 @@ final class PlayerClipContainerView: NSView {
     private weak var mpvView: MPVRenderView?
     var cornerRadius: CGFloat {
         didSet {
+            guard cornerRadius != oldValue else { return }
             applyRoundedMask()
             registerHostRole()
         }
@@ -103,7 +104,7 @@ final class PlayerClipContainerView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    override var isOpaque: Bool { true }
+    override var isOpaque: Bool { cornerRadius <= 0.5 }
 
     override func layout() {
         super.layout()
@@ -134,8 +135,11 @@ final class PlayerClipContainerView: NSView {
     }
 
     private func updatePlaybackSubviewFrames() {
-        playerView.frame = bounds
-        mpvView?.frame = bounds
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        if playerView.frame != bounds { playerView.frame = bounds }
+        if let mpvView, mpvView.frame != bounds { mpvView.frame = bounds }
         playerView.autoresizingMask = [.width, .height]
         mpvView?.autoresizingMask = [.width, .height]
     }
@@ -158,7 +162,6 @@ final class PlayerClipContainerView: NSView {
     func attachMPVView(_ view: MPVRenderView) {
         if mpvView === view, view.superview === self {
             updatePlaybackSubviewFrames()
-            view.refreshPresentation()
             return
         }
 
@@ -208,6 +211,9 @@ final class PlayerClipContainerView: NSView {
     }
 
     private func applyRoundedMask() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
         wantsLayer = true
         if cornerRadius > 0.5 {
             layer?.cornerRadius = cornerRadius

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Combine
 
 struct SearchUserResultLayout: Equatable {
     let columnCount: Int
@@ -1525,6 +1526,7 @@ struct VideoCoverHoverScaleRepresentable<Content: View>: NSViewRepresentable {
 
 /// Feed cover: hover container hosts `RemoteCoverImageLayerView` directly (no nested `NSHostingView`).
 struct FeedVideoCoverHoverRepresentable: NSViewRepresentable {
+    let loader: RemoteCoverImageLoader
     let image: NSImage?
     let failed: Bool
     let cornerRadius: CGFloat
@@ -1533,6 +1535,8 @@ struct FeedVideoCoverHoverRepresentable: NSViewRepresentable {
 
     final class Coordinator {
         weak var imageView: RemoteCoverImageLayerView?
+        weak var loader: RemoteCoverImageLoader?
+        var subscription: AnyCancellable?
         var lastImage: NSImage?
         var lastFailed = false
         var lastCornerRadius: CGFloat = -1
@@ -1553,6 +1557,7 @@ struct FeedVideoCoverHoverRepresentable: NSViewRepresentable {
         imageView.updateDisplay(image: image, failed: failed)
         container.setHostedView(imageView)
         context.coordinator.imageView = imageView
+        updateNSView(container, context: context)
         return container
     }
 
@@ -1562,6 +1567,18 @@ struct FeedVideoCoverHoverRepresentable: NSViewRepresentable {
         guard let imageView = context.coordinator.imageView else { return }
 
         let coordinator = context.coordinator
+        if coordinator.loader !== loader {
+            coordinator.loader = loader
+            coordinator.subscription = loader.$image.combineLatest(loader.$failed)
+                .receive(on: RunLoop.main)
+                .sink { [weak imageView, weak container, weak coordinator] image, failed in
+                    coordinator?.lastImage = image
+                    coordinator?.lastFailed = failed
+                    imageView?.updateDisplay(image: image, failed: failed)
+                    imageView?.needsDisplay = true
+                    container?.needsDisplay = true
+                }
+        }
         if coordinator.lastCornerRadius != cornerRadius {
             imageView.cornerRadius = cornerRadius
             coordinator.lastCornerRadius = cornerRadius

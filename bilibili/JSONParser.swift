@@ -1263,6 +1263,11 @@ enum JSONParser {
             type == "audio" ? audioStreamURLs(from: $0) : streamURLs(from: $0)
         }
         let candidates = rawCandidates.enumerated().sorted { lhs, rhs in
+            if type == "audio" {
+                let leftMCDN = URL(string: lhs.element)?.host?.contains(".mcdn.") == true
+                let rightMCDN = URL(string: rhs.element)?.host?.contains(".mcdn.") == true
+                if leftMCDN != rightMCDN { return !leftMCDN }
+            }
             let leftIsCOS = isCOSCDNURL(lhs.element)
             let rightIsCOS = isCOSCDNURL(rhs.element)
             return leftIsCOS == rightIsCOS ? lhs.offset < rhs.offset : !leftIsCOS

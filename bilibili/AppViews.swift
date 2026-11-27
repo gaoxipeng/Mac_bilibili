@@ -203,6 +203,7 @@ struct FeedVideoCoverHover: View {
             .frame(maxWidth: .infinity)
             .overlay {
                 FeedVideoCoverHoverRepresentable(
+                    loader: imageLoader,
                     image: imageLoader.image ?? cachedImage,
                     failed: imageLoader.failed,
                     cornerRadius: cornerRadius,
@@ -212,8 +213,9 @@ struct FeedVideoCoverHover: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onAppear {
-                imageLoader.primeFromMemoryCache(
+                imageLoader.load(
                     url: url,
+                    fallbackURLs: fallbackURLs,
                     maxPixelLength: maxDecodePixelLength
                 )
             }
@@ -578,6 +580,9 @@ struct VideoFeedGrid<Trailing: View>: View {
             trailing()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: videos.map(\.coverURL), initial: true) { _, urls in
+            RemoteCoverImageLoader.prefetch(urls.suffix(80).compactMap { $0 })
+        }
     }
 
     private var resolvedLayoutWidth: CGFloat {
@@ -895,29 +900,14 @@ struct HistoryView: View {
     let onLoadMore: () -> Void
     let onDelete: (BiliHistoryItem) -> Void
 
-    @State private var sectionHeaderViewportY: [String: CGFloat] = [:]
+    @State private var pinnedSectionID: String?
 
     private var sections: [HistorySection] {
         buildHistorySections(from: items)
     }
 
     private var stickySection: HistorySection? {
-        var pinned: HistorySection?
-        for section in sections {
-            guard let y = sectionHeaderViewportY[section.id] else { continue }
-            if y <= HistoryLayout.stickyPinLine {
-                pinned = section
-            }
-        }
-
-        if pinned == nil,
-           let first = sections.first,
-           let y = sectionHeaderViewportY[first.id],
-           y > HistoryLayout.stickyPinLine {
-            return first
-        }
-
-        return pinned
+        sections.first { $0.id == pinnedSectionID } ?? sections.first
     }
 
     var body: some View {
@@ -963,7 +953,12 @@ struct HistoryView: View {
                 .contentMargins(.bottom, AppLayout.feedVerticalInset, for: .scrollContent)
                 .background(MacOverlayScrollConfigurator())
                 .onPreferenceChange(HistorySectionViewportKey.self) { updates in
-                    sectionHeaderViewportY = updates
+                    let ordered = sections
+                    let pinned = ordered.last { section in
+                        guard let y = updates[section.id] else { return false }
+                        return y <= HistoryLayout.stickyPinLine
+                    } ?? ordered.first
+                    if pinnedSectionID != pinned?.id { pinnedSectionID = pinned?.id }
                 }
 
                 HistoryVerticalLine(height: geometry.size.height + HistoryLayout.lineTopOverscan)
@@ -1029,7 +1024,7 @@ private struct HistoryItemsGrid: View {
         let titleAreaHeight = HistoryCardLayout.titleAreaHeight(columnWidth: columnWidth)
         let cardHeight = HistoryCardLayout.cardHeight(columnWidth: columnWidth, titleAreaHeight: titleAreaHeight)
 
-        VStack(alignment: .leading, spacing: VideoCardLayout.nativeCardRowSpacing) {
+        LazyVStack(alignment: .leading, spacing: VideoCardLayout.nativeCardRowSpacing) {
             ForEach(rowStarts, id: \.self) { rowStart in
                 let rowEnd = min(rowStart + columnCount, items.count)
 
@@ -1784,8 +1779,8 @@ struct RemoteCover: View {
             }
         }
         .onAppear {
-            imageLoader.primeFromMemoryCache(
-                url: url,
+            imageLoader.load(
+                url: url, fallbackURLs: fallbackURLs,
                 maxPixelLength: coverDecodePixelLength
             )
         }
@@ -1802,9 +1797,9 @@ struct RemoteCover: View {
     }
 
     private var coverImageLayer: some View {
-        RemoteCoverImageRepresentable(
-            image: imageLoader.image ?? cachedImage,
-            failed: imageLoader.failed,
+        LoadedCoverImageRepresentable(
+            loader: imageLoader,
+            cachedImage: cachedImage,
             cornerRadius: resolvedCornerRadius,
             scalesToFill: scalesToFill,
             placeholderSystemImage: placeholderSystemImage

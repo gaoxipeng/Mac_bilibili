@@ -2445,10 +2445,11 @@ private struct VideoPlayerSection: View {
     @State private var playerViewportHeight: CGFloat = 0
 
     var body: some View {
-        ZStack {
-            playerContentStack
-            playerChromeOverlay
-        }
+        playerContentStack
+            .frame(width: isFullscreen ? nil : fittedSize.width,
+                   height: isFullscreen ? nil : fittedSize.height)
+            .modifier(InlinePlayerRoundedClip(enabled: !isFullscreen))
+            .overlay { playerChromeOverlay }
         .background {
             if isFullscreen {
                 Color.black
@@ -2560,7 +2561,10 @@ private struct VideoPlayerSection: View {
                 Spacer()
 
                 if chromeState.showsControls {
-                    VideoControlCapsule(
+                    GeometryReader { geometry in
+                        let naturalWidth = max(760, geometry.size.width)
+                        let scale = min(1, geometry.size.width / naturalWidth)
+                        VideoControlCapsule(
                         player: player,
                         videoShot: model.videoShot,
                         videoRefererURL: URL(string: "https://www.bilibili.com/video/\(model.displayVideo.bvid)"),
@@ -2579,7 +2583,12 @@ private struct VideoPlayerSection: View {
                             isControlMenuPresented = presented
                             chromeState.revealControls(scheduleAutoHide: !presented)
                         }
-                    )
+                        )
+                        .frame(width: naturalWidth)
+                        .scaleEffect(scale, anchor: .bottomLeading)
+                        .frame(width: geometry.size.width, height: geometry.size.height, alignment: .bottomLeading)
+                    }
+                    .frame(height: VideoControlLayout.capsuleHeight * min(1, max(1, isFullscreen ? 760 : fittedSize.width - 32) / 760))
                     .transition(.opacity)
                     .padding(.horizontal, 16)
                     .padding(.bottom, isFullscreen ? VideoControlLayout.fullscreenBottomInset : VideoControlLayout.inlineBottomInset)
@@ -3043,6 +3052,8 @@ private struct VideoControlCapsule: View {
                             presentOptionsMenu(.quality)
                         } label: {
                             Text(player.isSwitchingVideoQuality ? "切换中" : player.videoQualityLabel)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
                                 .font(.system(size: VideoControlLayout.danmakuFontSize, weight: .bold))
                                 .videoControlHoverForeground(isEnabled: canSwitch)
                                 .frame(minWidth: VideoControlLayout.controlSize, minHeight: VideoControlLayout.controlSize)

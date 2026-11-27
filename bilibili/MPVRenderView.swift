@@ -316,7 +316,7 @@ private final class MPVSoftwareMetalRenderer: @unchecked Sendable {
         // full-resolution playback or the 120 Hz compositor.
         if let faceMaskAnalyzer, faceMaskAnalyzer.isEnabled {
             let now = CACurrentMediaTime()
-            if now - lastFaceMaskSampleTime >= 1.0 / 12.0 {
+            if now - lastFaceMaskSampleTime >= 1.0 / 24.0 {
                 lastFaceMaskSampleTime = now
                 submitFaceMaskSample(
                     analyzer: faceMaskAnalyzer,
@@ -431,6 +431,9 @@ final class MPVRenderView: NSView {
     private var isConfigured = false
     private var mpvCoreReady = false
     private var remainingAudioURLs: [String] = []
+    private var waitingForStartupAudio = false
+    private var requestedPause = true
+    private var startupAudioTask: Task<Void, Never>?
     private var pendingAudioCommandID: UInt64?
     private var nextAudioCommandID: UInt64 = 0
     private var loadGeneration: UInt64 = 0
@@ -561,6 +564,8 @@ final class MPVRenderView: NSView {
             .filter { !$0.isEmpty && seenAudioURLs.insert($0).inserted }
         remainingVideoURLs = fallbackVideoURLs.filter { !$0.isEmpty && $0 != videoURL }
         loadOptions = start > 0 ? ["start=\(start)"] : []
+        waitingForStartupAudio = !remainingAudioURLs.isEmpty
+        setFlag("pause", true)
         currentFileLoaded = false
         videoFramePixelSize = .zero
         lastDrawablePixelSize = .zero
@@ -577,7 +582,8 @@ final class MPVRenderView: NSView {
     }
 
     func setPaused(_ paused: Bool) {
-        setFlag("pause", paused)
+        requestedPause = paused
+        setFlag("pause", paused || waitingForStartupAudio)
         lastWatchdogVideoTime = nil
         if paused {
             stopRenderWatchdog()
@@ -1015,6 +1021,7 @@ final class MPVRenderView: NSView {
                 } else {
                     Self.playbackLogger.notice("audio-add ready ao=\(self.getString("current-ao") ?? "unknown", privacy: .public)")
                     self.remainingAudioURLs.removeAll()
+                    self.waitForStartupAudio()
                 }
             }
         case MPV_EVENT_FILE_LOADED:
@@ -1066,7 +1073,29 @@ final class MPVRenderView: NSView {
         }
     }
 
+    private func waitForStartupAudio() {
+        startupAudioTask?.cancel()
+        let generation = loadGeneration
+        startupAudioTask = Task { @MainActor [weak self] in
+            for _ in 0..<200 {
+                guard let self, !Task.isCancelled, generation == loadGeneration else { return }
+                if getString("current-ao") != nil, getDouble("audio-params/samplerate") > 0 {
+                    waitingForStartupAudio = false
+                    setPaused(requestedPause)
+                    startupAudioTask = nil
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(20)) } catch { return }
+            }
+            guard let self, !Task.isCancelled, generation == loadGeneration else { return }
+            onError?("音频初始化超时，请重新播放")
+        }
+    }
+
     private func cancelPendingAudioLoad() {
+        startupAudioTask?.cancel()
+        startupAudioTask = nil
+        waitingForStartupAudio = false
         if let mpv, let requestID = pendingAudioCommandID {
             mpv_abort_async_command(mpv, requestID)
         }

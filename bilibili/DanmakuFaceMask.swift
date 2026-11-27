@@ -28,7 +28,7 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
     // model work serialized across analyzers as well as across video frames.
     private static let queue = DispatchQueue(
         label: "bilibili.danmaku-face-mask",
-        qos: .utility
+        qos: .userInitiated
     )
     private static let logger = Logger(subsystem: "gaoxipeng.bilibili", category: "DanmakuVision")
     private var reportedAnalysisError = false
@@ -38,7 +38,7 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
     private var faces: [Face] = []
     private var trackedFaces: [DetectedFace] = []
     private var analysisPending = false
-    private var consecutiveMisses = 0
+    private var sceneSignature: [Float] = []
     private var enabled = true
     private var mode: DanmakuAvoidanceMode = .face
 
@@ -65,7 +65,7 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         enabled = mode != .off
         faces.removeAll(keepingCapacity: true)
         trackedFaces.removeAll(keepingCapacity: true)
-        consecutiveMisses = 0
+        sceneSignature.removeAll(keepingCapacity: true)
         inputGeneration &+= 1
         generation &+= 1
         lock.unlock()
@@ -79,7 +79,26 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
               data.count >= height * bytesPerRow else { return }
 
         lock.lock()
-        guard enabled, !analysisPending else {
+        guard enabled else {
+            lock.unlock()
+            return
+        }
+        // Inspect every submitted sample, including while Vision is busy. A
+        // cut must invalidate an in-flight result from the preceding shot.
+        let signature = sceneSignatureForFrame(data, width: width, height: height, bytesPerRow: bytesPerRow)
+        if signature.count == sceneSignature.count, !signature.isEmpty {
+            let changes = zip(signature, sceneSignature).map { abs($0 - $1) }
+            let mean = changes.reduce(0, +) / Float(changes.count)
+            let changedFraction = Float(changes.filter { $0 > 0.18 }.count) / Float(changes.count)
+            if mean > 0.22 && changedFraction > 0.55 {
+                faces.removeAll(keepingCapacity: true)
+                trackedFaces.removeAll(keepingCapacity: true)
+                inputGeneration &+= 1
+                generation &+= 1
+            }
+        }
+        sceneSignature = signature
+        guard !analysisPending else {
             lock.unlock()
             return
         }
@@ -156,16 +175,9 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
                 // Check before modifying *any* tracking state. Reset/mode changes
                 // may happen while Vision is processing an older frame.
                 guard self.inputGeneration == inputGeneration, self.enabled else { return }
-                let stableDetected: [DetectedFace]
-                if detected.isEmpty, !self.trackedFaces.isEmpty, self.consecutiveMisses < 1 {
-                    // Ignore one transient missed analysis (one 12 Hz sample).
-                    self.consecutiveMisses += 1
-                    stableDetected = self.trackedFaces
-                } else {
-                    self.consecutiveMisses = 0
-                    stableDetected = detected
-                }
-                let smoothed = self.smooth(stableDetected, previous: self.trackedFaces)
+                // Publish absence immediately; retaining a missed frame leaves
+                // the previous shot's silhouette visible after a cut.
+                let smoothed = self.smooth(detected, previous: self.trackedFaces)
                 self.trackedFaces = smoothed
                 self.faces = smoothed.map {
                     Face(
@@ -175,6 +187,22 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
                 }
                 self.generation &+= 1
             }
+        }
+    }
+
+    private func sceneSignatureForFrame(_ data: Data, width: Int, height: Int, bytesPerRow: Int) -> [Float] {
+        data.withUnsafeBytes { bytes in
+            guard let base = bytes.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return [] }
+            var signature: [Float] = []
+            signature.reserveCapacity(16 * 9 * 3)
+            for y in 0..<9 {
+                for x in 0..<16 {
+                    let offset = min(height - 1, (2 * y + 1) * height / 18) * bytesPerRow
+                        + min(width - 1, (2 * x + 1) * width / 32) * 4
+                    for channel in 0..<3 { signature.append(Float(base[offset + channel]) / 255) }
+                }
+            }
+            return signature
         }
     }
 
@@ -192,7 +220,7 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
         lock.lock()
         faces.removeAll(keepingCapacity: true)
         trackedFaces.removeAll(keepingCapacity: true)
-        consecutiveMisses = 0
+        sceneSignature.removeAll(keepingCapacity: true)
         inputGeneration &+= 1
         generation &+= 1
         lock.unlock()
@@ -432,7 +460,7 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
 
     private func smooth(_ detected: [DetectedFace], previous: [DetectedFace]) -> [DetectedFace] {
 
-        let alpha: CGFloat = 0.34
+        let alpha: CGFloat = 0.72
         var result: [DetectedFace] = []
         result.reserveCapacity(detected.count)
         var used = Set<Int>()
@@ -449,9 +477,11 @@ final class DanmakuFaceMaskAnalyzer: @unchecked Sendable {
             if let bestIndex, bestScore >= 0.18 {
                 used.insert(bestIndex)
                 let old = previous[bestIndex]
-                let box = blend(old.boundingBox, face.boundingBox, amount: alpha)
+                // Large motion is a new position, not detector jitter.
+                let amount: CGFloat = bestScore < 0.65 ? 1 : alpha
+                let box = blend(old.boundingBox, face.boundingBox, amount: amount)
                 let contour = face.contour.count == old.contour.count
-                    ? zip(old.contour, face.contour).map { blend($0.0, $0.1, amount: alpha) }
+                    ? zip(old.contour, face.contour).map { blend($0.0, $0.1, amount: amount) }
                     : face.contour
                 result.append(DetectedFace(boundingBox: box, contour: contour))
             } else {

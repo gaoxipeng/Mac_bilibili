@@ -4,6 +4,7 @@ import Combine
 import Foundation
 import MediaPlayer
 import QuartzCore
+import IOKit.pwr_mgt
 
 enum VideoPlaybackRateOptions {
     static let values: [Float] = [0.5, 0.75, 1, 1.5, 2, 3]
@@ -19,11 +20,60 @@ enum VideoPlaybackRateOptions {
     }
 }
 
+/// Owns only this playback session's assertions; system idle settings stay intact.
+private final class PlaybackDisplayActivity {
+    private var displayAssertion: IOPMAssertionID = 0
+    private var activityAssertion: IOPMAssertionID = 0
+    private var timer: Timer?
+
+    func setPlaying(_ playing: Bool) {
+        if !playing {
+            release()
+            return
+        }
+        guard timer == nil else { return }
+        IOPMAssertionCreateWithName(
+            kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+            IOPMAssertionLevel(kIOPMAssertionLevelOn),
+            "bilibili video playback" as CFString,
+            &displayAssertion
+        )
+        declareActivity()
+        let timer = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
+            self?.declareActivity()
+        }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func declareActivity() {
+        IOPMAssertionDeclareUserActivity(
+            "bilibili video playback" as CFString,
+            kIOPMUserActiveLocal,
+            &activityAssertion
+        )
+    }
+
+    private func release() {
+        timer?.invalidate()
+        timer = nil
+        if displayAssertion != 0 { IOPMAssertionRelease(displayAssertion) }
+        if activityAssertion != 0 { IOPMAssertionRelease(activityAssertion) }
+        displayAssertion = 0
+        activityAssertion = 0
+    }
+
+    deinit { release() }
+}
+
 @MainActor
 final class VideoPlaybackEngine: ObservableObject {
     var onSeekCommitted: ((Double) -> Void)?
     var onPlaybackError: ((String) -> Void)?
-    @Published private(set) var isPlaying = false
+    private let displayActivity = PlaybackDisplayActivity()
+    @Published private(set) var isPlaying = false {
+        didSet { displayActivity.setPlaying(isPlaying) }
+    }
     @Published private(set) var currentTime: Double = 0
     @Published private(set) var duration: Double = 0
     @Published var isScrubbing = false

@@ -10,6 +10,7 @@ final class RemoteCoverImageLoader: ObservableObject {
 
     private var task: Task<Void, Never>?
     private var currentKey = ""
+    private var loadGeneration = 0
 
     private static let cache: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
@@ -20,6 +21,27 @@ final class RemoteCoverImageLoader: ObservableObject {
     nonisolated static let maxPixelLength = 720
     nonisolated static let fullscreenMaxPixelLength = 4096
     private static let loadGate = ImageLoadGate(limit: 4)
+
+    private static var prefetching = Set<URL>()
+    private static let prefetchGate = ImageLoadGate(limit: 2)
+
+    static func prefetch(_ urls: [URL]) {
+        for url in Set(urls) {
+            guard cachedImage(url: url, maxPixelLength: maxPixelLength) == nil,
+                  prefetching.insert(url).inserted else { continue }
+            Task {
+                await prefetchGate.acquire()
+                defer {
+                    prefetching.remove(url)
+                    Task { await prefetchGate.release() }
+                }
+                guard cachedImage(url: url, maxPixelLength: maxPixelLength) == nil else { return }
+                if let image = await fetchImage(candidates: [url], maxPixelLength: maxPixelLength) {
+                    store(image, forKey: cacheKey(primaryURL: url, maxPixelLength: maxPixelLength))
+                }
+            }
+        }
+    }
 
     func primeFromMemoryCache(
         url: URL?,
@@ -57,7 +79,7 @@ final class RemoteCoverImageLoader: ObservableObject {
         )
         let maxPixel = maxPixelLength.map { Self.normalizedPixelLength($0, cap: pixelCap) }
         let key = Self.cacheKey(primaryURL: url, maxPixelLength: maxPixel)
-        if key == currentKey, image != nil {
+        if key == currentKey, image != nil || task != nil {
             return
         }
         currentKey = key
@@ -78,7 +100,10 @@ final class RemoteCoverImageLoader: ObservableObject {
             image = nil
         }
         task?.cancel()
+        loadGeneration &+= 1
+        let generation = loadGeneration
         task = Task { [weak self] in
+            defer { if self?.loadGeneration == generation { self?.task = nil } }
             await Self.loadGate.acquire()
             defer { Task { await Self.loadGate.release() } }
             guard !Task.isCancelled else { return }
@@ -113,6 +138,7 @@ final class RemoteCoverImageLoader: ObservableObject {
     }
 
     func cancel() {
+        loadGeneration &+= 1
         task?.cancel()
         task = nil
     }
@@ -131,7 +157,14 @@ final class RemoteCoverImageLoader: ObservableObject {
     ) -> NSImage? {
         guard let url else { return nil }
         let maxPixel = maxPixelLength.map { normalizedPixelLength($0, cap: pixelCap) }
-        return cache.object(forKey: cacheKey(primaryURL: url, maxPixelLength: maxPixel) as NSString)
+        if let exact = cache.object(forKey: cacheKey(primaryURL: url, maxPixelLength: maxPixel) as NSString) {
+            return exact
+        }
+        // A prefetched 720px thumbnail can serve smaller card sizes immediately.
+        if let maxPixel, maxPixel <= Self.maxPixelLength {
+            return cache.object(forKey: cacheKey(primaryURL: url, maxPixelLength: Self.maxPixelLength) as NSString)
+        }
+        return nil
     }
 
     private static func store(_ image: NSImage, forKey key: String) {
@@ -270,13 +303,14 @@ private actor ImageLoadGate {
             return
         }
         await withCheckedContinuation { waiters.append($0) }
-        inFlight += 1
     }
 
     func release() {
-        inFlight = max(0, inFlight - 1)
-        guard !waiters.isEmpty else { return }
-        let next = waiters.removeFirst()
-        next.resume()
+        if waiters.isEmpty {
+            inFlight = max(0, inFlight - 1)
+        } else {
+            // Transfer the occupied slot directly to the next waiter.
+            waiters.removeFirst().resume()
+        }
     }
 }

@@ -417,6 +417,7 @@ final class VideoFullscreenPresenter: ObservableObject {
         opening: Bool,
         completion: @escaping @MainActor () -> Void
     ) {
+        let interruptedRadius = transitionContentLayer?.presentation()?.cornerRadius
         let interruptedTransform = cancelTransition(preservingPresentationTransform: true)
         let generation = transitionGeneration
         let mainWindow = NSApp.mainWindow === window ? nil : NSApp.mainWindow
@@ -451,8 +452,20 @@ final class VideoFullscreenPresenter: ObservableObject {
         transformAnimation.fromValue = NSValue(caTransform3D: startTransform)
         transformAnimation.toValue = NSValue(caTransform3D: endTransform)
 
+        // Round the transformed video itself, not the full-size overlay
+        // window. Compensate for scaling so the endpoint matches the inline card.
+        let endScale = max(0.001, abs(endTransform.m11))
+        let endRadius = opening ? CGFloat.zero : VideoPlayerChrome.cornerRadius / endScale
+        let startScale = max(0.001, abs(startTransform.m11))
+        let startRadius = interruptedRadius ?? (opening ? VideoPlayerChrome.cornerRadius / startScale : 0)
+        contentLayer.cornerCurve = .continuous
+        contentLayer.masksToBounds = true
+        let radiusAnimation = CABasicAnimation(keyPath: "cornerRadius")
+        radiusAnimation.fromValue = startRadius
+        radiusAnimation.toValue = endRadius
+
         let transitionAnimation = CAAnimationGroup()
-        transitionAnimation.animations = [transformAnimation]
+        transitionAnimation.animations = [transformAnimation, radiusAnimation]
         transitionAnimation.duration = duration
         transitionAnimation.timingFunction = timing
         transitionAnimation.isRemovedOnCompletion = false
@@ -467,13 +480,15 @@ final class VideoFullscreenPresenter: ObservableObject {
                 presenter.transitionContentLayer = nil
                 animatedWindow.setFrame(endFrame, display: true)
                 animatedWindow.alphaValue = 1
-                animatedContainer.cornerRadius = 0
+                contentLayer.cornerRadius = opening ? 0 : VideoPlayerChrome.cornerRadius
+                animatedContainer.cornerRadius = opening ? 0 : VideoPlayerChrome.cornerRadius
                 animatedContainer.transitionProgress = opening ? 1 : 0
                 mainWindow?.alphaValue = targetMainWindowAlpha
                 completion()
             }
         }
         contentLayer.transform = endTransform
+        contentLayer.cornerRadius = endRadius
         contentLayer.add(transitionAnimation, forKey: "fullscreenTransition")
         mainWindow?.animator().alphaValue = targetMainWindowAlpha
         CATransaction.commit()

@@ -78,6 +78,8 @@ final class RemoteCoverImageLayerView: NSView {
 
     private let placeholderIcon = NSImageView()
     private var displayedCGImage: CGImage?
+    private weak var displayedImage: NSImage?
+    private var displayedFailure = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -105,6 +107,13 @@ final class RemoteCoverImageLayerView: NSView {
     }
 
     func updateDisplay(image: NSImage?, failed: Bool) {
+        // Feed rows get layout/hover updates during scrolling. Avoid converting
+        // the same NSImage to CGImage and invalidating its layer each time.
+        if let image, displayedImage === image, displayedCGImage != nil { return }
+        if image == nil, displayedImage == nil, displayedCGImage == nil,
+           displayedFailure == failed, placeholderIcon.image != nil { return }
+        displayedImage = image
+        displayedFailure = failed
         if let image,
            let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
             guard displayedCGImage !== cgImage else { return }
@@ -125,6 +134,50 @@ final class RemoteCoverImageLayerView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         nil
+    }
+}
+
+/// Subscribe in AppKit as well as SwiftUI so a completed download updates
+/// the backing layer immediately, even while a lazy feed is otherwise idle.
+struct LoadedCoverImageRepresentable: NSViewRepresentable {
+    let loader: RemoteCoverImageLoader
+    let cachedImage: NSImage?
+    let cornerRadius: CGFloat
+    let scalesToFill: Bool
+    let placeholderSystemImage: String
+
+    final class Coordinator {
+        var subscription: AnyCancellable?
+        weak var loader: RemoteCoverImageLoader?
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> RemoteCoverImageLayerView {
+        let view = RemoteCoverImageLayerView()
+        updateNSView(view, context: context)
+        return view
+    }
+
+    func updateNSView(_ view: RemoteCoverImageLayerView, context: Context) {
+        view.cornerRadius = cornerRadius
+        view.scalesToFill = scalesToFill
+        view.placeholderSystemImage = placeholderSystemImage
+        view.updateDisplay(image: loader.image ?? cachedImage, failed: loader.failed)
+        if context.coordinator.loader !== loader {
+            context.coordinator.loader = loader
+            context.coordinator.subscription = loader.$image
+                .combineLatest(loader.$failed)
+                .receive(on: RunLoop.main)
+                .sink { [weak view] image, failed in
+                    view?.updateDisplay(image: image, failed: failed)
+                    view?.needsDisplay = true
+                }
+        }
+    }
+
+    static func dismantleNSView(_ nsView: RemoteCoverImageLayerView, coordinator: Coordinator) {
+        coordinator.subscription?.cancel()
     }
 }
 

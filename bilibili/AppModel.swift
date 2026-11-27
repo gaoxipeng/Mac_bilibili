@@ -6,18 +6,28 @@ import SwiftUI
 @MainActor
 final class AppModel: ObservableObject {
     @Published var selectedSection: AppSection = .home
-    @Published var homeVideos: [BiliVideo] = []
+    @Published var homeVideos: [BiliVideo] = [] {
+        didSet { RemoteCoverImageLoader.prefetch(homeVideos.suffix(80).compactMap(\.coverURL)) }
+    }
     @Published var homeHasMore = false
     @Published var homeLoadingMore = false
     @Published private(set) var playURLs: [String: BiliPlayStream] = [:]
-    @Published var followingVideos: [BiliVideo] = []
+    @Published var followingVideos: [BiliVideo] = [] {
+        didSet { RemoteCoverImageLoader.prefetch(followingVideos.suffix(80).compactMap(\.coverURL)) }
+    }
     @Published var followingHasMore = false
     @Published var followingLoadingMore = false
-    @Published var hotVideos: [BiliVideo] = []
-    @Published var historyItems: [BiliHistoryItem] = []
+    @Published var hotVideos: [BiliVideo] = [] {
+        didSet { RemoteCoverImageLoader.prefetch(hotVideos.suffix(80).compactMap(\.coverURL)) }
+    }
+    @Published var historyItems: [BiliHistoryItem] = [] {
+        didSet { RemoteCoverImageLoader.prefetch(historyItems.suffix(80).compactMap { $0.video.coverURL }) }
+    }
     @Published var historyHasMore = false
     @Published var historyLoadingMore = false
-    @Published var favoriteVideos: [BiliVideo] = []
+    @Published var favoriteVideos: [BiliVideo] = [] {
+        didSet { RemoteCoverImageLoader.prefetch(favoriteVideos.suffix(80).compactMap(\.coverURL)) }
+    }
     @Published var favoriteHasMore = false
     @Published var favoriteLoadingMore = false
     @Published var account: BiliAccount?
@@ -604,9 +614,18 @@ final class AppModel: ObservableObject {
             // before reading the authoritative history page back.
             try await Task.sleep(nanoseconds: 600_000_000)
             let page = try await api.history(credential: credential)
-            historyItems = page.items
-            historyCursor = page.cursor
-            historyHasMore = page.hasMore
+            // Keep older loaded pages and the existing pagination cursor.
+            // Replacing the list with page one discards the source card and
+            // makes SwiftUI clamp the old scroll offset back to yesterday.
+            let hadHistory = !historyItems.isEmpty
+            let merged = JSONParser.deduplicatedHistoryItems(page.items + historyItems)
+            withAnimation(.smooth(duration: 0.45)) {
+                historyItems = merged
+            }
+            if !hadHistory {
+                historyCursor = page.cursor
+                historyHasMore = page.hasMore
+            }
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
